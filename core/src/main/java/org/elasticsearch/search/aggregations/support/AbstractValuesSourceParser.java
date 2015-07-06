@@ -82,7 +82,7 @@ public abstract class AbstractValuesSourceParser<VS extends ValuesSource> implem
     }
 
     @Override
-    public AggregatorFactory parse(String aggregationName, XContentParser parser, SearchContext context) throws IOException {
+    public final AggregatorFactory parse(String aggregationName, XContentParser parser, SearchContext context) throws IOException {
 
         String field = null;
         Script script = null;
