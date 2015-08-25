@@ -122,7 +122,7 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
     }
 
     // NORELEASE make this abstract when agg refactor complete
-    private void doWriteTo(StreamOutput out) {
+    private void doWriteTo(StreamOutput out) throws IOException {
     }
 
     // NORELEASE remove this method when agg refactor complete
@@ -141,7 +141,7 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
     }
 
     // NORELEASE make this abstract when agg refactor complete
-    protected PipelineAggregatorFactory doReadFrom(String name, String[] bucketsPaths, StreamInput in) {
+    protected PipelineAggregatorFactory doReadFrom(String name, String[] bucketsPaths, StreamInput in) throws IOException {
         return null;
     }
 
