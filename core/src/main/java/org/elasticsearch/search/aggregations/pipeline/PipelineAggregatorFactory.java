@@ -61,6 +61,10 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
         return name;
     }
 
+    public String type() {
+        return type;
+    }
+
     /**
      * Validates the state of this factory (makes sure the factory is properly
      * configured)
@@ -116,13 +120,13 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeString(name);
-        doWriteTo(out);
         out.writeStringArray(bucketsPaths);
+        doWriteTo(out);
         out.writeMap(metaData);
     }
 
     // NORELEASE make this abstract when agg refactor complete
-    private void doWriteTo(StreamOutput out) throws IOException {
+    protected void doWriteTo(StreamOutput out) throws IOException {
     }
 
     // NORELEASE remove this method when agg refactor complete
@@ -210,4 +214,5 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
         throw new UnsupportedOperationException(
                 "This method should be implemented by a sub-class and should not rely on this method. When agg re-factoring is complete this method will be made abstract.");
     }
+
 }

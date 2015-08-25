@@ -129,6 +129,7 @@ public class AggregatorFactories extends ToXContentToBytes implements Writeable<
         private final Set<String> names = new HashSet<>();
         private final List<AggregatorFactory> factories = new ArrayList<>();
         private final List<PipelineAggregatorFactory> pipelineAggregatorFactories = new ArrayList<>();
+        private boolean skipResolveOrder;
 
         public Builder addAggregator(AggregatorFactory factory) {
             if (!names.add(factory.name)) {
@@ -143,11 +144,24 @@ public class AggregatorFactories extends ToXContentToBytes implements Writeable<
             return this;
         }
 
+        /**
+         * FOR TESTING ONLY
+         */
+        public Builder skipResolveOrder() {
+            this.skipResolveOrder = true;
+            return this;
+        }
+
         public AggregatorFactories build() {
             if (factories.isEmpty() && pipelineAggregatorFactories.isEmpty()) {
                 return EMPTY;
             }
-            List<PipelineAggregatorFactory> orderedpipelineAggregators = resolvePipelineAggregatorOrder(this.pipelineAggregatorFactories, this.factories);
+            List<PipelineAggregatorFactory> orderedpipelineAggregators = null;
+            if (skipResolveOrder) {
+                orderedpipelineAggregators = new ArrayList<>(pipelineAggregatorFactories);
+            } else {
+                orderedpipelineAggregators = resolvePipelineAggregatorOrder(this.pipelineAggregatorFactories, this.factories);
+            }
             return new AggregatorFactories(factories.toArray(new AggregatorFactory[factories.size()]), orderedpipelineAggregators);
         }
 
