@@ -186,8 +186,7 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
     // NORELEASE make this method abstract here when agg refactor complete (so
     // that subclasses are forced to implement it)
     protected int doHashCode() {
-        throw new UnsupportedOperationException(
-                "This method should be implemented by a sub-class and should not rely on this method. When agg re-factoring is complete this method will be made abstract.");
+        return 0;
     }
 
     @Override
@@ -211,8 +210,7 @@ public abstract class PipelineAggregatorFactory extends ToXContentToBytes implem
     // NORELEASE make this method abstract here when agg refactor complete (so
     // that subclasses are forced to implement it)
     protected boolean doEquals(Object obj) {
-        throw new UnsupportedOperationException(
-                "This method should be implemented by a sub-class and should not rely on this method. When agg re-factoring is complete this method will be made abstract.");
+        return true;
     }
 
 }
