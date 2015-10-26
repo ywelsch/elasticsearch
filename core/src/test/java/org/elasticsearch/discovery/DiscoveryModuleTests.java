@@ -27,7 +27,6 @@ import org.elasticsearch.common.component.Lifecycle;
 import org.elasticsearch.common.component.LifecycleListener;
 import org.elasticsearch.common.inject.ModuleTestCase;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.local.LocalDiscovery;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.discovery.zen.elect.ElectMasterService;
 import org.elasticsearch.node.service.NodeService;
@@ -65,7 +64,7 @@ public class DiscoveryModuleTests extends ModuleTestCase {
         boolean local = randomBoolean();
         Settings settings = Settings.builder().put("node.local", local).build();
         DiscoveryModule module = new DiscoveryModule(settings);
-        assertBinding(module, Discovery.class, local ? LocalDiscovery.class : ZenDiscovery.class);
+        assertBinding(module, Discovery.class, ZenDiscovery.class);
     }
 
     public void testRegisterDiscovery() {

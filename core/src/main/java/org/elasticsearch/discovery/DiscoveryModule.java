@@ -24,11 +24,11 @@ import org.elasticsearch.common.inject.AbstractModule;
 import org.elasticsearch.common.inject.multibindings.Multibinder;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.ExtensionPoint;
-import org.elasticsearch.discovery.local.LocalDiscovery;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.discovery.zen.elect.ElectMasterService;
 import org.elasticsearch.discovery.zen.ping.ZenPing;
 import org.elasticsearch.discovery.zen.ping.ZenPingService;
+import org.elasticsearch.discovery.zen.ping.local.LocalPing;
 import org.elasticsearch.discovery.zen.ping.unicast.UnicastHostsProvider;
 import org.elasticsearch.discovery.zen.ping.unicast.UnicastZenPing;
 
@@ -53,7 +53,7 @@ public class DiscoveryModule extends AbstractModule {
 
     public DiscoveryModule(Settings settings) {
         this.settings = settings;
-        addDiscoveryType("local", LocalDiscovery.class);
+        addDiscoveryType("local", ZenDiscovery.class);
         addDiscoveryType("zen", ZenDiscovery.class);
         addElectMasterService("zen", ElectMasterService.class);
         // always add the unicast hosts, or things get angry!
@@ -100,7 +100,13 @@ public class DiscoveryModule extends AbstractModule {
             throw new IllegalArgumentException("Unknown Discovery type [" + discoveryType + "]");
         }
 
-        if (discoveryType.equals("local") == false) {
+        if (discoveryType.equals("local")) {
+            bind(ElectMasterService.class).asEagerSingleton();
+            bind(ZenPingService.class).asEagerSingleton();
+            ExtensionPoint.ClassSet<ZenPing> localPings = new ExtensionPoint.ClassSet<>("local_ping", ZenPing.class);
+            localPings.registerExtension(LocalPing.class);
+            localPings.bind(binder());
+        } else {
             String masterServiceTypeKey = settings.get(ZEN_MASTER_SERVICE_TYPE_KEY, "zen");
             final Class<? extends ElectMasterService> masterService = masterServiceType.get(masterServiceTypeKey);
             if (masterService == null) {
