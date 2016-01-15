@@ -273,11 +273,33 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
             }
             // Write Global MetaData
             globalMetaDataFormat.write(metaData, snapshotsBlobContainer, snapshotId.getSnapshot());
-            for (String index : indices) {
-                final IndexMetaData indexMetaData = metaData.index(index);
-                final BlobPath indexPath = basePath().add("indices").add(index);
-                final BlobContainer indexMetaDataBlobContainer = blobStore().blobContainer(indexPath);
-                indexMetaDataFormat.write(indexMetaData, indexMetaDataBlobContainer, snapshotId.getSnapshot());
+
+            List<String> writtenIndices = new ArrayList<>();
+            try {
+                for (String index : indices) {
+                    final IndexMetaData indexMetaData = metaData.index(index);
+                    final BlobPath indexPath = basePath().add("indices").add(index);
+                    final BlobContainer indexMetaDataBlobContainer = blobStore().blobContainer(indexPath);
+                    indexMetaDataFormat.write(indexMetaData, indexMetaDataBlobContainer, snapshotId.getSnapshot());
+                    writtenIndices.add(index);
+                }
+            } catch (IOException e) {
+                logger.warn("[{}] initializing snapshot failed, cleaning up...", e, snapshotId);
+                for (String index : writtenIndices) {
+                    BlobPath indexPath = basePath().add("indices").add(index);
+                    BlobContainer indexMetaDataBlobContainer = blobStore().blobContainer(indexPath);
+                    try {
+                        indexMetaDataFormat.delete(indexMetaDataBlobContainer, snapshotId.getSnapshot());
+                    } catch (IOException ex) {
+                        logger.warn("[{}] failed to delete metadata for index [{}]", ex, snapshotId, index);
+                    }
+                }
+                try {
+                    globalMetaDataFormat.delete(snapshotsBlobContainer, snapshotId.getSnapshot());
+                } catch (IOException ex) {
+                    logger.warn("[{}] failed to delete global metadata", ex, snapshotId);
+                }
+                throw e; // rethrow original exception
             }
         } catch (IOException ex) {
             throw new SnapshotCreationException(snapshotId, ex);
