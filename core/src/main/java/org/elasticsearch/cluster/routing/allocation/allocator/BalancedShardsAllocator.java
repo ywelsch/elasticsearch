@@ -534,7 +534,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
                     if (decision.type() == Type.YES) { // TODO maybe we can respect throttling here too?
                         sourceNode.removeShard(shard);
                         ShardRouting targetRelocatingShard = routingNodes.relocate(shard, target.nodeId(), allocation.clusterInfo().getShardSize(shard, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE));
-                        currentNode.addShard(targetRelocatingShard, decision);
+                        currentNode.addShard(targetRelocatingShard);
                         if (logger.isTraceEnabled()) {
                             logger.trace("Moved shard [{}] to node [{}]", shard, currentNode.getNodeId());
                         }
@@ -564,7 +564,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
                 }
                 ModelNode node = nodes.get(shard.currentNodeId());
                 assert node != null;
-                node.addShard(shard, Decision.single(Type.YES, "Already allocated on node", node.getNodeId()));
+                node.addShard(shard);
                 if (logger.isTraceEnabled()) {
                     logger.trace("Assigned shard [{}] to node [{}]", shard, node.getNodeId());
                 }
@@ -702,7 +702,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
                     }
                     assert decision != null && minNode != null || decision == null && minNode == null;
                     if (minNode != null) {
-                        minNode.addShard(shard, decision);
+                        minNode.addShard(shard);
                         if (decision.type() == Type.YES) {
                             if (logger.isTraceEnabled()) {
                                 logger.trace("Assigned shard [{}] to [{}]", shard, minNode.getNodeId());
@@ -784,7 +784,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
 
                     /* allocate on the model even if not throttled */
                     maxNode.removeShard(candidate);
-                    minNode.addShard(candidate, decision);
+                    minNode.addShard(candidate);
                     if (decision.type() == Type.YES) { /* only allocate on the cluster if we are not throttled */
                         if (logger.isTraceEnabled()) {
                             logger.trace("Relocate shard [{}] from node [{}] to node [{}]", candidate, maxNode.getNodeId(),
@@ -854,22 +854,22 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
             return -1;
         }
 
-        public void addShard(ShardRouting shard, Decision decision) {
+        public void addShard(ShardRouting shard) {
             ModelIndex index = indices.get(shard.index());
             if (index == null) {
                 index = new ModelIndex(shard.index());
                 indices.put(index.getIndexId(), index);
             }
-            index.addShard(shard, decision);
+            index.addShard(shard);
             numShards++;
         }
 
-        public Decision removeShard(ShardRouting shard) {
+        public boolean removeShard(ShardRouting shard) {
             ModelIndex index = indices.get(shard.index());
-            Decision removed = null;
+            boolean removed = false;
             if (index != null) {
-                removed = index.removeShard(shard);
-                if (removed != null && index.numShards() == 0) {
+                index.removeShard(shard);
+                if (index.numShards() == 0) {
                     indices.remove(shard.index());
                 }
             }
@@ -898,7 +898,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
 
     static final class ModelIndex {
         private final String id;
-        private final Map<ShardRouting, Decision> shards = new HashMap<>();
+        private final Set<ShardRouting> shards = Collections.newSetFromMap(new IdentityHashMap<>()); // IdentityHashMap as ShardRouting instances are mutated
         private int highestPrimary = -1;
 
         public ModelIndex(String id) {
@@ -908,7 +908,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
         public int highestPrimary() {
             if (highestPrimary == -1) {
                 int maxId = -1;
-                for (ShardRouting shard : shards.keySet()) {
+                for (ShardRouting shard : shards) {
                     if (shard.primary()) {
                         maxId = Math.max(maxId, shard.id());
                     }
@@ -927,23 +927,23 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
         }
 
         public Collection<ShardRouting> getAllShards() {
-            return shards.keySet();
+            return shards;
         }
 
-        public Decision removeShard(ShardRouting shard) {
+        public void removeShard(ShardRouting shard) {
             highestPrimary = -1;
-            return shards.remove(shard);
+            boolean removed = shards.remove(shard);
+            assert removed : "Shard to remove is not on current node: " + shard;
         }
 
-        public void addShard(ShardRouting shard, Decision decision) {
+        public void addShard(ShardRouting shard) {
             highestPrimary = -1;
-            assert decision != null;
-            assert !shards.containsKey(shard) : "Shard already allocated on current node: " + shards.get(shard) + " " + shard;
-            shards.put(shard, decision);
+            boolean added = shards.add(shard);
+            assert added : "Shard already allocated on current node: " + shard;
         }
 
         public boolean containsShard(ShardRouting shard) {
-            return shards.containsKey(shard);
+            return shards.contains(shard);
         }
     }
 
