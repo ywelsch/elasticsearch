@@ -899,6 +899,7 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
     static final class ModelIndex {
         private final String id;
         private final Set<ShardRouting> shards = Collections.newSetFromMap(new IdentityHashMap<>()); // IdentityHashMap as ShardRouting instances are mutated
+        private final Set<ShardRouting> shardsCopy = new HashSet<>(); // IdentityHashMap as ShardRouting instances are mutated
         private int highestPrimary = -1;
 
         public ModelIndex(String id) {
@@ -913,6 +914,16 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
                         maxId = Math.max(maxId, shard.id());
                     }
                 }
+
+
+                int maxIdCopy = -1;
+                for (ShardRouting shard : shardsCopy) {
+                    if (shard.primary()) {
+                        maxIdCopy = Math.max(maxIdCopy, shard.id());
+                    }
+                }
+                assert maxId == maxIdCopy;
+
                 return highestPrimary = maxId;
             }
             return highestPrimary;
@@ -923,10 +934,12 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
         }
 
         public int numShards() {
+            assert shards.size() == shardsCopy.size();
             return shards.size();
         }
 
         public Collection<ShardRouting> getAllShards() {
+            assert shards.equals(shardsCopy);
             return shards;
         }
 
@@ -934,12 +947,16 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
             highestPrimary = -1;
             boolean removed = shards.remove(shard);
             assert removed : "Shard to remove is not on current node: " + shard;
+            boolean removedCopy = shardsCopy.remove(shard);
+            assert removedCopy;
         }
 
         public void addShard(ShardRouting shard) {
             highestPrimary = -1;
             boolean added = shards.add(shard);
             assert added : "Shard already allocated on current node: " + shard;
+            boolean addedCopy = shardsCopy.add(shard);
+            assert addedCopy;
         }
 
         public boolean containsShard(ShardRouting shard) {
