@@ -1813,7 +1813,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         }
     }
 
-    public void testDeleteIndexDuringSnapshot() throws Exception {
+    public void testCloseOrDeleteIndexDuringSnapshot() throws Exception {
         Client client = client();
 
         boolean allowPartial = randomBoolean();
@@ -1846,23 +1846,83 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
                 .setIndices("test-idx-*").setWaitForCompletion(true).setPartial(allowPartial).execute();
         logger.info("--> wait for block to kick in");
         waitForBlock(internalCluster().getMasterName(), "test-repo", TimeValue.timeValueMinutes(1));
-        logger.info("--> delete some indices while snapshot is running");
-        client.admin().indices().prepareDelete("test-idx-1", "test-idx-2").get();
+        if (randomBoolean()) {
+            logger.info("--> delete some indices while snapshot is running");
+            client.admin().indices().prepareDelete("test-idx-1", "test-idx-2").get();
+        } else {
+            logger.info("--> close some indices while snapshot is running");
+            client.admin().indices().prepareClose("test-idx-1", "test-idx-2").get();
+        }
         logger.info("--> unblock running master node");
         unblockNode(internalCluster().getMasterName());
         logger.info("--> waiting for snapshot to finish");
         CreateSnapshotResponse createSnapshotResponse = future.get();
 
         if (allowPartial) {
-            logger.info("Deleted index during snapshot, but allow partial");
+            logger.info("Deleted/Closed index during snapshot, but allow partial");
             assertThat(createSnapshotResponse.getSnapshotInfo().state(), equalTo((SnapshotState.PARTIAL)));
             assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
             assertThat(createSnapshotResponse.getSnapshotInfo().failedShards(), greaterThan(0));
             assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), lessThan(createSnapshotResponse.getSnapshotInfo().totalShards()));
         } else {
-            logger.info("Deleted index during snapshot and doesn't allow partial");
+            logger.info("Deleted/Closed index during snapshot and doesn't allow partial");
             assertThat(createSnapshotResponse.getSnapshotInfo().state(), equalTo((SnapshotState.FAILED)));
         }
+    }
+
+    public void testCloseIndexDuringRestore() throws Exception {
+        Client client = client();
+
+        logger.info("-->  creating repository");
+        assertAcked(client.admin().cluster().preparePutRepository("test-repo")
+            .setType("mock").setSettings(Settings.settingsBuilder()
+                .put("location", randomRepoPath())
+                .put("compress", randomBoolean())
+                .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)
+            ));
+
+        createIndex("test-idx-1", "test-idx-2");
+        ensureGreen();
+
+        logger.info("--> indexing some data");
+        for (int i = 0; i < 100; i++) {
+            index("test-idx-1", "doc", Integer.toString(i), "foo", "bar" + i);
+            index("test-idx-2", "doc", Integer.toString(i), "foo", "baz" + i);
+        }
+        refresh();
+        assertThat(client.prepareSearch("test-idx-1").setSize(0).get().getHits().totalHits(), equalTo(100L));
+        assertThat(client.prepareSearch("test-idx-2").setSize(0).get().getHits().totalHits(), equalTo(100L));
+
+        logger.info("--> snapshot");
+        assertThat(client.admin().cluster().prepareCreateSnapshot("test-repo", "test-snap")
+            .setIndices("test-idx-*").setWaitForCompletion(true).get().getSnapshotInfo().state(), equalTo(SnapshotState.SUCCESS));
+
+        logger.info("--> deleting indices before restoring");
+        assertAcked(client.admin().indices().prepareDelete("test-idx-*").get());
+
+        blockAllDataNodes("test-repo");
+        logger.info("--> execution will be blocked on all data nodes");
+
+        logger.info("--> start restore");
+        ListenableActionFuture<RestoreSnapshotResponse> restoreFut = client.admin().cluster().prepareRestoreSnapshot("test-repo", "test-snap")
+            .setWaitForCompletion(true)
+            .execute();
+
+        logger.info("--> waiting for block to kick in");
+        waitForBlockOnAnyDataNode("test-repo", TimeValue.timeValueSeconds(60));
+
+        logger.info("--> close index while restore is running");
+        client.admin().indices().prepareClose("test-idx-1").get();
+
+        logger.info("--> unblocking all data nodes");
+        unblockAllDataNodes("test-repo");
+
+        logger.info("--> wait for restore to finish");
+        RestoreSnapshotResponse restoreSnapshotResponse = restoreFut.get();
+        logger.info("--> check that some shards were recovered and others not");
+        assertThat(restoreSnapshotResponse.getRestoreInfo().totalShards(), greaterThan(0));
+        assertThat(restoreSnapshotResponse.getRestoreInfo().successfulShards(), greaterThan(0));
+        assertThat(restoreSnapshotResponse.getRestoreInfo().failedShards(), greaterThan(0));
     }
 
     public void testDeleteOrphanSnapshot() throws Exception {

@@ -626,7 +626,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                                         for (Iterator<ShardId> iterator = waitForStarted.iterator(); iterator.hasNext();) {
                                             ShardId shardId = iterator.next();
                                             ShardRouting shardRouting = findPrimaryShard(routingTable, shardId);
-                                            // Shard disappeared (index deleted) or became active
+                                            // Shard disappeared (index deleted/closed) or became active
                                             if (shardRouting == null || shardRouting.active()) {
                                                 iterator.remove();
                                                 logger.trace("[{}][{}] shard disappeared or started - removing", snapshotId, shardId);
@@ -644,17 +644,6 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                 }
             }
 
-            private ShardRouting findPrimaryShard(RoutingTable routingTable, ShardId shardId) {
-                IndexRoutingTable indexRoutingTable = routingTable.index(shardId.getIndex());
-                if (indexRoutingTable != null) {
-                    IndexShardRoutingTable indexShardRoutingTable = indexRoutingTable.shard(shardId.id());
-                    if (indexShardRoutingTable != null) {
-                        return indexShardRoutingTable.primaryShard();
-                    }
-                }
-                return null;
-            }
-
             private void notifyListeners(SnapshotId snapshotId, RestoreInfo restoreInfo) {
                 for (ActionListener<RestoreCompletionResponse> listener : listeners) {
                     try {
@@ -665,6 +654,17 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                 }
             }
         });
+    }
+
+    private static ShardRouting findPrimaryShard(RoutingTable routingTable, ShardId shardId) {
+        IndexRoutingTable indexRoutingTable = routingTable.index(shardId.getIndex());
+        if (indexRoutingTable != null) {
+            IndexShardRoutingTable indexShardRoutingTable = indexRoutingTable.shard(shardId.id());
+            if (indexShardRoutingTable != null) {
+                return indexShardRoutingTable.primaryShard();
+            }
+        }
+        return null;
     }
 
     private boolean completed(ImmutableOpenMap<ShardId, RestoreInProgress.ShardRestoreStatus> shards) {
@@ -719,36 +719,39 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     }
 
     /**
-     * Checks if any of the deleted indices are still recovering and fails recovery on the shards of these indices
+     * Checks if shard entries in the routing table have disappeared and fail recovery on these shards.
+     * This happens when indices are closed or deleted.
      *
      * @param event cluster changed event
      */
-    private void processDeletedIndices(ClusterChangedEvent event) {
+    private void processRoutingTableRemovals(ClusterChangedEvent event) {
         RestoreInProgress restore = event.state().custom(RestoreInProgress.TYPE);
         if (restore == null) {
             // Not restoring - nothing to do
             return;
         }
 
-        if (!event.indicesDeleted().isEmpty()) {
-            // Some indices were deleted, let's make sure all indices that we are restoring still exist
-            for (RestoreInProgress.Entry entry : restore.entries()) {
-                List<ShardId> shardsToFail = null;
-                for (ObjectObjectCursor<ShardId, ShardRestoreStatus> shard : entry.shards()) {
-                    if (!shard.value.state().completed()) {
-                        if (!event.state().metaData().hasIndex(shard.key.getIndex().getName())) {
-                            if (shardsToFail == null) {
-                                shardsToFail = new ArrayList<>();
-                            }
-                            shardsToFail.add(shard.key);
-                        }
+        if (event.routingTableChanged() == false) {
+            return;
+        }
+
+        // Some indices were possibly deleted or closed, let's make sure all shard routing entries that we are restoring still exist
+        for (RestoreInProgress.Entry entry : restore.entries()) {
+            List<ShardId> shardsToFail = null;
+            for (ObjectObjectCursor<ShardId, ShardRestoreStatus> shard : entry.shards()) {
+                if (shard.value.state().completed() == false
+                        && findPrimaryShard(event.state().routingTable(), shard.key) == null
+                        && findPrimaryShard(event.previousState().routingTable(), shard.key) != null) {
+                    if (shardsToFail == null) {
+                        shardsToFail = new ArrayList<>();
                     }
+                    shardsToFail.add(shard.key);
                 }
-                if (shardsToFail != null) {
-                    for (ShardId shardId : shardsToFail) {
-                        logger.trace("[{}] failing running shard restore [{}]", entry.snapshotId(), shardId);
-                        updateRestoreStateOnMaster(new UpdateIndexShardRestoreStatusRequest(entry.snapshotId(), shardId, new ShardRestoreStatus(null, RestoreInProgress.State.FAILURE, "index was deleted")));
-                    }
+            }
+            if (shardsToFail != null) {
+                for (ShardId shardId : shardsToFail) {
+                    logger.trace("[{}] failing running shard restore due to missing shard routing [{}]", entry.snapshotId(), shardId);
+                    updateRestoreStateOnMaster(new UpdateIndexShardRestoreStatusRequest(entry.snapshotId(), shardId, new ShardRestoreStatus(null, RestoreInProgress.State.FAILURE, "index was closed or deleted")));
                 }
             }
         }
@@ -801,7 +804,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     public void clusterChanged(ClusterChangedEvent event) {
         try {
             if (event.localNodeMaster()) {
-                processDeletedIndices(event);
+                processRoutingTableRemovals(event);
             }
         } catch (Throwable t) {
             logger.warn("Failed to update restore state ", t);

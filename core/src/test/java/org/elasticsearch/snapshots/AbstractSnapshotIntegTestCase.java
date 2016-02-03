@@ -137,6 +137,32 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
         return null;
     }
 
+    public static void blockAllDataNodes(String repository) {
+        for(RepositoriesService repositoriesService : internalCluster().getDataNodeInstances(RepositoriesService.class)) {
+            ((MockRepository)repositoriesService.repository(repository)).blockOnDataFiles(true);
+        }
+    }
+
+    public static void unblockAllDataNodes(String repository) {
+        for(RepositoriesService repositoriesService : internalCluster().getDataNodeInstances(RepositoriesService.class)) {
+            ((MockRepository)repositoriesService.repository(repository)).unblock();
+        }
+    }
+
+    public void waitForBlockOnAnyDataNode(String repository, TimeValue timeout) throws InterruptedException {
+        long start = System.currentTimeMillis();
+        while (System.currentTimeMillis() - start < timeout.millis()) {
+            for(RepositoriesService repositoriesService : internalCluster().getDataNodeInstances(RepositoriesService.class)) {
+                MockRepository mockRepository = (MockRepository) repositoriesService.repository(repository);
+                if (mockRepository.blocked()) {
+                    return;
+                }
+            }
+            Thread.sleep(100);
+        }
+        fail("Timeout!!!");
+    }
+
     public static void unblockNode(String node) {
         ((MockRepository)internalCluster().getInstance(RepositoriesService.class, node).repository("test-repo")).unblock();
     }
