@@ -476,12 +476,14 @@ public abstract class TransportReplicationAction<Request extends ReplicationRequ
             IndexShardRoutingTable indexShard = state.getRoutingTable().shardRoutingTable(request.shardId());
             final ShardRouting primary = indexShard.primaryShard();
             if (primary == null || primary.active() == false) {
-                logger.trace("primary shard [{}] is not yet active, scheduling a retry: action [{}], request [{}], cluster state version [{}]", request.shardId(), actionName, request, state.version());
+                logger.trace("primary shard [{}] is not yet active, scheduling a retry: action [{}], request [{}], cluster state version " +
+                        "[{}]", request.shardId(), actionName, request, state.version());
                 retryBecauseUnavailable(request.shardId(), "primary shard is not active");
                 return;
             }
             if (state.nodes().nodeExists(primary.currentNodeId()) == false) {
-                logger.trace("primary shard [{}] is assigned to an unknown node [{}], scheduling a retry: action [{}], request [{}], cluster state version [{}]", request.shardId(), primary.currentNodeId(), actionName, request, state.version());
+                logger.trace("primary shard [{}] is assigned to an unknown node [{}], scheduling a retry: action [{}], request [{}], " +
+                        "cluster state version [{}]", request.shardId(), primary.currentNodeId(), actionName, request, state.version());
                 retryBecauseUnavailable(request.shardId(), "primary shard isn't assigned to a known node.");
                 return;
             }
@@ -489,21 +491,28 @@ public abstract class TransportReplicationAction<Request extends ReplicationRequ
             if (primary.currentNodeId().equals(state.nodes().localNodeId())) {
                 setPhase(task, "waiting_on_primary");
                 if (logger.isTraceEnabled()) {
-                    logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}] ", transportPrimaryAction, request.shardId(), request, state.version(), primary.currentNodeId());
+                    logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}] ",
+                            transportPrimaryAction, request.shardId(), request, state.version(), primary.currentNodeId());
                 }
                 performAction(node, transportPrimaryAction, true);
             } else {
                 if (state.version() < request.routedBasedOnClusterVersion()) {
-                    logger.trace("failed to find primary [{}] for request [{}] despite sender thinking it would be here. Local cluster state version [{}]] is older than on sending node (version [{}]), scheduling a retry...", request.shardId(), request, state.version(), request.routedBasedOnClusterVersion());
-                    retryBecauseUnavailable(request.shardId(), "failed to find primary as current cluster state with version [" + state.version() + "] is stale (expected at least [" + request.routedBasedOnClusterVersion() + "]");
+                    logger.trace("failed to find primary [{}] for request [{}] despite sender thinking it would be here. Local cluster " +
+                            "state version [{}]] is older than on sending node (version [{}]), scheduling a retry...", request.shardId(),
+                            request, state.version(), request.routedBasedOnClusterVersion());
+                    retryBecauseUnavailable(request.shardId(), "failed to find primary as current cluster state with version [" + state
+                            .version() + "] is stale (expected at least [" + request.routedBasedOnClusterVersion() + "]");
                     return;
                 } else {
-                    // chasing the node with the active primary for a second hop requires that we are at least up-to-date with the current cluster state version
-                    // this prevents redirect loops between two nodes when a primary was relocated and the relocation target is not aware that it is the active primary shard already.
+                    // chasing the node with the active primary for a second hop requires that we are at least up-to-date with the
+                    // current cluster state version
+                    // this prevents redirect loops between two nodes when a primary was relocated and the relocation target is not aware
+                    // that it is the active primary shard already.
                     request.routedBasedOnClusterVersion(state.version());
                 }
                 if (logger.isTraceEnabled()) {
-                    logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}]", actionName, request.shardId(), request, state.version(), primary.currentNodeId());
+                    logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}]", actionName,
+                            request.shardId(), request, state.version(), primary.currentNodeId());
                 }
                 setPhase(task, "rerouted");
                 performAction(node, actionName, false);
