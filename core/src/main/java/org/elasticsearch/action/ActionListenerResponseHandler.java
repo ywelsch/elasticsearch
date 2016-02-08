@@ -24,6 +24,8 @@ import org.elasticsearch.transport.BaseTransportResponseHandler;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 
+import java.util.function.Supplier;
+
 /**
  * A simple base class for action response listeners, defaulting to using the SAME executor (as its
  * very common on response handlers).
@@ -35,6 +37,20 @@ public abstract class ActionListenerResponseHandler<Response extends TransportRe
     public ActionListenerResponseHandler(ActionListener<Response> listener) {
         this.listener = listener;
     }
+
+    /**
+     * Convenience method for delegating a response provided by supplier to the provided transport channel
+     */
+    public static <T extends TransportResponse> ActionListenerResponseHandler responseHandler(ActionListener<T> listener, Supplier<T>
+            responseSupplier) {
+        return new ActionListenerResponseHandler<T>(listener) {
+            @Override
+            public T newInstance() {
+                return responseSupplier.get();
+            }
+        };
+    }
+
 
     @Override
     public void handleResponse(Response response) {

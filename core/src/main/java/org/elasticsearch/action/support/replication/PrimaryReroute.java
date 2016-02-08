@@ -2,6 +2,7 @@ package org.elasticsearch.action.support.replication;
 
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ReplicationResponse;
 import org.elasticsearch.action.UnavailableShardsException;
 import org.elasticsearch.action.support.TransportActions;
@@ -22,7 +23,6 @@ import org.elasticsearch.transport.ConnectTransportException;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
 
 abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>, Response extends ReplicationResponse> extends
         AbstractRunnable {
@@ -41,10 +41,9 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
         this.logger = logger;
     }
 
-    protected abstract void performPrimaryOperation(DiscoveryNode node, Request request, Consumer<Response> onSuccess,
-                                                    Consumer<Exception> onError);
+    protected abstract void performPrimaryOperation(DiscoveryNode node, Request request, ActionListener<Response> callback);
 
-    protected abstract void rerouteTo(DiscoveryNode node, Request request, Consumer<Response> onSuccess, Consumer<Exception> onError);
+    protected abstract void finishedAsReroute(DiscoveryNode node, Request request);
 
     protected abstract void finishedAsSuccess(Response response);
 
@@ -92,7 +91,7 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
                 logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}] ", opType,
                         request.shardId(), request, state.version(), primary.currentNodeId());
             }
-            performPrimaryOperation(node, request, this::finishOnSuccess, this::handleErrorResponse);
+            performPrimaryOperation(node, request, ActionListener.wrap(this::finishOnSuccess, this::handleErrorResponse));
         } else {
             if (state.version() < request.routedBasedOnClusterVersion()) {
                 logger.trace("failed to find primary [{}] for request [{}] despite sender thinking it would be here. Local cluster state " +
@@ -112,7 +111,8 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
                 logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}]", opType, request
                         .shardId(), request, state.version(), primary.currentNodeId());
             }
-            rerouteTo(node, request, this::finishOnSuccess, this::handleErrorResponse);
+            finished.set(true);
+            finishedAsReroute(node, request);
         }
     }
 

@@ -20,10 +20,12 @@
 package org.elasticsearch.action.support.replication;
 
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ReplicationResponse;
 import org.elasticsearch.action.UnavailableShardsException;
 import org.elasticsearch.action.WriteConsistencyLevel;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.action.shard.ShardStateAction;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
@@ -46,7 +48,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static org.elasticsearch.action.support.replication.ReplicaOperation.ignoreReplicaException;
@@ -87,14 +88,14 @@ public abstract class PrimaryOperation<Request extends ReplicationRequest<Reques
 
     protected abstract void finishedAsFailed(Throwable failure);
 
-    protected abstract void routeToRelocatedPrimary(DiscoveryNode targetNode, Consumer<Response> finishAsSuccess, Consumer<Throwable>
-            finishAsFailed);
+    protected abstract void routeToRelocatedPrimary(DiscoveryNode targetNode, ActionListener<Response> callback);
 
-    protected abstract void performOnReplica(DiscoveryNode node, final ShardRouting shard, ReplicaRequest request, Consumer<ShardRouting>
-            onSuccess, Consumer<Exception> onFailure);
+    protected abstract void performOnReplica(DiscoveryNode node, final ShardRouting shard, ReplicaRequest request,
+                                             ActionListener<Void> callback);
 
-    protected abstract void failReplicaOnMaster(ShardRouting shard, ShardRouting primaryRouting, String message, Exception exception,
-                                                Runnable onSuccess, Consumer<Throwable> onFailure);
+
+    protected abstract void failReplicaOnMaster(ShardRouting shard, ShardRouting primaryRouting, String message, Throwable exception,
+                                                ShardStateAction.Listener callback);
 
     @Override
     public void onFailure(Throwable e) {
@@ -142,7 +143,7 @@ public abstract class PrimaryOperation<Request extends ReplicationRequest<Reques
             final ShardRouting primary = indexShardReference.routingEntry();
             assert primary.relocating() : "indexShard is marked as relocated but routing isn't" + primary;
             DiscoveryNode relocatingNode = state.nodes().get(primary.relocatingNodeId());
-            routeToRelocatedPrimary(relocatingNode, this::finishAsSuccess, this::finishAsFailed);
+            routeToRelocatedPrimary(relocatingNode, ActionListener.wrap(this::finishAsSuccess, this::finishAsFailed));
         } else {
             // execute locally
             Tuple<Response, ReplicaRequest> primaryResponse = indexShardReference.shardOperationOnPrimary(state.metaData(), request);
@@ -352,25 +353,43 @@ public abstract class PrimaryOperation<Request extends ReplicationRequest<Reques
             }
 
             final DiscoveryNode node = nodes.get(nodeId);
-            performOnReplica(node, shard, replicaRequest, this::onReplicaSuccess, exception -> {
-                logger.trace("[{}] failure during replica request [{}], action [{}]", exception, node, replicaRequest, opType);
-                if (ignoreReplicaException(exception)) {
-                    onReplicaFailure(nodeId, exception);
-                } else {
-                    String message = String.format(Locale.ROOT, "failed to perform %s on replica on node %s", opType, node);
-                    failReplicaOnMaster(
-                            shard,
-                            indexShardReference.routingEntry(),
-                            message,
-                            exception,
-                            () ->
-                                    onReplicaFailure(nodeId, exception),
-                            t -> onReplicaFailure(nodeId, exception)
-                            // TODO: handle catastrophic non-channel failures
-                    );
-                }
+            performOnReplica(node, shard, replicaRequest, new ActionListener<Void>() {
+                        @Override
+                        public void onResponse(Void aVoid) {
+                            onReplicaSuccess(shard);
+                        }
 
-            });
+                        @Override
+                        public void onFailure(Throwable exception) {
+                            logger.trace("[{}] failure during replica request [{}], action [{}]", exception, node, replicaRequest, opType);
+                            if (ignoreReplicaException(exception)) {
+                                onReplicaFailure(nodeId, exception);
+                            } else {
+                                String message = String.format(Locale.ROOT, "failed to perform %s on replica on node %s", opType, node);
+                                failReplicaOnMaster(
+                                        shard,
+                                        indexShardReference.routingEntry(),
+                                        message,
+                                        exception,
+                                        new ShardStateAction.Listener() {
+                                            @Override
+                                            public void onSuccess() {
+                                                onReplicaFailure(nodeId, exception);
+                                            }
+
+                                            @Override
+                                            public void onFailure(Throwable t) {
+                                                // TODO: handle catastrophic non-channel failures
+                                                onReplicaFailure(nodeId, exception);
+                                            }
+                                        }
+
+                                );
+                            }
+
+                        }
+                    }
+            );
         }
 
         void onReplicaFailure(String nodeId, @Nullable Throwable e) {

@@ -20,6 +20,7 @@
 package org.elasticsearch.action.support.replication;
 
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.ActionListenerResponseHandler;
 import org.elasticsearch.action.ReplicationResponse;
 import org.elasticsearch.action.WriteConsistencyLevel;
 import org.elasticsearch.action.support.ActionFilters;
@@ -44,18 +45,15 @@ import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.BaseTransportResponseHandler;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
 import org.elasticsearch.transport.TransportChannel;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportRequestHandler;
 import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportResponse;
-import org.elasticsearch.transport.TransportResponseHandler;
 import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -133,57 +131,17 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
 
         new PrimaryReroute<Request, Response>(request, observer, getBlockLevel(), actionName, logger) {
             @Override
-            protected void performPrimaryOperation(DiscoveryNode node, Request request, Consumer<Response> onSuccess, Consumer<Exception>
-                    onError) {
+            protected void performPrimaryOperation(DiscoveryNode node, Request request, ActionListener<Response> callback) {
                 setPhase(replicationTask, "waiting_on_primary");
-                transportService.sendRequest(node, transportPrimaryAction, request, transportOptions, new
-                        BaseTransportResponseHandler<Response>() {
-                            @Override
-                            public Response newInstance() {
-                                return newResponseInstance();
-                            }
-
-                            @Override
-                            public String executor() {
-                                return ThreadPool.Names.SAME;
-                            }
-
-                            @Override
-                            public void handleResponse(Response response) {
-                                onSuccess.accept(response);
-                            }
-
-                            @Override
-                            public void handleException(TransportException exp) {
-                                onError.accept(exp);
-                            }
-                        });
+                transportService.sendRequest(node, transportPrimaryAction, request, transportOptions,
+                        ActionListenerResponseHandler.responseHandler(callback, TransportReplicationAction2.this::newResponseInstance));
             }
 
             @Override
-            protected void rerouteTo(DiscoveryNode node, Request request, Consumer<Response> onSuccess, Consumer<Exception> onError) {
+            protected void finishedAsReroute(DiscoveryNode node, Request request) {
                 setPhase(replicationTask, "rerouted");
-                transportService.sendRequest(node, actionName, request, transportOptions, new BaseTransportResponseHandler<Response>() {
-                    @Override
-                    public Response newInstance() {
-                        return newResponseInstance();
-                    }
-
-                    @Override
-                    public String executor() {
-                        return ThreadPool.Names.SAME;
-                    }
-
-                    @Override
-                    public void handleResponse(Response response) {
-                        onSuccess.accept(response);
-                    }
-
-                    @Override
-                    public void handleException(TransportException exp) {
-                        onError.accept(exp);
-                    }
-                });
+                transportService.sendRequest(node, actionName, request, transportOptions,
+                        ActionListenerResponseHandler.responseHandler(listener, TransportReplicationAction2.this::newResponseInstance));
             }
 
             @Override
@@ -325,72 +283,34 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                 }
 
                 @Override
-                protected void routeToRelocatedPrimary(DiscoveryNode targetNode, Consumer<Response> finishAsSuccess, Consumer<Throwable>
-                        finishAsFailed) {
-                    transportService.sendRequest(targetNode, transportPrimaryAction, request, transportOptions, new
-                            TransportResponseHandler<Response>() {
-                                @Override
-                                public Response newInstance() {
-                                    return newResponseInstance();
-                                }
-
-                                @Override
-                                public void handleResponse(Response response) {
-                                    finishAsSuccess.accept(response);
-                                }
-
-                                @Override
-                                public void handleException(TransportException exp) {
-                                    finishAsFailed.accept(exp);
-                                }
-
-                                @Override
-                                public String executor() {
-                                    return ThreadPool.Names.SAME;
-                                }
-                            });
+                protected void routeToRelocatedPrimary(DiscoveryNode targetNode, ActionListener<Response> callback) {
+                    transportService.sendRequest(targetNode, transportPrimaryAction, request, transportOptions,
+                            ActionListenerResponseHandler.responseHandler(callback, TransportReplicationAction2.this::newResponseInstance));
                 }
 
                 @Override
-                protected void performOnReplica(DiscoveryNode node, ShardRouting shard, ReplicaRequest request, Consumer<ShardRouting>
-                        onSuccess, Consumer<Exception> onFailure) {
+                protected void performOnReplica(DiscoveryNode node, ShardRouting shard, ReplicaRequest request, ActionListener<Void>
+                        callback) {
                     transportService.sendRequest(node, transportReplicaAction, request, transportOptions, new
                             EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
                                 @Override
                                 public void handleResponse(TransportResponse.Empty vResponse) {
-                                    onSuccess.accept(shard);
+                                    callback.onResponse(null);
                                 }
 
                                 @Override
                                 public void handleException(TransportException exp) {
-                                    onFailure.accept(exp);
+                                    callback.onFailure(exp);
                                 }
                             }
                     );
                 }
 
                 @Override
-                protected void failReplicaOnMaster(ShardRouting shard, ShardRouting primaryRouting, String message, Exception exception,
-                                                   Runnable onSuccess, Consumer<Throwable> onFailure) {
+                protected void failReplicaOnMaster(ShardRouting shard, ShardRouting primaryRouting, String message, Throwable exception,
+                                                   ShardStateAction.Listener callback) {
                     logger.warn("[{}] {}", exception, shard.shardId(), message);
-                    shardStateAction.shardFailed(
-                            shard,
-                            primaryRouting,
-                            message,
-                            exception,
-                            new ShardStateAction.Listener() {
-                                @Override
-                                public void onSuccess() {
-                                    onSuccess.run();
-                                }
-
-                                @Override
-                                public void onFailure(Throwable t) {
-                                    onFailure.accept(t);
-
-                                }
-                            }
-                    );
+                    shardStateAction.shardFailed(shard, primaryRouting, message, exception, callback);
                 }
 
                 @Override

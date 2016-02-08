@@ -19,6 +19,8 @@
 
 package org.elasticsearch.action;
 
+import java.util.function.Consumer;
+
 /**
  * A listener for action responses or failures.
  *
@@ -35,4 +37,19 @@ public interface ActionListener<Response> {
      * A failure handler.
      */
     void onFailure(Throwable e);
+
+    static <R> ActionListener<R> wrap(Consumer<R> onResponse, Consumer<Throwable> onFailure) {
+        return new ActionListener<R>() {
+
+            @Override
+            public void onResponse(R r) {
+                onResponse(r);
+            }
+
+            @Override
+            public void onFailure(Throwable e) {
+                onFailure(e);
+            }
+        };
+    }
 }
