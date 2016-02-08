@@ -303,6 +303,7 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                 @Override
                 protected void finishedAsSuccess(Response response) {
                     setPhase(replicationTask, "finished");
+                    shard.close();
                     try {
                         channel.sendResponse(response);
                     } catch (IOException responseException) {
@@ -314,6 +315,7 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                 @Override
                 protected void finishedAsFailed(Throwable failure) {
                     setPhase(replicationTask, "failed");
+                    shard.close();
                     try {
                         channel.sendResponse(failure);
                     } catch (IOException responseException) {
@@ -418,6 +420,7 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                 @Override
                 protected void finishAsFailed(Throwable failure) {
                     setPhase(replicationTask, "failed");
+                    shard.close();
                     try {
                         channel.sendResponse(failure);
                     } catch (IOException responseException) {
@@ -429,6 +432,7 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                 @Override
                 protected void finishAsSuccessful() {
                     setPhase(replicationTask, "finished");
+                    shard.close();
                     try {
                         channel.sendResponse(TransportResponse.Empty.INSTANCE);
                     } catch (IOException responseException) {
