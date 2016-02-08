@@ -24,7 +24,7 @@ import org.elasticsearch.transport.ConnectTransportException;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>, Response extends ReplicationResponse> extends
+public class PrimaryReroute<Request extends ReplicationRequest<Request>, Response extends ReplicationResponse> extends
         AbstractRunnable {
     private final Request request;
     private final ClusterStateObserver observer;
@@ -32,23 +32,21 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
     private final String opType;
     private final ESLogger logger;
     private final AtomicBoolean finished = new AtomicBoolean();
+    private final ActionListener<Response> listener;
+    private final NodeAction<Request, Response> primaryAction;
+    private final NodeAction<Request, Response> rerouteAction;
 
-    PrimaryReroute(Request request, ClusterStateObserver observer, ClusterBlockLevel blockLevel, String opType, ESLogger logger) {
+    PrimaryReroute(Request request, ClusterStateObserver observer, ClusterBlockLevel blockLevel, String opType, ESLogger logger, ActionListener<Response> listener,
+                   NodeAction<Request, Response> primaryAction, NodeAction<Request, Response> rerouteAction) {
         this.request = request;
         this.observer = observer;
         this.blockLevel = blockLevel;
         this.opType = opType;
         this.logger = logger;
+        this.listener = listener;
+        this.primaryAction = primaryAction;
+        this.rerouteAction = rerouteAction;
     }
-
-    protected abstract void performPrimaryOperation(DiscoveryNode node, Request request, ActionListener<Response> callback);
-
-    protected abstract void finishedAsReroute(DiscoveryNode node, Request request);
-
-    protected abstract void finishedAsSuccess(Response response);
-
-    protected abstract void finishedAsFailed(Throwable t);
-
 
     @Override
     public void onFailure(Throwable e) {
@@ -91,7 +89,7 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
                 logger.trace("send action [{}] on primary [{}] for request [{}] with cluster state version [{}] to [{}] ", opType,
                         request.shardId(), request, state.version(), primary.currentNodeId());
             }
-            performPrimaryOperation(node, request, ActionListener.wrap(this::finishOnSuccess, this::handleErrorResponse));
+            primaryAction.execute(node, request, ActionListener.wrap(this::finishOnSuccess, this::handleErrorResponse));
         } else {
             if (state.version() < request.routedBasedOnClusterVersion()) {
                 logger.trace("failed to find primary [{}] for request [{}] despite sender thinking it would be here. Local cluster state " +
@@ -112,7 +110,7 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
                         .shardId(), request, state.version(), primary.currentNodeId());
             }
             finished.set(true);
-            finishedAsReroute(node, request);
+            rerouteAction.execute(node, request, null);
         }
     }
 
@@ -186,7 +184,7 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
     void finishAsFailed(Throwable failure) {
         if (finished.compareAndSet(false, true)) {
             logger.trace("operation failed. action [{}], request [{}]", failure, opType, request);
-            finishedAsFailed(failure);
+            listener.onFailure(failure);
         } else {
             assert false : "finishAsFailed called but operation is already finished";
         }
@@ -206,7 +204,7 @@ abstract public class PrimaryReroute<Request extends ReplicationRequest<Request>
             if (logger.isTraceEnabled()) {
                 logger.trace("operation succeeded. action [{}],request [{}]", opType, request);
             }
-            finishedAsSuccess(response);
+            listener.onResponse(response);
         } else {
             assert false : "finishOnSuccess called but operation is already finished";
         }

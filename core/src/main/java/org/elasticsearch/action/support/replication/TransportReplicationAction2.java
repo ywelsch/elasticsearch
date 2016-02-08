@@ -33,8 +33,8 @@ import org.elasticsearch.cluster.action.shard.ShardStateAction;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexService;
@@ -54,6 +54,7 @@ import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -129,33 +130,27 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
             request.consistencyLevel(defaultWriteConsistencyLevel);
         }
 
-        new PrimaryReroute<Request, Response>(request, observer, getBlockLevel(), actionName, logger) {
+        new PrimaryReroute<>(request, observer, getBlockLevel(), actionName, logger, new ActionListener<Response>() {
             @Override
-            protected void performPrimaryOperation(DiscoveryNode node, Request request, ActionListener<Response> callback) {
-                setPhase(replicationTask, "waiting_on_primary");
-                transportService.sendRequest(node, transportPrimaryAction, request, transportOptions,
-                        ActionListenerResponseHandler.responseHandler(callback, TransportReplicationAction2.this::newResponseInstance));
-            }
-
-            @Override
-            protected void finishedAsReroute(DiscoveryNode node, Request request) {
-                setPhase(replicationTask, "rerouted");
-                transportService.sendRequest(node, actionName, request, transportOptions,
-                        ActionListenerResponseHandler.responseHandler(listener, TransportReplicationAction2.this::newResponseInstance));
-            }
-
-            @Override
-            protected void finishedAsSuccess(Response response) {
+            public void onResponse(Response response) {
                 setPhase(replicationTask, "finished");
                 listener.onResponse(response);
             }
 
             @Override
-            protected void finishedAsFailed(Throwable t) {
+            public void onFailure(Throwable t) {
                 setPhase(replicationTask, "failed");
                 listener.onFailure(t);
             }
-        }.run();
+        }, (node, request1, listener1) -> {
+            setPhase(replicationTask, "waiting_on_primary");
+            transportService.sendRequest(node, transportPrimaryAction, request1, transportOptions,
+                ActionListenerResponseHandler.responseHandler(listener1, TransportReplicationAction2.this::newResponseInstance));
+        }, (node, request1, listener1) -> {
+            setPhase(replicationTask, "rerouted");
+            transportService.sendRequest(node, actionName, request, transportOptions,
+                ActionListenerResponseHandler.responseHandler(listener, TransportReplicationAction2.this::newResponseInstance));
+        }).run();
     }
 
     protected abstract Response newResponseInstance();
@@ -256,43 +251,41 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
             ReplicationTask replicationTask = (ReplicationTask) task;
             setPhase(replicationTask, "primary");
             IndexShardReference<Request, ReplicaRequest, Response> shard = getIndexShardReferenceOnPrimary(request.shardId());
-            new PrimaryOperation<Request, ReplicaRequest, Response>(request, checkWriteConsistency, logger, shard,
-                    clusterService::state, actionName) {
+            ActionListener<Response> primaryActionListener = new ActionListener<Response>() {
                 @Override
-                protected void finishedAsSuccess(Response response) {
+                public void onResponse(Response response) {
                     setPhase(replicationTask, "finished");
                     shard.close();
                     try {
                         channel.sendResponse(response);
                     } catch (IOException responseException) {
                         logger.warn("failed to send response message back to client for action [" + transportPrimaryAction + "]",
-                                responseException);
+                            responseException);
                     }
                 }
 
                 @Override
-                protected void finishedAsFailed(Throwable failure) {
+                public void onFailure(Throwable failure) {
                     setPhase(replicationTask, "failed");
                     shard.close();
                     try {
                         channel.sendResponse(failure);
                     } catch (IOException responseException) {
                         logger.warn("failed to send failure message back to client for action [" + transportPrimaryAction + "]",
-                                responseException);
+                            responseException);
                     }
                 }
-
-                @Override
-                protected void routeToRelocatedPrimary(DiscoveryNode targetNode, ActionListener<Response> callback) {
-                    transportService.sendRequest(targetNode, transportPrimaryAction, request, transportOptions,
-                            ActionListenerResponseHandler.responseHandler(callback, TransportReplicationAction2.this::newResponseInstance));
-                }
-
-                @Override
-                protected void performOnReplica(DiscoveryNode node, ShardRouting shard, ReplicaRequest request, ActionListener<Void>
-                        callback) {
-                    transportService.sendRequest(node, transportReplicaAction, request, transportOptions, new
-                            EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
+            };
+            new PrimaryOperation<Request, ReplicaRequest, Response>(request, checkWriteConsistency, logger, shard,
+                clusterService::state, actionName, primaryActionListener, (targetNode, req, callback) -> {
+                transportService.sendRequest(targetNode, transportPrimaryAction, req, transportOptions,
+                    ActionListenerResponseHandler.responseHandler(callback, TransportReplicationAction2.this::newResponseInstance));
+            }, responseReplicaRequestTuple -> {
+                setPhase(replicationTask, "replicating");
+                new ReplicationPhase<ReplicaRequest, Response>(logger, clusterService::state, actionName, responseReplicaRequestTuple.v2(), responseReplicaRequestTuple.v1(), primaryActionListener,
+                    (targetNode, req, callback) -> {
+                        transportService.sendRequest(targetNode, transportReplicaAction, req, transportOptions,
+                            new EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
                                 @Override
                                 public void handleResponse(TransportResponse.Empty vResponse) {
                                     callback.onResponse(null);
@@ -303,22 +296,15 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
                                     callback.onFailure(exp);
                                 }
                             }
-                    );
-                }
-
-                @Override
-                protected void failReplicaOnMaster(ShardRouting shard, ShardRouting primaryRouting, String message, Throwable exception,
-                                                   ShardStateAction.Listener callback) {
-                    logger.warn("[{}] {}", exception, shard.shardId(), message);
-                    shardStateAction.shardFailed(shard, primaryRouting, message, exception, callback);
-                }
-
-                @Override
-                protected void moveToReplication(ReplicationPhase replicationPhase) {
-                    setPhase(replicationTask, "replicating");
-                    super.moveToReplication(replicationPhase);
-                }
-            }.run();
+                        );
+                    }) {
+                    @Override
+                    protected void failReplicaOnMaster(ShardRouting shardRouting, String message, Throwable exception, ShardStateAction.Listener callback) {
+                        logger.warn("[{}] {}", exception, shardRouting.shardId(), message);
+                        shardStateAction.shardFailed(shardRouting, shard.routingEntry(), message, exception, callback);
+                    }
+                }.run();
+            }).run();
         }
     }
 
@@ -335,38 +321,38 @@ public abstract class TransportReplicationAction2<Request extends ReplicationReq
             final ClusterStateObserver observer = new ClusterStateObserver(clusterService, request.timeout(), logger,
                     threadPool.getThreadContext());
             final IndexShardReference<Request, ReplicaRequest, Response> shard = getIndexShardReferenceOnReplica(request.shardId());
-            new ReplicaOperation<Request, ReplicaRequest, Response>(request, shard, observer, logger, transportReplicaAction, threadPool
-                    .executor(executor)::execute) {
+            new ReplicaOperation<>(request, shard, observer, logger, transportReplicaAction, threadPool
+                .executor(executor)::execute, new ActionListener<Void>() {
                 @Override
-                protected void finishAsFailed(Throwable failure) {
-                    setPhase(replicationTask, "failed");
-                    shard.close();
-                    try {
-                        channel.sendResponse(failure);
-                    } catch (IOException responseException) {
-                        logger.warn("failed to send failure message back to client for action [" + transportReplicaAction + "]",
-                                responseException);
-                    }
-                }
-
-                @Override
-                protected void finishAsSuccessful() {
+                public void onResponse(Void aVoid) {
                     setPhase(replicationTask, "finished");
                     shard.close();
                     try {
                         channel.sendResponse(TransportResponse.Empty.INSTANCE);
                     } catch (IOException responseException) {
                         logger.warn("failed to send response message back to client for action [" + transportPrimaryAction + "]",
-                                responseException);
+                            responseException);
                     }
                 }
-            }.run();
+
+                @Override
+                public void onFailure(Throwable failure) {
+                    setPhase(replicationTask, "failed");
+                    shard.close();
+                    try {
+                        channel.sendResponse(failure);
+                    } catch (IOException responseException) {
+                        logger.warn("failed to send failure message back to client for action [" + transportReplicaAction + "]",
+                            responseException);
+                    }
+                }
+            }).run();
         }
     }
 
     /**
      * returns a new reference to {@link IndexShard} to perform a primary operation. Released after performing primary operation locally
-     * and replication of the operation to all replica shards is completed / failed (see {@link PrimaryOperation.ReplicationPhase}).
+     * and replication of the operation to all replica shards is completed / failed (see {@link ReplicationPhase}).
      */
     protected IndexShardReference<Request, ReplicaRequest, Response> getIndexShardReferenceOnPrimary(ShardId shardId) {
         IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());

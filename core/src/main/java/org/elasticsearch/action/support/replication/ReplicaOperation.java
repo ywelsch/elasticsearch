@@ -20,6 +20,7 @@ package org.elasticsearch.action.support.replication;
 
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ReplicationResponse;
 import org.elasticsearch.action.support.TransportActions;
 import org.elasticsearch.cluster.ClusterState;
@@ -35,7 +36,7 @@ import org.elasticsearch.node.NodeClosedException;
 import java.io.IOException;
 import java.util.function.Consumer;
 
-public abstract class ReplicaOperation<Request extends ReplicationRequest<Request>, ReplicaRequest extends
+public class ReplicaOperation<Request extends ReplicationRequest<Request>, ReplicaRequest extends
         ReplicationRequest<ReplicaRequest>, Response extends ReplicationResponse> extends AbstractRunnable {
     private final ReplicaRequest request;
     private final IndexShardReference<Request, ReplicaRequest, Response> shardReference;
@@ -43,21 +44,18 @@ public abstract class ReplicaOperation<Request extends ReplicationRequest<Reques
     private final ESLogger logger;
     private final String opType;
     private final Consumer<Runnable> executor;
+    private final ActionListener<Void> listener;
 
     ReplicaOperation(ReplicaRequest request, IndexShardReference<Request, ReplicaRequest, Response> shardReference, ClusterStateObserver
-            observer, ESLogger logger, String opType, Consumer<Runnable> executor) {
+            observer, ESLogger logger, String opType, Consumer<Runnable> executor, ActionListener<Void> listener) {
         this.request = request;
         this.shardReference = shardReference;
         this.observer = observer;
         this.logger = logger;
         this.opType = opType;
         this.executor = executor;
+        this.listener = listener;
     }
-
-    abstract protected void finishAsFailed(Throwable t);
-
-    abstract protected void finishAsSuccessful();
-
 
     @Override
     public void onFailure(Throwable t) {
@@ -66,7 +64,7 @@ public abstract class ReplicaOperation<Request extends ReplicationRequest<Reques
         } catch (Throwable unexpected) {
             logger.error("{} unexpected error while failing replica", unexpected, request.shardId().id());
         } finally {
-            finishAsFailed(t);
+            listener.onFailure(t);
         }
     }
 
@@ -83,7 +81,7 @@ public abstract class ReplicaOperation<Request extends ReplicationRequest<Reques
 
             @Override
             public void onClusterServiceClose() {
-                finishAsFailed(new NodeClosedException(observer.observedState().nodes().localNode()));
+                listener.onFailure(new NodeClosedException(observer.observedState().nodes().localNode()));
             }
 
             @Override
@@ -106,7 +104,7 @@ public abstract class ReplicaOperation<Request extends ReplicationRequest<Reques
     protected void doRun() throws Exception {
         try {
             shardReference.shardOperationOnReplica(request);
-            finishAsSuccessful();
+            listener.onResponse(null);
         } catch (RetryOnReplicaException retryException) {
             retry(retryException);
         }
