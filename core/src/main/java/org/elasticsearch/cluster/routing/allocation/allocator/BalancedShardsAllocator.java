@@ -973,6 +973,9 @@ public class BalancedShardsAllocator extends AbstractComponent implements Shards
             highestPrimary = -1;
             assert decision != null;
             assert !shards.containsKey(shard) : "Shard already allocated on current node: " + shards.get(shard) + " " + shard;
+            for (ShardRouting shr : getAllShards()) {
+                assert shr.id() != shard.id() : "Shard with same id already allocated on current node: " + shr + " " + shard;
+            }
             shards.put(shard, decision);
         }
 
