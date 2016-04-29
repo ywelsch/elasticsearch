@@ -525,13 +525,17 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                     "local shard has a different allocation id but wasn't cleaning by applyDeletedShards. "
                         + "cluster state: " + shardRouting + " local: " + currentRoutingEntry;
                 if (shardRouting.isPeerRecovery()) {
-                    final DiscoveryNode sourceNode = findSourceNodeForPeerRecovery(logger, routingTable, nodes, shardRouting);
-                    // check if there is an existing recovery going, and if so, and the source node is not the same, cancel the recovery to restart it
-                    if (recoveryTargetService.cancelRecoveriesForShard(indexShard.shardId(), "recovery source node changed", status -> !status.sourceNode().equals(sourceNode))) {
-                        logger.debug("[{}][{}] removing shard (recovery source changed), current [{}], global [{}])", shardRouting.index(), shardRouting.id(), currentRoutingEntry, shardRouting);
-                        // closing the shard will also cancel any ongoing recovery.
-                        indexService.removeShard(shardRouting.id(), "removing shard (recovery source node changed)");
-                        shardHasBeenRemoved = true;
+                    RecoveryState recoveryState = indexShard.recoveryState();
+                    if (recoveryState != null && recoveryState.getStage() != RecoveryState.Stage.DONE) { // shard is still recovering
+                        if (recoveryState.getType() == RecoveryState.Type.PRIMARY_RELOCATION || recoveryState.getType() == RecoveryState.Type.REPLICA) {
+                            final DiscoveryNode sourceNode = findSourceNodeForPeerRecovery(logger, routingTable, nodes, shardRouting);
+                            if (recoveryState.getSourceNode().equals(sourceNode) == false) {
+                                logger.debug("[{}][{}] removing shard (recovery source changed), current [{}], global [{}])", shardRouting.index(), shardRouting.id(), currentRoutingEntry, shardRouting);
+                                // closing the shard will also cancel any ongoing recovery.
+                                indexService.removeShard(shardRouting.id(), "removing shard (recovery source node changed)");
+                                shardHasBeenRemoved = true;
+                            }
+                        }
                     }
                 }
 

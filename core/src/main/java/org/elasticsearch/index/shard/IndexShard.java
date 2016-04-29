@@ -1368,7 +1368,6 @@ public class IndexShard extends AbstractIndexShardComponent {
                 RecoveryState.Type.SNAPSHOT, shardRouting.restoreSource(), localNode);
             markAsRecovering("from snapshot", recoveryState); // mark the shard as recovering on the cluster state thread
             threadPool.generic().execute(() -> {
-                final ShardId sId = shardId();
                 try {
                     final IndexShardRepository indexShardRepository = repositoriesService.indexShardRepository(restoreSource.snapshotId().getRepository());
                     if (restoreFromRepository(indexShardRepository, localNode)) {
