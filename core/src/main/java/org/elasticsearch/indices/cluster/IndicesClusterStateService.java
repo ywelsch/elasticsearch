@@ -41,6 +41,7 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.Callback;
@@ -524,7 +525,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                     "local shard has a different allocation id but wasn't cleaning by applyDeletedShards. "
                         + "cluster state: " + shardRouting + " local: " + currentRoutingEntry;
                 if (shardRouting.isPeerRecovery()) {
-                    final DiscoveryNode sourceNode = findSourceNodeForPeerRecovery(routingTable, nodes, shardRouting);
+                    final DiscoveryNode sourceNode = findSourceNodeForPeerRecovery(logger, routingTable, nodes, shardRouting);
                     // check if there is an existing recovery going, and if so, and the source node is not the same, cancel the recovery to restart it
                     if (recoveryTargetService.cancelRecoveriesForShard(indexShard.shardId(), "recovery source node changed", status -> !status.sourceNode().equals(sourceNode))) {
                         logger.debug("[{}][{}] removing shard (recovery source changed), current [{}], global [{}])", shardRouting.index(), shardRouting.id(), currentRoutingEntry, shardRouting);
@@ -584,7 +585,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         // if we're in peer recovery, try to find out the source node now so in case it fails, we will not create the index shard
         DiscoveryNode sourceNode = null;
         if (shardRouting.isPeerRecovery()) {
-            sourceNode = findSourceNodeForPeerRecovery(routingTable, nodes, shardRouting);
+            sourceNode = findSourceNodeForPeerRecovery(logger, routingTable, nodes, shardRouting);
             if (sourceNode == null) {
                 logger.trace("ignoring initializing shard {} - no source node can be found.", shardRouting.shardId());
                 return;
@@ -632,24 +633,18 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
      * routing to *require* peer recovery, use {@link ShardRouting#isPeerRecovery()} to
      * check if its needed or not.
      */
-    private DiscoveryNode findSourceNodeForPeerRecovery(RoutingTable routingTable, DiscoveryNodes nodes, ShardRouting shardRouting) {
+    private static DiscoveryNode findSourceNodeForPeerRecovery(ESLogger logger, RoutingTable routingTable, DiscoveryNodes nodes, ShardRouting shardRouting) {
         DiscoveryNode sourceNode = null;
         if (!shardRouting.primary()) {
-            IndexShardRoutingTable shardRoutingTable = routingTable.index(shardRouting.index()).shard(shardRouting.id());
-            for (ShardRouting entry : shardRoutingTable) {
-                if (entry.primary() && entry.active()) {
-                    // only recover from started primary, if we can't find one, we will do it next round
-                    sourceNode = nodes.get(entry.currentNodeId());
-                    if (sourceNode == null) {
-                        logger.trace("can't find replica source node because primary shard {} is assigned to an unknown node.", entry);
-                        return null;
-                    }
-                    break;
+            ShardRouting primary = routingTable.shardRoutingTable(shardRouting.shardId()).primaryShard();
+            // only recover from started primary, if we can't find one, we will do it next round
+            if (primary.active()) {
+                sourceNode = nodes.get(primary.currentNodeId());
+                if (sourceNode == null) {
+                    logger.trace("can't find replica source node because primary shard {} is assigned to an unknown node.", primary);
                 }
-            }
-
-            if (sourceNode == null) {
-                logger.trace("can't find replica source node for {} because a primary shard can not be found.", shardRouting.shardId());
+            } else {
+                logger.trace("can't find replica source node because primary shard {} is not active.", primary);
             }
         } else if (shardRouting.relocatingNodeId() != null) {
             sourceNode = nodes.get(shardRouting.relocatingNodeId());
