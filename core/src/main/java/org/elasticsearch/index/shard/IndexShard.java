@@ -36,7 +36,6 @@ import org.elasticsearch.action.admin.indices.flush.FlushRequest;
 import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeRequest;
 import org.elasticsearch.action.admin.indices.upgrade.post.UpgradeRequest;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
@@ -57,7 +56,6 @@ import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.SuspendableRefContainer;
 import org.elasticsearch.index.IndexModule;
-import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.cache.IndexCache;
@@ -88,7 +86,6 @@ import org.elasticsearch.index.mapper.ParsedDocument;
 import org.elasticsearch.index.mapper.SourceToParse;
 import org.elasticsearch.index.mapper.Uid;
 import org.elasticsearch.index.merge.MergeStats;
-import org.elasticsearch.index.percolator.PercolatorFieldMapper;
 import org.elasticsearch.index.recovery.RecoveryStats;
 import org.elasticsearch.index.refresh.RefreshStats;
 import org.elasticsearch.index.search.stats.SearchStats;
@@ -105,7 +102,6 @@ import org.elasticsearch.index.translog.TranslogStats;
 import org.elasticsearch.index.warmer.ShardIndexWarmerService;
 import org.elasticsearch.index.warmer.WarmerStats;
 import org.elasticsearch.indices.IndexingMemoryController;
-import org.elasticsearch.indices.cluster.IndicesClusterStateService;
 import org.elasticsearch.indices.recovery.RecoveryFailedException;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.indices.recovery.RecoveryTargetService;
@@ -1335,7 +1331,7 @@ public class IndexShard extends AbstractIndexShardComponent {
     public void startRecovery(ShardRouting shardRouting, DiscoveryNode localNode, DiscoveryNode sourceNode, RecoveryTargetService recoveryTargetService, RecoveryTargetService.RecoveryListener recoveryListener, RepositoriesService repositoriesService) {
         final RestoreSource restoreSource = shardRouting.restoreSource();
 
-        if (IndicesClusterStateService.isPeerRecovery(shardRouting)) {
+        if (shardRouting.isPeerRecovery()) {
             assert sourceNode != null : "peer recovery started but sourceNode is null";
             // we don't mark this one as relocated at the end.
             // For primaries: requests in any case are routed to both when its relocating and that way we handle

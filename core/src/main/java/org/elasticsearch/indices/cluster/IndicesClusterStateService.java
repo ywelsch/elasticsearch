@@ -523,7 +523,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                 assert currentRoutingEntry.isSameAllocation(shardRouting) :
                     "local shard has a different allocation id but wasn't cleaning by applyDeletedShards. "
                         + "cluster state: " + shardRouting + " local: " + currentRoutingEntry;
-                if (isPeerRecovery(shardRouting)) {
+                if (shardRouting.isPeerRecovery()) {
                     final DiscoveryNode sourceNode = findSourceNodeForPeerRecovery(routingTable, nodes, shardRouting);
                     // check if there is an existing recovery going, and if so, and the source node is not the same, cancel the recovery to restart it
                     if (recoveryTargetService.cancelRecoveriesForShard(indexShard.shardId(), "recovery source node changed", status -> !status.sourceNode().equals(sourceNode))) {
@@ -583,7 +583,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
         // if we're in peer recovery, try to find out the source node now so in case it fails, we will not create the index shard
         DiscoveryNode sourceNode = null;
-        if (isPeerRecovery(shardRouting)) {
+        if (shardRouting.isPeerRecovery()) {
             sourceNode = findSourceNodeForPeerRecovery(routingTable, nodes, shardRouting);
             if (sourceNode == null) {
                 logger.trace("ignoring initializing shard {} - no source node can be found.", shardRouting.shardId());
@@ -629,7 +629,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
     /**
      * Finds the routing source node for peer recovery, return null if its not found. Note, this method expects the shard
-     * routing to *require* peer recovery, use {@link #isPeerRecovery(org.elasticsearch.cluster.routing.ShardRouting)} to
+     * routing to *require* peer recovery, use {@link ShardRouting#isPeerRecovery()} to
      * check if its needed or not.
      */
     private DiscoveryNode findSourceNodeForPeerRecovery(RoutingTable routingTable, DiscoveryNodes nodes, ShardRouting shardRouting) {
@@ -660,10 +660,6 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             throw new IllegalStateException("trying to find source node for peer recovery when routing state means no peer recovery: " + shardRouting);
         }
         return sourceNode;
-    }
-
-    public static boolean isPeerRecovery(ShardRouting shardRouting) {
-        return !shardRouting.primary() || shardRouting.relocatingNodeId() != null;
     }
 
     private class RecoveryListener implements RecoveryTargetService.RecoveryListener {
