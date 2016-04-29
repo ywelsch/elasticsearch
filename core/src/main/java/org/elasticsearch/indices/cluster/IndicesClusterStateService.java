@@ -32,7 +32,6 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
-import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
@@ -59,7 +58,6 @@ import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.IndexShardState;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.shard.ShardNotFoundException;
-import org.elasticsearch.index.snapshots.IndexShardRepository;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.flush.SyncedFlushService;
 import org.elasticsearch.indices.recovery.RecoveryFailedException;
@@ -93,7 +91,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
     private final NodeMappingRefreshAction nodeMappingRefreshAction;
     private final NodeServicesProvider nodeServicesProvider;
 
-    private static final ShardStateAction.Listener SHARD_STATE_ACTION_LISTENER = new ShardStateAction.Listener() {
+    public static final ShardStateAction.Listener SHARD_STATE_ACTION_LISTENER = new ShardStateAction.Listener() {
     };
 
     // a list of shards that failed during recovery
@@ -549,12 +547,12 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
 
             if (shardRouting.initializing()) {
-                applyInitializingShard(event.state(), indexMetaData, indexService, shardRouting);
+                applyInitializingShard(event.state(), indexService, shardRouting);
             }
         }
     }
 
-    private void applyInitializingShard(final ClusterState state, final IndexMetaData indexMetaData, IndexService indexService, final ShardRouting shardRouting) {
+    private void applyInitializingShard(final ClusterState state, IndexService indexService, final ShardRouting shardRouting) {
         final RoutingTable routingTable = state.routingTable();
         final DiscoveryNodes nodes = state.getNodes();
         final int shardId = shardRouting.id();
@@ -625,68 +623,8 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             return;
         }
 
-        final RestoreSource restoreSource = shardRouting.restoreSource();
-
-        if (isPeerRecovery(shardRouting)) {
-            try {
-
-                assert sourceNode != null : "peer recovery started but sourceNode is null";
-
-                // we don't mark this one as relocated at the end.
-                // For primaries: requests in any case are routed to both when its relocating and that way we handle
-                //    the edge case where its mark as relocated, and we might need to roll it back...
-                // For replicas: we are recovering a backup from a primary
-                RecoveryState.Type type = shardRouting.primary() ? RecoveryState.Type.PRIMARY_RELOCATION : RecoveryState.Type.REPLICA;
-                RecoveryState recoveryState = new RecoveryState(indexShard.shardId(), shardRouting.primary(), type, sourceNode, nodes.getLocalNode());
-                indexShard.markAsRecovering("from " + sourceNode, recoveryState);
-                recoveryTargetService.startRecovery(indexShard, type, sourceNode, new PeerRecoveryListener(shardRouting, indexService, indexMetaData));
-            } catch (Throwable e) {
-                indexShard.failShard("corrupted preexisting index", e);
-                handleRecoveryFailure(indexService, shardRouting, true, e);
-            }
-        } else if (restoreSource == null) {
-            assert indexShard.routingEntry().equals(shardRouting); // should have already be done before
-            // recover from filesystem store
-            final RecoveryState recoveryState = new RecoveryState(indexShard.shardId(), shardRouting.primary(),
-                RecoveryState.Type.STORE,
-                nodes.getLocalNode(), nodes.getLocalNode());
-            indexShard.markAsRecovering("from store", recoveryState); // mark the shard as recovering on the cluster state thread
-            threadPool.generic().execute(() -> {
-                try {
-                    if (indexShard.recoverFromStore(nodes.getLocalNode())) {
-                        shardStateAction.shardStarted(shardRouting, "after recovery from store", SHARD_STATE_ACTION_LISTENER);
-                    }
-                } catch (Throwable t) {
-                    handleRecoveryFailure(indexService, shardRouting, true, t);
-                }
-
-            });
-        } else {
-            // recover from a restore
-            final RecoveryState recoveryState = new RecoveryState(indexShard.shardId(), shardRouting.primary(),
-                RecoveryState.Type.SNAPSHOT, shardRouting.restoreSource(), nodes.getLocalNode());
-            indexShard.markAsRecovering("from snapshot", recoveryState); // mark the shard as recovering on the cluster state thread
-            threadPool.generic().execute(() -> {
-                final ShardId sId = indexShard.shardId();
-                try {
-                    final IndexShardRepository indexShardRepository = repositoriesService.indexShardRepository(restoreSource.snapshotId().getRepository());
-                    if (indexShard.restoreFromRepository(indexShardRepository, nodes.getLocalNode())) {
-                        restoreService.indexShardRestoreCompleted(restoreSource.snapshotId(), sId);
-                        shardStateAction.shardStarted(shardRouting, "after recovery from repository", SHARD_STATE_ACTION_LISTENER);
-                    }
-                } catch (Throwable first) {
-                    try {
-                        if (Lucene.isCorruptionException(first)) {
-                            restoreService.failRestore(restoreSource.snapshotId(), sId);
-                        }
-                    } catch (Throwable second) {
-                        first.addSuppressed(second);
-                    } finally {
-                        handleRecoveryFailure(indexService, shardRouting, true, first);
-                    }
-                }
-            });
-        }
+        indexShard.startRecovery(shardRouting, nodes.getLocalNode(), sourceNode, recoveryTargetService,
+            new RecoveryListener(shardRouting, indexService), repositoriesService);
     }
 
     /**
@@ -724,30 +662,53 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         return sourceNode;
     }
 
-    private boolean isPeerRecovery(ShardRouting shardRouting) {
+    public static boolean isPeerRecovery(ShardRouting shardRouting) {
         return !shardRouting.primary() || shardRouting.relocatingNodeId() != null;
     }
 
-    private class PeerRecoveryListener implements RecoveryTargetService.RecoveryListener {
+    private class RecoveryListener implements RecoveryTargetService.RecoveryListener {
 
         private final ShardRouting shardRouting;
         private final IndexService indexService;
-        private final IndexMetaData indexMetaData;
 
-        private PeerRecoveryListener(ShardRouting shardRouting, IndexService indexService, IndexMetaData indexMetaData) {
+        private RecoveryListener(ShardRouting shardRouting, IndexService indexService) {
             this.shardRouting = shardRouting;
             this.indexService = indexService;
-            this.indexMetaData = indexMetaData;
         }
 
         @Override
         public void onRecoveryDone(RecoveryState state) {
-            shardStateAction.shardStarted(shardRouting, "after recovery (replica) from node [" + state.getSourceNode() + "]", SHARD_STATE_ACTION_LISTENER);
+            if (state.getType() == RecoveryState.Type.SNAPSHOT) {
+                restoreService.indexShardRestoreCompleted(state.getRestoreSource().snapshotId(), shardRouting.shardId());
+            }
+            shardStateAction.shardStarted(shardRouting, message(state), SHARD_STATE_ACTION_LISTENER);
+        }
+
+        private String message(RecoveryState state) {
+            switch (state.getType()) {
+                case SNAPSHOT: return "after recovery from repository";
+                case STORE: return "after recovery from store";
+                case PRIMARY_RELOCATION: return "after recovery (primary relocation) from node [" + state.getSourceNode() + "]";
+                case REPLICA: return "after recovery (replica) from node [" + state.getSourceNode() + "]";
+                default: throw new IllegalArgumentException(state.getType().name());
+            }
         }
 
         @Override
         public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure) {
-            handleRecoveryFailure(indexService, shardRouting, sendShardFailure, e);
+            if (state.getType() == RecoveryState.Type.SNAPSHOT) {
+                try {
+                    if (Lucene.isCorruptionException(e.getCause())) {
+                        restoreService.failRestore(state.getRestoreSource().snapshotId(), shardRouting.shardId());
+                    }
+                } catch (Throwable inner) {
+                    e.addSuppressed(inner);
+                } finally {
+                    handleRecoveryFailure(indexService, shardRouting, sendShardFailure, e);
+                }
+            } else {
+                handleRecoveryFailure(indexService, shardRouting, sendShardFailure, e);
+            }
         }
     }
 
