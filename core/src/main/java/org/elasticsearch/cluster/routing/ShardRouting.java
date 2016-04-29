@@ -274,6 +274,10 @@ public final class ShardRouting implements Streamable, ToXContent {
         return true;
     }
 
+    public boolean isPeerRecovery() {
+        return !primary() || relocatingNodeId() != null;
+    }
+
     /**
      * A shard iterator with just this shard in it.
      */
