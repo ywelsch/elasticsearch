@@ -36,6 +36,8 @@ import org.elasticsearch.action.admin.indices.flush.FlushRequest;
 import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeRequest;
 import org.elasticsearch.action.admin.indices.upgrade.post.UpgradeRequest;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.common.Booleans;
@@ -55,6 +57,7 @@ import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.SuspendableRefContainer;
 import org.elasticsearch.index.IndexModule;
+import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.cache.IndexCache;
@@ -102,8 +105,11 @@ import org.elasticsearch.index.translog.TranslogStats;
 import org.elasticsearch.index.warmer.ShardIndexWarmerService;
 import org.elasticsearch.index.warmer.WarmerStats;
 import org.elasticsearch.indices.IndexingMemoryController;
+import org.elasticsearch.indices.cluster.IndicesClusterStateService;
 import org.elasticsearch.indices.recovery.RecoveryFailedException;
 import org.elasticsearch.indices.recovery.RecoveryState;
+import org.elasticsearch.indices.recovery.RecoveryTargetService;
+import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.search.suggest.completion.CompletionFieldStats;
 import org.elasticsearch.search.suggest.completion.CompletionStats;
 import org.elasticsearch.search.suggest.completion2x.Completion090PostingsFormat;
@@ -1324,6 +1330,59 @@ public class IndexShard extends AbstractIndexShardComponent {
      */
     protected Engine getEngineOrNull() {
         return this.currentEngineReference.get();
+    }
+
+    public void startRecovery(ShardRouting shardRouting, DiscoveryNode localNode, DiscoveryNode sourceNode, RecoveryTargetService recoveryTargetService, RecoveryTargetService.RecoveryListener recoveryListener, RepositoriesService repositoriesService) {
+        final RestoreSource restoreSource = shardRouting.restoreSource();
+
+        if (IndicesClusterStateService.isPeerRecovery(shardRouting)) {
+            assert sourceNode != null : "peer recovery started but sourceNode is null";
+            // we don't mark this one as relocated at the end.
+            // For primaries: requests in any case are routed to both when its relocating and that way we handle
+            //    the edge case where its mark as relocated, and we might need to roll it back...
+            // For replicas: we are recovering a backup from a primary
+            RecoveryState.Type type = shardRouting.primary() ? RecoveryState.Type.PRIMARY_RELOCATION : RecoveryState.Type.REPLICA;
+            RecoveryState recoveryState = new RecoveryState(shardId(), shardRouting.primary(), type, sourceNode, localNode);
+            try {
+                markAsRecovering("from " + sourceNode, recoveryState);
+                recoveryTargetService.startRecovery(this, type, sourceNode, recoveryListener);
+            } catch (Throwable e) {
+                failShard("corrupted preexisting index", e);
+                recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(shardId, sourceNode, localNode, e), true);
+            }
+        } else if (restoreSource == null) {
+            assert routingEntry().equals(shardRouting); // should have already be done before
+            // recover from filesystem store
+            final RecoveryState recoveryState = new RecoveryState(shardId(), shardRouting.primary(),
+                RecoveryState.Type.STORE, localNode, localNode);
+            markAsRecovering("from store", recoveryState); // mark the shard as recovering on the cluster state thread
+            threadPool.generic().execute(() -> {
+                try {
+                    if (recoverFromStore(localNode)) {
+                        recoveryListener.onRecoveryDone(recoveryState);
+                    }
+                } catch (Throwable t) {
+                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(shardId, sourceNode, localNode, t), true);
+                }
+
+            });
+        } else {
+            // recover from a restore
+            final RecoveryState recoveryState = new RecoveryState(shardId(), shardRouting.primary(),
+                RecoveryState.Type.SNAPSHOT, shardRouting.restoreSource(), localNode);
+            markAsRecovering("from snapshot", recoveryState); // mark the shard as recovering on the cluster state thread
+            threadPool.generic().execute(() -> {
+                final ShardId sId = shardId();
+                try {
+                    final IndexShardRepository indexShardRepository = repositoriesService.indexShardRepository(restoreSource.snapshotId().getRepository());
+                    if (restoreFromRepository(indexShardRepository, localNode)) {
+                        recoveryListener.onRecoveryDone(recoveryState);
+                    }
+                } catch (Throwable first) {
+                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(shardId, sourceNode, localNode, first), true);
+                }
+            });
+        }
     }
 
     class ShardEventListener implements Engine.EventListener {
