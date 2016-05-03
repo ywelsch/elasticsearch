@@ -92,10 +92,6 @@ public final class ShadowIndexShard extends IndexShard {
         return false;
     }
 
-    public boolean allowsPrimaryPromotion() {
-        return false;
-    }
-
     @Override
     public TranslogStats translogStats() {
         return null; // shadow engine has no translog

@@ -1421,13 +1421,6 @@ public class IndexShard extends AbstractIndexShardComponent {
         return engineFactory.newReadWriteEngine(config);
     }
 
-    /**
-     * Returns <code>true</code> iff this shard allows primary promotion, otherwise <code>false</code>
-     */
-    public boolean allowsPrimaryPromotion() {
-        return true;
-    }
-
     // pkg private for testing
     void persistMetadata(ShardRouting newRouting, @Nullable ShardRouting currentRouting) throws IOException {
         assert newRouting != null : "newRouting must not be null";
