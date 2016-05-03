@@ -19,6 +19,7 @@
 
 package org.elasticsearch.index;
 
+import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
@@ -28,9 +29,11 @@ import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.cluster.metadata.AliasMetaData;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
+import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.BigArrays;
@@ -49,6 +52,7 @@ import org.elasticsearch.index.engine.EngineClosedException;
 import org.elasticsearch.index.engine.EngineFactory;
 import org.elasticsearch.index.fielddata.IndexFieldDataCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
+import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryShardContext;
@@ -67,6 +71,7 @@ import org.elasticsearch.index.store.Store;
 import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.indices.AliasFilterParsingException;
 import org.elasticsearch.indices.InvalidAliasNameException;
+import org.elasticsearch.indices.cluster.IndicesClusterStateService;
 import org.elasticsearch.indices.fielddata.cache.IndicesFieldDataCache;
 import org.elasticsearch.indices.mapper.MapperRegistry;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -93,7 +98,7 @@ import static org.elasticsearch.common.collect.MapBuilder.newMapBuilder;
 /**
  *
  */
-public final class IndexService extends AbstractIndexComponent implements IndexComponent, Iterable<IndexShard> {
+public class IndexService extends AbstractIndexComponent implements IndicesClusterStateService.BaseIndexService<IndexShard> {
 
     private final IndexEventListener eventListener;
     private final AnalysisService analysisService;
@@ -184,8 +189,8 @@ public final class IndexService extends AbstractIndexComponent implements IndexC
     /**
      * Return the shard with the provided id, or null if there is no such shard.
      */
-    @Nullable
-    public IndexShard getShardOrNull(int shardId) {
+    @Override
+    public @Nullable IndexShard getShardOrNull(int shardId) {
         return shards.get(shardId);
     }
 
@@ -470,6 +475,46 @@ public final class IndexService extends AbstractIndexComponent implements IndexC
         return searchOperationListeners;
     }
 
+    @Override
+    public boolean requiresIndexMappingRefresh(IndexMetaData indexMetaData) throws IOException {
+        MapperService mapperService = mapperService();
+        // go over and add the relevant mappings (or update them)
+        boolean requireRefresh = false;
+        for (ObjectCursor<MappingMetaData> cursor : indexMetaData.getMappings().values()) {
+            MappingMetaData mappingMd = cursor.value;
+            String mappingType = mappingMd.type();
+            CompressedXContent mappingSource = mappingMd.source();
+            // refresh mapping can happen when the parsing/merging of the mapping from the metadata doesn't result in the same
+            // mapping, in this case, we send to the master to refresh its own version of the mappings (to conform with the
+            // merge version of it, which it does when refreshing the mappings), and warn log it.
+            try {
+                DocumentMapper existingMapper = mapperService.documentMapper(mappingType);
+
+                if (existingMapper == null || mappingSource.equals(existingMapper.mappingSource()) == false) {
+                    String op = existingMapper == null ? "adding" : "updating";
+                    if (logger.isDebugEnabled() && mappingSource.compressed().length < 512) {
+                        logger.debug("[{}] {} mapping [{}], source [{}]", index(), op, mappingType, mappingSource.string());
+                    } else if (logger.isTraceEnabled()) {
+                        logger.trace("[{}] {} mapping [{}], source [{}]", index(), op, mappingType, mappingSource.string());
+                    } else {
+                        logger.debug("[{}] {} mapping [{}] (source suppressed due to length, use TRACE level if needed)", index(), op,
+                            mappingType);
+                    }
+                    mapperService.merge(mappingType, mappingSource, MapperService.MergeReason.MAPPING_RECOVERY, true);
+                    if (!mapperService.documentMapper(mappingType).mappingSource().equals(mappingSource)) {
+                        logger.debug("[{}] parsed mapping [{}], and got different sources\noriginal:\n{}\nparsed:\n{}", index(),
+                            mappingType, mappingSource, mapperService.documentMapper(mappingType).mappingSource());
+                        requireRefresh = true;
+                    }
+                }
+            } catch (Throwable e) {
+                logger.warn("[{}] failed to add mapping [{}], source [{}]", e, index(), mappingType, mappingSource);
+                throw e;
+            }
+        }
+        return requireRefresh;
+    }
+
     private class StoreCloseListener implements Store.OnClose {
         private final ShardId shardId;
         private final boolean ownsShard;
@@ -617,6 +662,7 @@ public final class IndexService extends AbstractIndexComponent implements IndexC
         return indexSettings.getIndexMetaData();
     }
 
+    @Override
     public synchronized void updateMetaData(final IndexMetaData metadata) {
         final Translog.Durability oldTranslogDurability = indexSettings.getTranslogDurability();
         if (indexSettings.updateIndexMetaData(metadata)) {

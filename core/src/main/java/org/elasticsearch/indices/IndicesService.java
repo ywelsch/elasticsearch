@@ -35,6 +35,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
+import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.breaker.CircuitBreaker;
@@ -55,6 +56,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.util.iterable.Iterables;
 import org.elasticsearch.env.NodeEnvironment;
@@ -86,10 +88,14 @@ import org.elasticsearch.index.shard.IndexingStats;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.store.IndexStoreConfig;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.indices.cluster.IndicesClusterStateService;
 import org.elasticsearch.indices.fielddata.cache.IndicesFieldDataCache;
 import org.elasticsearch.indices.mapper.MapperRegistry;
 import org.elasticsearch.indices.query.IndicesQueriesRegistry;
+import org.elasticsearch.indices.recovery.RecoveryState;
+import org.elasticsearch.indices.recovery.RecoveryTargetService;
 import org.elasticsearch.plugins.PluginsService;
+import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QueryPhase;
@@ -112,6 +118,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -123,7 +130,8 @@ import static org.elasticsearch.common.util.CollectionUtils.arrayAsArrayList;
 /**
  *
  */
-public class IndicesService extends AbstractLifecycleComponent<IndicesService> implements Iterable<IndexService>, IndexService.ShardStoreDeleter {
+public class IndicesService extends AbstractLifecycleComponent<IndicesService>
+    implements IndicesClusterStateService.BaseIndicesService<IndexShard, IndexService>, IndexService.ShardStoreDeleter {
 
     public static final String INDICES_SHARDS_CLOSED_TIMEOUT = "indices.shards_closed_timeout";
     public static final Setting<TimeValue> INDICES_CACHE_CLEAN_INTERVAL_SETTING =
@@ -296,6 +304,7 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
     /**
      * Returns <tt>true</tt> if changes (adding / removing) indices, shards and so on are allowed.
      */
+    @Override
     public boolean changesAllowed() {
         // we check on stop here since we defined stop when we delete the indices
         return lifecycle.started();
@@ -312,10 +321,9 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
 
     /**
      * Returns an IndexService for the specified index if exists otherwise returns <code>null</code>.
-     *
      */
-    @Nullable
-    public IndexService indexService(Index index) {
+    @Override
+    public @Nullable IndexService indexService(Index index) {
         return indices.get(index.getUUID());
     }
 
@@ -337,6 +345,7 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
      * @param builtInListeners a list of built-in lifecycle {@link IndexEventListener} that should should be used along side with the per-index listeners
      * @throws IndexAlreadyExistsException if the index already exists.
      */
+    @Override
     public synchronized IndexService createIndex(final NodeServicesProvider nodeServicesProvider, IndexMetaData indexMetaData, List<IndexEventListener> builtInListeners) throws IOException {
 
         if (!lifecycle.started()) {
@@ -422,12 +431,35 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
         }
     }
 
+    @Override
+    public IndexShard createShard(ShardRouting shardRouting, RecoveryState recoveryState, RecoveryTargetService recoveryTargetService,
+                RecoveryTargetService.RecoveryListener recoveryListener, RepositoriesService repositoriesService,
+                NodeServicesProvider nodeServicesProvider, Callback<IndexShard.ShardFailure> onShardFailure) throws IOException {
+        IndexService indexService = indexService(shardRouting.index());
+        IndexShard indexShard = indexService.createShard(shardRouting);
+        indexShard.addShardFailureCallback(onShardFailure);
+        indexShard.startRecovery(recoveryState, recoveryTargetService, recoveryListener, repositoriesService,
+            (type, mapping) -> {
+                try {
+                    nodeServicesProvider.getClient().admin().indices().preparePutMapping()
+                        .setConcreteIndex(shardRouting.index()) // concrete index - no name clash, it uses uuid
+                        .setType(type)
+                        .setSource(mapping.source().string())
+                        .get();
+                } catch (IOException ex) {
+                    throw new ElasticsearchException("failed to stringify mapping source", ex);
+                }
+            }, this);
+        return indexShard;
+    }
+
     /**
      * Removes the given index from this service and releases all associated resources. Persistent parts of the index
      * like the shards files, state and transaction logs are kept around in the case of a disaster recovery.
      * @param index the index to remove
      * @param reason  the high level reason causing this removal
      */
+    @Override
     public void removeIndex(Index index, String reason) {
         removeIndex(index, reason, false);
     }
@@ -514,6 +546,7 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
      * @param index the index to delete
      * @param reason the high level reason causing this delete
      */
+    @Override
     public void deleteIndex(Index index, String reason) throws IOException {
         removeIndex(index, reason, true);
     }
@@ -522,6 +555,7 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
      * Deletes an index that is not assigned to this node. This method cleans up all disk folders relating to the index
      * but does not deal with in-memory structures. For those call {@link #deleteIndex(Index, String)}
      */
+    @Override
     public void deleteUnassignedIndex(String reason, IndexMetaData metaData, ClusterState clusterState) {
         if (nodeEnv.hasNodeFile()) {
             String indexName = metaData.getIndex().getName();
@@ -681,8 +715,8 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
      * @param clusterState {@code ClusterState} to ensure the index is not part of it
      * @return IndexMetaData for the index loaded from disk
      */
-    @Nullable
-    public IndexMetaData verifyIndexIsDeleted(final Index index, final ClusterState clusterState) {
+    @Override
+    public @Nullable IndexMetaData verifyIndexIsDeleted(final Index index, final ClusterState clusterState) {
         // this method should only be called when we know the index (name + uuid) is not part of the cluster state
         if (clusterState.metaData().index(index) != null) {
             throw new IllegalStateException("Cannot delete index [" + index + "], it is still part of the cluster state.");
