@@ -197,12 +197,14 @@ public class IndexShard extends AbstractIndexShardComponent {
      */
     private final AtomicBoolean active = new AtomicBoolean();
 
-    public IndexShard(ShardId shardId, IndexSettings indexSettings, ShardPath path, Store store, IndexCache indexCache,
+    public IndexShard(ShardRouting shardRouting, IndexSettings indexSettings, ShardPath path, Store store, IndexCache indexCache,
                       MapperService mapperService, SimilarityService similarityService, IndexFieldDataService indexFieldDataService,
                       @Nullable EngineFactory engineFactory,
                       IndexEventListener indexEventListener, IndexSearcherWrapper indexSearcherWrapper, ThreadPool threadPool, BigArrays bigArrays,
-                      Engine.Warmer warmer, List<SearchOperationListener> searchOperationListener, List<IndexingOperationListener> listeners) {
-        super(shardId, indexSettings);
+                      Engine.Warmer warmer, List<SearchOperationListener> searchOperationListener, List<IndexingOperationListener> listeners) throws IOException {
+        super(shardRouting.shardId(), indexSettings);
+        assert shardRouting.initializing();
+        this.shardRouting = shardRouting;
         final Settings settings = indexSettings.getSettings();
         this.codecService = new CodecService(mapperService, logger);
         this.warmer = warmer;
@@ -246,6 +248,7 @@ public class IndexShard extends AbstractIndexShardComponent {
         suspendableRefContainer = new SuspendableRefContainer();
         searcherWrapper = indexSearcherWrapper;
         primaryTerm = indexSettings.getIndexMetaData().primaryTerm(shardId.id());
+        persistMetadata(shardRouting, null);
     }
 
     public Store store() {
@@ -316,8 +319,7 @@ public class IndexShard extends AbstractIndexShardComponent {
     }
 
     /**
-     * Returns the latest cluster routing entry received with this shard. Might be null if the
-     * shard was just created.
+     * Returns the latest cluster routing entry received with this shard.
      */
     public ShardRouting routingEntry() {
         return this.shardRouting;
