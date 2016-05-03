@@ -540,9 +540,6 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                 }
 
                 if (shardHasBeenRemoved == false) {
-                    // shadow replicas do not support primary promotion. The master would reinitialize the shard, giving it a new allocation, meaning we should be there.
-                    assert (shardRouting.primary() && currentRoutingEntry.primary() == false) == false || indexShard.allowsPrimaryPromotion() :
-                        "shard for doesn't support primary promotion but master promoted it with changing allocation. New routing " + shardRouting + ", current routing " + currentRoutingEntry;
                     try {
                         indexShard.updateRoutingEntry(shardRouting, event.state().blocks().disableStatePersistence() == false);
                     } catch (Throwable e) {
