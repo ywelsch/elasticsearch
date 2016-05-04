@@ -19,7 +19,6 @@
 
 package org.elasticsearch.indices.cluster;
 
-import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateListener;
@@ -27,7 +26,6 @@ import org.elasticsearch.cluster.action.index.NodeIndexDeletedAction;
 import org.elasticsearch.cluster.action.index.NodeMappingRefreshAction;
 import org.elasticsearch.cluster.action.shard.ShardStateAction;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
-import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
@@ -38,7 +36,6 @@ import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.Lucene;
@@ -51,8 +48,6 @@ import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexShardAlreadyExistsException;
 import org.elasticsearch.index.NodeServicesProvider;
-import org.elasticsearch.index.mapper.DocumentMapper;
-import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.shard.IndexEventListener;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.IndexShardState;
@@ -69,7 +64,6 @@ import org.elasticsearch.search.SearchService;
 import org.elasticsearch.snapshots.RestoreService;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -181,7 +175,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             updateFailedShardsCache(event, currentShards);
             Set<Index> currentDeletedIndices = applyDeletedIndices(event, currentIndices);
             applyDeletedShards(event, currentShards, currentDeletedIndices);
-            applyUpdateExistingIndices(event); // can also fail shards, but these are then guaranteed to be in failedShards
+            applyUpdateExistingIndices(event, currentIndices, currentDeletedIndices); // can also fail shards, but these are then guaranteed to be in failedShards
             applyNewIndices(event, currentIndices);
             applyNewOrUpdatedShards(event, currentShards);
         }
@@ -292,17 +286,15 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
         }
 
-        // remove shards and indices based on routing nodes (no deletion of data)
-        RoutingNode localRoutingNode = event.state().getRoutingNodes().node(localNodeId);
+        // remove indices (and shards) that have no shards in routing nodes. (no deletion of data)
         Set<Index> indicesWithShards = new HashSet<>();
-        // remove indices that have no shards in routing nodes
+        RoutingNode localRoutingNode = event.state().getRoutingNodes().node(localNodeId);
         if (localRoutingNode != null) { // null e.g. if we are not a data node
             for (ShardRouting shard : localRoutingNode) {
                 indicesWithShards.add(shard.index());
             }
         }
 
-        // remove indices that have no shards.
         for (Index index : currentIndices.keySet()) {
             if (currentDeletedIndices.contains(index) == false && indicesWithShards.contains(index) == false) {
                 currentDeletedIndices.add(index);
@@ -319,21 +311,19 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         final String localNodeId = event.state().nodes().getLocalNodeId();
         assert localNodeId != null;
 
-        // remove shards and indices based on routing nodes (no deletion of data)
+        // remove shards based on routing nodes (no deletion of data)
         RoutingNode localRoutingNode = event.state().getRoutingNodes().node(localNodeId);
-        // remove shards / index based on info in routing nodes
+        Map<ShardId, ShardRouting> newShardAllocations = new HashMap<>();
         if (localRoutingNode != null) { // null e.g. if we are not a data node
-            Map<ShardId, ShardRouting> newShardAllocations = new HashMap<>();
-
             for (ShardRouting shard : localRoutingNode) {
                 newShardAllocations.put(shard.shardId(), shard);
             }
+        }
 
-            for (ShardRouting currentRoutingEntry : currentShards.values()) {
-                if (currentDeletedIndices.contains(currentRoutingEntry.index())) {
-                    // already deleted by applyDeletedIndices
-                    continue;
-                }
+        for (ShardRouting currentRoutingEntry : currentShards.values()) {
+            if (currentDeletedIndices.contains(currentRoutingEntry.index())) {
+                // already deleted by applyDeletedIndices
+            } else {
                 ShardRouting newShardRouting = newShardAllocations.get(currentRoutingEntry.shardId());
                 if (newShardRouting == null || newShardRouting.isSameAllocation(currentRoutingEntry) == false) {
                     // we can just remove the shard, without cleaning it locally, since we will clean it
@@ -407,9 +397,10 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                         logger.debug("[{}] creating index", indexMetaData.getIndex());
                     }
                     createdIndices.add(index);
-                    IndexService indexService = null;
+                    boolean indexCreated = false;
                     try {
-                        indexService = indicesService.createIndex(nodeServicesProvider, indexMetaData, buildInIndexListener);
+                        indicesService.createIndex(nodeServicesProvider, indexMetaData, buildInIndexListener);
+                        indexCreated = true;
                     } catch (Throwable e) {
                         // if we failed the mappings anywhere, we need to fail the shards for this index, note, we safeguard
                         // by creating the processing the mappings on the master, or on the node the mapping was introduced on,
@@ -417,9 +408,9 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                         sendFailShard(shard, "failed to create index", e);
                         failedIndices.add(index);
                     }
-                    if (indexService != null) {
+                    if (indexCreated) {
                         try {
-                            updateIndexMapping(event, indexMetaData, index, indexService);
+                            updateIndexMapping(event, indexMetaData);
                         } catch (Throwable e) {
                             removeIndex(index, "removing newly created index (mapping update failed)");
                             // if we failed the mappings anywhere, we need to fail the shards for this index, note, we safeguard
@@ -434,78 +425,39 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         }
     }
 
-    private void applyUpdateExistingIndices(ClusterChangedEvent event) {
+    private void applyUpdateExistingIndices(ClusterChangedEvent event, Map<Index, IndexSettings> currentIndices, Set<Index> currentDeletedIndices) {
         if (!event.metaDataChanged()) {
             return;
         }
         for (IndexMetaData indexMetaData : event.state().metaData()) {
             Index index = indexMetaData.getIndex();
-            IndexService indexService = indicesService.indexService(index);
-            if (indexService == null) {
-                continue;
-            }
-            // if the index meta data didn't change, no need check for refreshed settings
-            if (!event.indexMetaDataChanged(indexMetaData)) {
-                continue;
-            }
-            indexService.updateMetaData(indexMetaData);
-            try {
-                updateIndexMapping(event, indexMetaData, index, indexService);
-            } catch (Throwable t) {
-                // if we failed the mappings anywhere, we need to fail the shards for this index, note, we safeguard
-                // by creating the processing the mappings on the master, or on the node the mapping was introduced on,
-                // so this failure typically means wrong node level configuration or something similar
-                for (IndexShard indexShard : indexService) {
-                    failAndRemoveShard(indexShard.routingEntry(), indexService, true, "failed to update mappings", t);
+            if (event.indexMetaDataChanged(indexMetaData) && currentIndices.containsKey(index) && currentDeletedIndices.contains(index) == false) {
+                IndexService indexService = indicesService.indexService(index);
+                if (indexService == null) {
+                    continue;
+                }
+                indexService.updateMetaData(indexMetaData);
+                try {
+                    updateIndexMapping(event, indexMetaData);
+                } catch (Throwable t) {
+                    // if we failed the mappings anywhere, we need to fail the shards for this index, note, we safeguard
+                    // by creating the processing the mappings on the master, or on the node the mapping was introduced on,
+                    // so this failure typically means wrong node level configuration or something similar
+                    for (IndexShard indexShard : indexService) {
+                        failAndRemoveShard(indexShard.routingEntry(), indexService, true, "failed to update mappings", t);
+                    }
                 }
             }
         }
     }
 
-    private void updateIndexMapping(ClusterChangedEvent event, IndexMetaData indexMetaData, Index index, IndexService indexService) throws Throwable {
-        if (innerUpdateIndexMapping(logger, indexMetaData, index, indexService) && sendRefreshMapping) {
+    private void updateIndexMapping(ClusterChangedEvent event, IndexMetaData indexMetaData) throws Throwable {
+        if (indicesService.requiresIndexMappingRefresh(indexMetaData) && sendRefreshMapping) {
             nodeMappingRefreshAction.nodeMappingRefresh(event.state().nodes().getMasterNode(),
-                new NodeMappingRefreshAction.NodeMappingRefreshRequest(index.getName(), indexMetaData.getIndexUUID(),
+                new NodeMappingRefreshAction.NodeMappingRefreshRequest(indexMetaData.getIndex().getName(), indexMetaData.getIndexUUID(),
                     event.state().nodes().getLocalNodeId())
             );
         }
-    }
-
-    private static boolean innerUpdateIndexMapping(ESLogger logger, IndexMetaData indexMetaData, Index index, IndexService indexService) throws IOException {
-        MapperService mapperService = indexService.mapperService();
-        // go over and add the relevant mappings (or update them)
-        boolean requireRefresh = false;
-        for (ObjectCursor<MappingMetaData> cursor : indexMetaData.getMappings().values()) {
-            MappingMetaData mappingMd = cursor.value;
-            String mappingType = mappingMd.type();
-            CompressedXContent mappingSource = mappingMd.source();
-            // refresh mapping can happen when the parsing/merging of the mapping from the metadata doesn't result in the same
-            // mapping, in this case, we send to the master to refresh its own version of the mappings (to conform with the
-            // merge version of it, which it does when refreshing the mappings), and warn log it.
-            try {
-                DocumentMapper existingMapper = mapperService.documentMapper(mappingType);
-
-                if (existingMapper == null || mappingSource.equals(existingMapper.mappingSource()) == false) {
-                    String op = existingMapper == null ? "adding" : "updating";
-                    if (logger.isDebugEnabled() && mappingSource.compressed().length < 512) {
-                        logger.debug("[{}] {} mapping [{}], source [{}]", index, op, mappingType, mappingSource.string());
-                    } else if (logger.isTraceEnabled()) {
-                        logger.trace("[{}] {} mapping [{}], source [{}]", index, op, mappingType, mappingSource.string());
-                    } else {
-                        logger.debug("[{}] {} mapping [{}] (source suppressed due to length, use TRACE level if needed)", index, op, mappingType);
-                    }
-                    mapperService.merge(mappingType, mappingSource, MapperService.MergeReason.MAPPING_RECOVERY, true);
-                    if (!mapperService.documentMapper(mappingType).mappingSource().equals(mappingSource)) {
-                        logger.debug("[{}] parsed mapping [{}], and got different sources\noriginal:\n{}\nparsed:\n{}", index, mappingType, mappingSource, mapperService.documentMapper(mappingType).mappingSource());
-                        requireRefresh = true;
-                    }
-                }
-            } catch (Throwable e) {
-                logger.warn("[{}] failed to add mapping [{}], source [{}]", e, index, mappingType, mappingSource);
-                throw e;
-            }
-        }
-        return requireRefresh;
     }
 
     private void applyNewOrUpdatedShards(final ClusterChangedEvent event, Map<ShardId, ShardRouting> currentShards) {
