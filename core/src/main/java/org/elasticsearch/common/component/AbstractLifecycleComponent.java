@@ -113,4 +113,6 @@ public abstract class AbstractLifecycleComponent<T> extends AbstractComponent im
     }
 
     protected abstract void doClose();
+
+
 }

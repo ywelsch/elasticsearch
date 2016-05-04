@@ -35,6 +35,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
+import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.breaker.CircuitBreaker;
@@ -478,6 +479,25 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
 
     public IndicesQueryCache getIndicesQueryCache() {
         return indicesQueryCache;
+    }
+
+    public Map<ShardId, ShardRouting> shards() {
+        Map<ShardId, ShardRouting> shards = new HashMap<>();
+        for (IndexService indexService : this) {
+            for (IndexShard indexShard : indexService) {
+                ShardRouting shardRouting = indexShard.routingEntry();
+                shards.put(shardRouting.shardId(), shardRouting);
+            }
+        }
+        return shards;
+    }
+
+    public Map<Index, IndexSettings> indices() {
+        Map<Index, IndexSettings> indices = new HashMap<>();
+        for (IndexService indexService : this) {
+            indices.put(indexService.index(), indexService.getIndexSettings());
+        }
+        return indices;
     }
 
     static class OldShardsStats implements IndexEventListener {
