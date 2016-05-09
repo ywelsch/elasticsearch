@@ -1427,9 +1427,11 @@ public class IndexShardTests extends ESSingleNodeTestCase {
     }
 
     private static ShardRouting getInitializingShardRouting(ShardRouting existingShardRouting) {
-        return TestShardRouting.newShardRouting(existingShardRouting.index(), existingShardRouting.id(),
+        ShardRouting shardRouting = TestShardRouting.newShardRouting(existingShardRouting.index(), existingShardRouting.id(),
             existingShardRouting.currentNodeId(), null, existingShardRouting.primary(), ShardRoutingState.INITIALIZING,
             existingShardRouting.allocationId());
+        shardRouting.updateUnassignedInfo(new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "fake recovery"));
+        return shardRouting;
     }
 
     public void testTranslogRecoverySyncsTranslog() throws IOException {
