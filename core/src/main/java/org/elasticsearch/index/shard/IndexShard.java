@@ -1388,7 +1388,7 @@ public class IndexShard extends AbstractIndexShardComponent {
         // called by the current engine
         @Override
         public void onFailedEngine(String reason, @Nullable Throwable failure) {
-            final ShardFailure shardFailure = new ShardFailure(shardRouting, reason, failure, getIndexUUID());
+            final ShardFailure shardFailure = new ShardFailure(shardRouting, reason, failure);
             for (Callback<ShardFailure> listener : delegates) {
                 try {
                     listener.handle(shardFailure);
@@ -1565,13 +1565,11 @@ public class IndexShard extends AbstractIndexShardComponent {
         public final String reason;
         @Nullable
         public final Throwable cause;
-        public final String indexUUID;
 
-        public ShardFailure(ShardRouting routing, String reason, @Nullable Throwable cause, String indexUUID) {
+        public ShardFailure(ShardRouting routing, String reason, @Nullable Throwable cause) {
             this.routing = routing;
             this.reason = reason;
             this.cause = cause;
-            this.indexUUID = indexUUID;
         }
     }
 
