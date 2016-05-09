@@ -256,10 +256,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
         Set<Index> currentDeletedIndices = new HashSet<>();
         for (Index index : event.indicesDeleted()) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("[{}] cleaning index, no longer part of the metadata", index);
-            }
-
+            logger.debug("{} cleaning index, no longer part of the metadata", index);
             IndexSettings indexSettings = currentIndices.get(index);
             if (indexSettings != null) {
                 currentDeletedIndices.add(index);
@@ -335,6 +332,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             if (indicesWithShards.contains(index) == false) {
                 boolean notRemovedAlready = currentRemovedIndices.add(index);
                 if (notRemovedAlready) {
+                    logger.debug("{} removing index, no shards allocated", index);
                     removeIndex(index, "removing index (no shards allocated)");
                 }
             }
@@ -364,9 +362,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             if (newShardRouting == null || newShardRouting.isSameAllocation(currentRoutingEntry) == false) {
                 // we can just remove the shard, without cleaning it locally, since we will clean it
                 // when all shards are allocated in the IndicesStore
-                if (logger.isDebugEnabled()) {
-                    logger.debug("{} removing shard (not allocated)", currentRoutingEntry.shardId());
-                }
+                logger.debug("{} removing shard (not allocated)", currentRoutingEntry.shardId());
                 removedShards.add(currentRoutingEntry.shardId());
                 removeShard(currentRoutingEntry.shardId(), "removing shard (not allocated)");
             } else {
@@ -392,24 +388,6 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         return removedShards;
     }
 
-    private RecoveryState recoveryState(ShardId shardId) {
-        IndexService indexService = indicesService.indexService(shardId.getIndex());
-        if (indexService != null) {
-            IndexShard indexShard = indexService.getShardOrNull(shardId.id());
-            if (indexShard != null) {
-                return indexShard.recoveryState();
-            }
-        }
-        return null;
-    }
-
-    private void removeShard(ShardId shardId, String message) {
-        IndexService indexService = indicesService.indexService(shardId.getIndex());
-        if (indexService != null) {
-            indexService.removeShard(shardId.id(), message);
-        }
-    }
-
     private void applyNewIndices(final ClusterChangedEvent event, Map<Index, IndexSettings> currentIndices) {
         // we only create indices for shards that are allocated
         RoutingNode localRoutingNode = event.state().getRoutingNodes().node(event.state().nodes().getLocalNodeId());
@@ -419,20 +397,18 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         Set<Index> failedIndices = new HashSet<>(); // indices where creation failed (to make sure we only try once for each index)
         Set<Index> createdIndices = new HashSet<>(); // indices where creation has happened
         for (ShardRouting shard : localRoutingNode) {
-            Index index = shard.index();
             if (failedShardsCache.containsKey(shard.shardId())) {
                 // ignore
                 continue;
             }
+            Index index = shard.index();
             if (failedIndices.contains(index)) {
                 // index creation for this index failed in an earlier iteration for another shard with same index
                 sendFailShard(shard, "failed to create index (for shard with same index)", null);
             } else {
                 if (createdIndices.contains(index) == false && currentIndices.containsKey(index) == false) {
                     final IndexMetaData indexMetaData = event.state().metaData().index(shard.index());
-                    if (logger.isDebugEnabled()) {
-                        logger.debug("[{}] creating index", indexMetaData.getIndex());
-                    }
+                    logger.debug("[{}] creating index", index);
                     createdIndices.add(index);
                     boolean indexCreated = false;
                     try {
@@ -557,9 +533,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
             final IndexShard indexShard;
             try {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("{} creating shard", shardRouting.shardId());
-                }
+                logger.debug("{} creating shard", shardRouting.shardId());
                 indexShard = indexService.createShard(shardRouting);
                 indexShard.addShardFailureCallback(failedShardHandler);
                 indexShard.startRecovery(shardRouting, nodes.getLocalNode(), sourceNode, recoveryTargetService,
@@ -693,6 +667,17 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         }
     }
 
+    private RecoveryState recoveryState(ShardId shardId) {
+        IndexService indexService = indicesService.indexService(shardId.getIndex());
+        if (indexService != null) {
+            IndexShard indexShard = indexService.getShardOrNull(shardId.id());
+            if (indexShard != null) {
+                return indexShard.recoveryState();
+            }
+        }
+        return null;
+    }
+
     private void removeIndex(Index index, String reason) {
         try {
             indicesService.removeIndex(index, reason);
@@ -708,6 +693,13 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             logger.warn("failed to delete index ({})", e, reason);
         }
 
+    }
+
+    private void removeShard(ShardId shardId, String message) {
+        IndexService indexService = indicesService.indexService(shardId.getIndex());
+        if (indexService != null) {
+            indexService.removeShard(shardId.id(), message);
+        }
     }
 
     private void failAndRemoveShard(ShardRouting shardRouting, boolean sendShardFailure, String message, @Nullable Throwable failure) {
