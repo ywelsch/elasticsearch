@@ -35,14 +35,12 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
-import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.cache.RemovalNotification;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.FileSystemUtils;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
@@ -74,7 +72,6 @@ import org.elasticsearch.index.cache.request.ShardRequestCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataCache;
 import org.elasticsearch.index.flush.FlushStats;
 import org.elasticsearch.index.get.GetStats;
-import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.merge.MergeStats;
 import org.elasticsearch.index.recovery.RecoveryStats;
@@ -483,25 +480,6 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
         return indicesQueryCache;
     }
 
-    public Map<ShardId, ShardRouting> shards() {
-        Map<ShardId, ShardRouting> shards = new HashMap<>();
-        for (IndexService indexService : this) {
-            for (IndexShard indexShard : indexService) {
-                ShardRouting shardRouting = indexShard.routingEntry();
-                shards.put(shardRouting.shardId(), shardRouting);
-            }
-        }
-        return shards;
-    }
-
-    public Map<Index, IndexSettings> indices() {
-        Map<Index, IndexSettings> indices = new HashMap<>();
-        for (IndexService indexService : this) {
-            indices.put(indexService.index(), indexService.getIndexSettings());
-        }
-        return indices;
-    }
-
     static class OldShardsStats implements IndexEventListener {
 
         final SearchStats searchStats = new SearchStats();
@@ -726,48 +704,6 @@ public class IndicesService extends AbstractLifecycleComponent<IndicesService> i
             return metaData;
         }
         return null;
-    }
-
-    public boolean requiresIndexMappingRefresh(IndexMetaData indexMetaData) throws IOException {
-        Index index = indexMetaData.getIndex();
-        IndexService indexService = indexService(index);
-        if (indexService == null) {
-            return false;
-        }
-        MapperService mapperService = indexService.mapperService();
-        // go over and add the relevant mappings (or update them)
-        boolean requireRefresh = false;
-        for (ObjectCursor<MappingMetaData> cursor : indexMetaData.getMappings().values()) {
-            MappingMetaData mappingMd = cursor.value;
-            String mappingType = mappingMd.type();
-            CompressedXContent mappingSource = mappingMd.source();
-            // refresh mapping can happen when the parsing/merging of the mapping from the metadata doesn't result in the same
-            // mapping, in this case, we send to the master to refresh its own version of the mappings (to conform with the
-            // merge version of it, which it does when refreshing the mappings), and warn log it.
-            try {
-                DocumentMapper existingMapper = mapperService.documentMapper(mappingType);
-
-                if (existingMapper == null || mappingSource.equals(existingMapper.mappingSource()) == false) {
-                    String op = existingMapper == null ? "adding" : "updating";
-                    if (logger.isDebugEnabled() && mappingSource.compressed().length < 512) {
-                        logger.debug("[{}] {} mapping [{}], source [{}]", index, op, mappingType, mappingSource.string());
-                    } else if (logger.isTraceEnabled()) {
-                        logger.trace("[{}] {} mapping [{}], source [{}]", index, op, mappingType, mappingSource.string());
-                    } else {
-                        logger.debug("[{}] {} mapping [{}] (source suppressed due to length, use TRACE level if needed)", index, op, mappingType);
-                    }
-                    mapperService.merge(mappingType, mappingSource, MapperService.MergeReason.MAPPING_RECOVERY, true);
-                    if (!mapperService.documentMapper(mappingType).mappingSource().equals(mappingSource)) {
-                        logger.debug("[{}] parsed mapping [{}], and got different sources\noriginal:\n{}\nparsed:\n{}", index, mappingType, mappingSource, mapperService.documentMapper(mappingType).mappingSource());
-                        requireRefresh = true;
-                    }
-                }
-            } catch (Throwable e) {
-                logger.warn("[{}] failed to add mapping [{}], source [{}]", e, index, mappingType, mappingSource);
-                throw e;
-            }
-        }
-        return requireRefresh;
     }
 
     /**
