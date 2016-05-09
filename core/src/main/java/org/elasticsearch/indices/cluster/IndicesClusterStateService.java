@@ -167,18 +167,18 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
             updateFailedShardsCache(event, currentShards);
 
-            Set<Index> currentDeletedIndices = applyDeletedIndices(event, currentIndices); // also deletes shards
-            // remove shards from currentShards that have been removed as part of applyDeletedIndices
+            Set<Index> deletedIndices = applyDeletedIndices(event, currentIndices); // also deletes shards
+            // remove shards from currentShards that have been deleted as part of applyDeletedIndices
             for (Iterator<Map.Entry<ShardId, ShardRouting>> it = currentShards.entrySet().iterator(); it.hasNext(); ) {
-                if (currentDeletedIndices.contains(it.next().getKey().getIndex())) {
+                if (deletedIndices.contains(it.next().getKey().getIndex())) {
                     it.remove();
                 }
             }
 
-            Set<Index> currentRemovedIndices = applyRemovedIndices(event, currentIndices); // also removes shards
+            Set<Index> removedIndices = applyRemovedIndices(event, currentIndices); // also removes shards
             // remove shards from currentShards that have been removed as part of applyRemovedIndices
             for (Iterator<Map.Entry<ShardId, ShardRouting>> it = currentShards.entrySet().iterator(); it.hasNext(); ) {
-                if (currentRemovedIndices.contains(it.next().getKey().getIndex())) {
+                if (removedIndices.contains(it.next().getKey().getIndex())) {
                     it.remove();
                 }
             }
@@ -189,7 +189,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                 currentShards.remove(shardId);
             }
 
-            applyUpdateExistingIndices(event, currentIndices, currentDeletedIndices, currentRemovedIndices, currentShards); // can also fail shards, but these are then guaranteed to be in failedShardsCache
+            applyUpdateExistingIndices(event, currentIndices, deletedIndices, removedIndices, currentShards); // can also fail shards, but these are then guaranteed to be in failedShardsCache
 
             applyNewIndices(event, currentIndices);
 
@@ -248,19 +248,19 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
      *
      * @param event cluster change event
      * @param currentIndices indices that are currently loaded by indicesService
-     * @return set of indices that were deleted as part of this method
+     * @return subset of indices in currentIndices that were deleted as part of this method
      */
     private Set<Index> applyDeletedIndices(final ClusterChangedEvent event, Map<Index, IndexSettings> currentIndices) {
         final ClusterState previousState = event.previousState();
         final String localNodeId = event.state().nodes().getLocalNodeId();
         assert localNodeId != null;
 
-        Set<Index> currentDeletedIndices = new HashSet<>();
+        Set<Index> deletedIndices = new HashSet<>();
         for (Index index : event.indicesDeleted()) {
             logger.debug("{} cleaning index, no longer part of the metadata", index);
             IndexSettings indexSettings = currentIndices.get(index);
             if (indexSettings != null) {
-                currentDeletedIndices.add(index);
+                deletedIndices.add(index);
                 indicesService.deleteIndex(index, "index no longer part of the metadata");
             } else if (previousState.metaData().hasIndex(index.getName())) {
                 // The deleted index was part of the previous cluster state, but not loaded on the local node
@@ -294,7 +294,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         }
 
         for (Index index : currentIndices.keySet()) {
-            if (currentDeletedIndices.contains(index) == false) {
+            if (deletedIndices.contains(index) == false) {
                 IndexMetaData indexMetaData = event.state().metaData().index(index);
                 if (indexMetaData == null) {
                     assert false : "index" + index + " exists locally, doesn't have a metadata but is not part "
@@ -306,7 +306,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
         }
 
-        return currentDeletedIndices;
+        return deletedIndices;
     }
 
     /**
@@ -314,7 +314,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
      *
      * @param event cluster change event
      * @param currentIndices indices that are currently loaded by indicesService
-     * @return set of indices that were removed as part of this method
+     * @return subset of indices in currentIndices that were removed as part of this method
      */
     private Set<Index> applyRemovedIndices(final ClusterChangedEvent event, Map<Index, IndexSettings> currentIndices) {
         final String localNodeId = event.state().nodes().getLocalNodeId();
@@ -328,10 +328,10 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
         }
 
-        Set<Index> currentRemovedIndices = new HashSet<>();
+        Set<Index> removedIndices = new HashSet<>();
         for (Index index : currentIndices.keySet()) {
             if (indicesWithShards.contains(index) == false) {
-                boolean notRemovedAlready = currentRemovedIndices.add(index);
+                boolean notRemovedAlready = removedIndices.add(index);
                 if (notRemovedAlready) {
                     logger.debug("{} removing index, no shards allocated", index);
                     indicesService.removeIndex(index, "removing index (no shards allocated)");
@@ -339,9 +339,18 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
         }
 
-        return currentRemovedIndices;
+        return removedIndices;
     }
 
+    /**
+     * Removes shards that are currently loaded by indicesService but have disappeared from the routing table of the current node.
+     * Also removes shards where the recovery source node has changed.
+     * This method does not delete the shard data.
+     *
+     * @param event cluster state change event
+     * @param currentShards shards that are currently loaded by indicesService
+     * @return subset of currentShards that were removed as part of this method
+     */
     private Set<ShardId> applyRemovedShards(final ClusterChangedEvent event, Map<ShardId, ShardRouting> currentShards) {
         final RoutingTable routingTable = event.state().routingTable();
         final DiscoveryNodes nodes = event.state().nodes();
@@ -368,7 +377,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                 indicesService.removeShard(currentRoutingEntry.shardId(), "removing shard (not allocated)");
             } else {
                 assert newShardRouting.isSameAllocation(currentRoutingEntry);
-                // remove shards where recovery target has changed. This re-initializes shards later in applyNewOrUpdatedShards
+                // remove shards where recovery source has changed. This re-initializes shards later in applyNewOrUpdatedShards
                 if (newShardRouting.isPeerRecovery()) {
                     RecoveryState recoveryState = indicesService.recoveryState(currentRoutingEntry.shardId());
                     if (recoveryState != null && recoveryState.getStage() != RecoveryState.Stage.DONE) { // shard is still recovering
@@ -437,7 +446,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
     }
 
     private void applyUpdateExistingIndices(ClusterChangedEvent event, Map<Index, IndexSettings> currentIndices,
-                                            Set<Index> currentDeletedIndices, Set<Index> currentRemovedIndices,
+                                            Set<Index> deletedIndices, Set<Index> removedIndices,
                                             Map<ShardId, ShardRouting> currentShards) {
         if (!event.metaDataChanged()) {
             return;
@@ -445,8 +454,8 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         for (IndexMetaData indexMetaData : event.state().metaData()) {
             Index index = indexMetaData.getIndex();
             if (event.indexMetaDataChanged(indexMetaData) && currentIndices.containsKey(index)
-                && currentDeletedIndices.contains(index) == false
-                && currentRemovedIndices.contains(index) == false) {
+                && deletedIndices.contains(index) == false
+                && removedIndices.contains(index) == false) {
                 indicesService.updateMetaData(indexMetaData);
                 try {
                     updateIndexMapping(event, indexMetaData);
@@ -726,7 +735,8 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             return indicesService.verifyIndexIsDeleted(index, state);
         }
 
-        public void createIndex(NodeServicesProvider nodeServicesProvider, IndexMetaData indexMetaData, List<IndexEventListener> buildInIndexListener) throws IOException {
+        public void createIndex(NodeServicesProvider nodeServicesProvider, IndexMetaData indexMetaData,
+                                List<IndexEventListener> buildInIndexListener) throws IOException {
             indicesService.createIndex(nodeServicesProvider, indexMetaData, buildInIndexListener);
         }
 
@@ -755,7 +765,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
         public void createShard(ShardRouting shardRouting, FailedShardHandler failedShardHandler, DiscoveryNode localNode,
                                 DiscoveryNode sourceNode, RecoveryTargetService recoveryTargetService, RecoveryListener recoveryListener,
                                 RepositoriesService repositoriesService) throws IOException {
-            final IndexService indexService = indicesService.indexService(shardRouting.index());
+            IndexService indexService = indicesService.indexService(shardRouting.index());
             if (indexService != null) {
                 IndexShard indexShard = indexService.createShard(shardRouting);
                 indexShard.addShardFailureCallback(failedShardHandler);
