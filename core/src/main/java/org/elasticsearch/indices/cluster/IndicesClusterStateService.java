@@ -329,7 +329,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
                 if (logger.isDebugEnabled()) {
                     logger.debug("{} removing shard (not allocated)", currentRoutingEntry.shardId());
                 }
-                resurrectedShards.add(newShardRouting.shardId());
+                resurrectedShards.add(currentRoutingEntry.shardId());
                 removeShard(currentRoutingEntry.shardId(), "removing shard (not allocated)");
             } else {
                 assert newShardRouting.isSameAllocation(currentRoutingEntry);
