@@ -679,6 +679,10 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             this.indicesService = indicesService;
         }
 
+        public boolean changesAllowed() {
+            return indicesService.changesAllowed();
+        }
+
         public Map<Index, IndexSettings> indices() {
             Map<Index, IndexSettings> indices = new HashMap<>();
             for (IndexService indexService : indicesService) {
@@ -714,28 +718,6 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             }
         }
 
-        private void removeShard(ShardId shardId, String message) {
-            IndexService indexService = indicesService.indexService(shardId.getIndex());
-            if (indexService != null) {
-                indexService.removeShard(shardId.id(), message);
-            }
-        }
-
-        private RecoveryState recoveryState(ShardId shardId) {
-            IndexService indexService = indicesService.indexService(shardId.getIndex());
-            if (indexService != null) {
-                IndexShard indexShard = indexService.getShardOrNull(shardId.id());
-                if (indexShard != null) {
-                    return indexShard.recoveryState();
-                }
-            }
-            return null;
-        }
-
-        public boolean changesAllowed() {
-            return indicesService.changesAllowed();
-        }
-
         public void deleteUnassignedIndex(String reason, IndexMetaData metaData, ClusterState clusterState) {
             indicesService.deleteUnassignedIndex(reason, metaData, clusterState);
         }
@@ -750,10 +732,9 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
 
         private void updateMetaData(IndexMetaData indexMetaData) {
             IndexService indexService = indicesService.indexService(indexMetaData.getIndex());
-            if (indexService == null) {
-                return;
+            if (indexService != null) {
+                indexService.updateMetaData(indexMetaData);
             }
-            indexService.updateMetaData(indexMetaData);
         }
 
         public boolean requiresIndexMappingRefresh(IndexMetaData indexMetaData) throws IOException {
@@ -764,34 +745,45 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent<Indic
             return indexService.requiresIndexMappingRefresh(indexMetaData);
         }
 
-        public IndexShardState updateShardRouting(ShardRouting shardRouting, boolean persistState) throws IOException {
-            final IndexService indexService = indicesService.indexService(shardRouting.index());
-            if (indexService == null) {
-                // creation failed for some reasons
-                return null;
+        private void removeShard(ShardId shardId, String message) {
+            IndexService indexService = indicesService.indexService(shardId.getIndex());
+            if (indexService != null) {
+                indexService.removeShard(shardId.id(), message);
             }
-            IndexShard indexShard = indexService.getShardOrNull(shardRouting.id());
-            if (indexShard == null) {
-                return null;
-            }
-
-            indexShard.updateRoutingEntry(shardRouting, persistState);
-
-            return indexShard.state();
         }
 
         public void createShard(ShardRouting shardRouting, FailedShardHandler failedShardHandler, DiscoveryNode localNode,
                                 DiscoveryNode sourceNode, RecoveryTargetService recoveryTargetService, RecoveryListener recoveryListener,
                                 RepositoriesService repositoriesService) throws IOException {
             final IndexService indexService = indicesService.indexService(shardRouting.index());
-            if (indexService == null) {
-                // creation failed for some reasons
-                return;
+            if (indexService != null) {
+                IndexShard indexShard = indexService.createShard(shardRouting);
+                indexShard.addShardFailureCallback(failedShardHandler);
+                indexShard.startRecovery(shardRouting, localNode, sourceNode, recoveryTargetService, recoveryListener, repositoriesService);
             }
+        }
 
-            IndexShard indexShard = indexService.createShard(shardRouting);
-            indexShard.addShardFailureCallback(failedShardHandler);
-            indexShard.startRecovery(shardRouting, localNode, sourceNode, recoveryTargetService, recoveryListener, repositoriesService);
+        public IndexShardState updateShardRouting(ShardRouting shardRouting, boolean persistState) throws IOException {
+            IndexService indexService = indicesService.indexService(shardRouting.index());
+            if (indexService != null) {
+                IndexShard indexShard = indexService.getShardOrNull(shardRouting.id());
+                if (indexShard != null) {
+                    indexShard.updateRoutingEntry(shardRouting, persistState);
+                    return indexShard.state();
+                }
+            }
+            return null;
+        }
+
+        private RecoveryState recoveryState(ShardId shardId) {
+            IndexService indexService = indicesService.indexService(shardId.getIndex());
+            if (indexService != null) {
+                IndexShard indexShard = indexService.getShardOrNull(shardId.id());
+                if (indexShard != null) {
+                    return indexShard.recoveryState();
+                }
+            }
+            return null;
         }
     }
 }
