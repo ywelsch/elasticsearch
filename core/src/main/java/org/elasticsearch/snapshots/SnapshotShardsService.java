@@ -198,7 +198,7 @@ public class SnapshotShardsService extends AbstractLifecycleComponent<SnapshotSh
         Map<SnapshotId, SnapshotShards> survivors = new HashMap<>();
         // First, remove snapshots that are no longer there
         for (Map.Entry<SnapshotId, SnapshotShards> entry : shardSnapshots.entrySet()) {
-            if (snapshotsInProgress != null && snapshotsInProgress.snapshot(entry.getKey()) != null) {
+            if (snapshotsInProgress != null && snapshotsInProgress.snapshot(entry.getKey().getSnapshot()) != null) {
                 survivors.put(entry.getKey(), entry.getValue());
             }
         }
@@ -432,7 +432,7 @@ public class SnapshotShardsService extends AbstractLifecycleComponent<SnapshotSh
         @Override
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
-            snapshotId = SnapshotId.readSnapshotId(in);
+            snapshotId = new SnapshotId(in);
             shardId = ShardId.readShardId(in);
             status = SnapshotsInProgress.ShardSnapshotStatus.readShardSnapshotStatus(in);
         }

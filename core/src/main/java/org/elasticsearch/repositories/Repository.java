@@ -25,6 +25,7 @@ import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
 import org.elasticsearch.snapshots.SnapshotInfo;
+import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.snapshots.SnapshotShardFailure;
 
 import java.io.IOException;
@@ -51,10 +52,10 @@ public interface Repository extends LifecycleComponent<Repository> {
     /**
      * Reads snapshot description from repository.
      *
-     * @param snapshotId snapshot ID
+     * @param snapshotName snapshot name
      * @return information about snapshot
      */
-    SnapshotInfo readSnapshot(SnapshotId snapshotId);
+    SnapshotInfo readSnapshot(String snapshotName);
 
     /**
      * Returns global metadata associate with the snapshot.
@@ -65,7 +66,7 @@ public interface Repository extends LifecycleComponent<Repository> {
      * @param indices    list of indices
      * @return information about snapshot
      */
-    MetaData readSnapshotMetaData(SnapshotId snapshotId, SnapshotInfo snapshot, List<String> indices) throws IOException;
+    MetaData readSnapshotMetaData(SnapshotInfo snapshot, List<String> indices) throws IOException;
 
     /**
      * Returns the list of snapshots currently stored in the repository
@@ -138,5 +139,15 @@ public interface Repository extends LifecycleComponent<Repository> {
      * @return true if the repository is read/only
      */
     boolean readOnly();
+
+    /**
+     * Resolves snapshot name(s) in the repository to {@link SnapshotId}(s).  If any snapshots
+     * are not found, a {@link SnapshotMissingException} is thrown.
+     *
+     * @param snapshotNames snapshot name(s)
+     * @return snapshot ids
+     * @throws SnapshotMissingException if a snapshot is not found
+     */
+    List<SnapshotId> resolveSnapshots(String... snapshotNames);
 
 }

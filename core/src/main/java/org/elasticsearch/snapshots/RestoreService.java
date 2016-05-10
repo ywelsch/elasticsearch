@@ -188,14 +188,15 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     public void restoreSnapshot(final RestoreRequest request, final ActionListener<RestoreInfo> listener) {
         try {
             // Read snapshot info and metadata from the repository
-            Repository repository = repositoriesService.repository(request.repository());
-            final SnapshotId snapshotId = new SnapshotId(request.repository(), request.name());
-            final SnapshotInfo snapshot = repository.readSnapshot(snapshotId);
-            List<String> filteredIndices = SnapshotUtils.filterIndices(snapshot.indices(), request.indices(), request.indicesOptions());
-            MetaData metaDataIn = repository.readSnapshotMetaData(snapshotId, snapshot, filteredIndices);
+            final Snapshot snapshot = new Snapshot(request.repository(), request.name());
+            Repository repository = repositoriesService.repository(snapshot.getRepository());
+            final SnapshotInfo snapshotInfo = repository.readSnapshot(snapshot.getName());
+            final SnapshotId snapshotId = SnapshotId.get(snapshot, snapshotInfo.uuid());
+            List<String> filteredIndices = SnapshotUtils.filterIndices(snapshotInfo.indices(), request.indices(), request.indicesOptions());
+            MetaData metaDataIn = repository.readSnapshotMetaData(snapshotInfo, filteredIndices);
 
             final MetaData metaData;
-            if (snapshot.version().before(Version.V_2_0_0_beta1)) {
+            if (snapshotInfo.version().before(Version.V_2_0_0_beta1)) {
                 // ES 2.0 now requires units for all time and byte-sized settings, so we add the default unit if it's missing in this snapshot:
                 metaData = MetaData.addDefaultUnitsIfNeeded(logger, metaDataIn);
             } else {
@@ -204,7 +205,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
             }
 
             // Make sure that we can restore from this snapshot
-            validateSnapshotRestorable(snapshotId, snapshot);
+            validateSnapshotRestorable(snapshot, snapshotInfo);
 
             // Find list of indices that we need to restore
             final Map<String, String> renamedIndices = renamedIndices(request, filteredIndices);
@@ -220,7 +221,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                     // same time
                     RestoreInProgress restoreInProgress = currentState.custom(RestoreInProgress.TYPE);
                     if (restoreInProgress != null && !restoreInProgress.entries().isEmpty()) {
-                        throw new ConcurrentSnapshotExecutionException(snapshotId, "Restore process is already running in this cluster");
+                        throw new ConcurrentSnapshotExecutionException(snapshot, "Restore process is already running in this cluster");
                     }
 
                     // Updating cluster state
@@ -236,14 +237,14 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                         for (Map.Entry<String, String> indexEntry : renamedIndices.entrySet()) {
                             String index = indexEntry.getValue();
                             boolean partial = checkPartial(index);
-                            RestoreSource restoreSource = new RestoreSource(snapshotId, snapshot.version(), index);
+                            RestoreSource restoreSource = new RestoreSource(snapshotId, snapshotInfo.version(), index);
                             String renamedIndexName = indexEntry.getKey();
                             IndexMetaData snapshotIndexMetaData = metaData.index(index);
                             snapshotIndexMetaData = updateIndexSettings(snapshotIndexMetaData, request.indexSettings, request.ignoreIndexSettings);
                             try {
                                 snapshotIndexMetaData = metaDataIndexUpgradeService.upgradeIndexMetaData(snapshotIndexMetaData);
                             } catch (Exception ex) {
-                                throw new SnapshotRestoreException(snapshotId, "cannot restore index [" + index + "] because it cannot be upgraded", ex);
+                                throw new SnapshotRestoreException(snapshot, "cannot restore index [" + index + "] because it cannot be upgraded", ex);
                             }
                             // Check that the index is closed or doesn't exist
                             IndexMetaData currentIndexMetaData = currentState.metaData().index(renamedIndexName);
@@ -337,13 +338,13 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                 private void checkAliasNameConflicts(Map<String, String> renamedIndices, Set<String> aliases) {
                     for (Map.Entry<String, String> renamedIndex : renamedIndices.entrySet()) {
                         if (aliases.contains(renamedIndex.getKey())) {
-                            throw new SnapshotRestoreException(snapshotId, "cannot rename index [" + renamedIndex.getValue() + "] into [" + renamedIndex.getKey() + "] because of conflict with an alias with the same name");
+                            throw new SnapshotRestoreException(snapshot, "cannot rename index [" + renamedIndex.getValue() + "] into [" + renamedIndex.getKey() + "] because of conflict with an alias with the same name");
                         }
                     }
                 }
 
                 private void populateIgnoredShards(String index, IntSet ignoreShards) {
-                    for (SnapshotShardFailure failure : snapshot.shardFailures()) {
+                    for (SnapshotShardFailure failure : snapshotInfo.shardFailures()) {
                         if (index.equals(failure.index())) {
                             ignoreShards.add(failure.shardId());
                         }
@@ -352,11 +353,11 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
 
                 private boolean checkPartial(String index) {
                     // Make sure that index was fully snapshotted
-                    if (failed(snapshot, index)) {
+                    if (failed(snapshotInfo, index)) {
                         if (request.partial()) {
                             return true;
                         } else {
-                            throw new SnapshotRestoreException(snapshotId, "index [" + index + "] wasn't fully snapshotted - cannot restore");
+                            throw new SnapshotRestoreException(snapshot, "index [" + index + "] wasn't fully snapshotted - cannot restore");
                         }
                     } else {
                         return false;
@@ -367,15 +368,15 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                     // Index exist - checking that it's closed
                     if (currentIndexMetaData.getState() != IndexMetaData.State.CLOSE) {
                         // TODO: Enable restore for open indices
-                        throw new SnapshotRestoreException(snapshotId, "cannot restore index [" + renamedIndex + "] because it's open");
+                        throw new SnapshotRestoreException(snapshot, "cannot restore index [" + renamedIndex + "] because it's open");
                     }
                     // Index exist - checking if it's partial restore
                     if (partial) {
-                        throw new SnapshotRestoreException(snapshotId, "cannot restore partial index [" + renamedIndex + "] because such index already exists");
+                        throw new SnapshotRestoreException(snapshot, "cannot restore partial index [" + renamedIndex + "] because such index already exists");
                     }
                     // Make sure that the number of shards is the same. That's the only thing that we cannot change
                     if (currentIndexMetaData.getNumberOfShards() != snapshotIndexMetaData.getNumberOfShards()) {
-                        throw new SnapshotRestoreException(snapshotId, "cannot restore index [" + renamedIndex + "] with [" + currentIndexMetaData.getNumberOfShards() +
+                        throw new SnapshotRestoreException(snapshot, "cannot restore index [" + renamedIndex + "] with [" + currentIndexMetaData.getNumberOfShards() +
                                 "] shard from snapshot with [" + snapshotIndexMetaData.getNumberOfShards() + "] shards");
                     }
                 }
@@ -395,7 +396,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                     for (String ignoredSetting : ignoreSettings) {
                         if (!Regex.isSimpleMatchPattern(ignoredSetting)) {
                             if (UNREMOVABLE_SETTINGS.contains(ignoredSetting)) {
-                                throw new SnapshotRestoreException(snapshotId, "cannot remove setting [" + ignoredSetting + "] on restore");
+                                throw new SnapshotRestoreException(snapshot, "cannot remove setting [" + ignoredSetting + "] on restore");
                             } else {
                                 settingsMap.remove(ignoredSetting);
                             }
@@ -417,7 +418,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                     }
                     for(Map.Entry<String, String> entry : normalizedChangeSettings.getAsMap().entrySet()) {
                         if (UNMODIFIABLE_SETTINGS.contains(entry.getKey())) {
-                            throw new SnapshotRestoreException(snapshotId, "cannot modify setting [" + entry.getKey() + "] on restore");
+                            throw new SnapshotRestoreException(snapshot, "cannot modify setting [" + entry.getKey() + "] on restore");
                         } else {
                             settingsMap.put(entry.getKey(), entry.getValue());
                         }
@@ -492,16 +493,16 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     }
 
     public final static class RestoreCompletionResponse {
-        private final SnapshotId snapshotId;
+        private final Snapshot snapshot;
         private final RestoreInfo restoreInfo;
 
-        private RestoreCompletionResponse(SnapshotId snapshotId, RestoreInfo restoreInfo) {
-            this.snapshotId = snapshotId;
+        private RestoreCompletionResponse(Snapshot snapshot, RestoreInfo restoreInfo) {
+            this.snapshot = snapshot;
             this.restoreInfo = restoreInfo;
         }
 
-        public SnapshotId getSnapshotId() {
-            return snapshotId;
+        public Snapshot getSnapshot() {
+            return snapshot;
         }
 
         public RestoreInfo getRestoreInfo() {
@@ -571,7 +572,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                                 assert !batchedRestoreInfo.containsKey(entry.snapshotId());
                                 batchedRestoreInfo.put(entry.snapshotId(),
                                     new Tuple<>(
-                                        new RestoreInfo(entry.snapshotId().getSnapshot(), entry.indices(), shards.size(), shards.size() - failedShards(shards)),
+                                        new RestoreInfo(entry.snapshotId().getName(), entry.indices(), shards.size(), shards.size() - failedShards(shards)),
                                         shards));
                             }
                         } else {
@@ -658,7 +659,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
             private void notifyListeners(SnapshotId snapshotId, RestoreInfo restoreInfo) {
                 for (ActionListener<RestoreCompletionResponse> listener : listeners) {
                     try {
-                        listener.onResponse(new RestoreCompletionResponse(snapshotId, restoreInfo));
+                        listener.onResponse(new RestoreCompletionResponse(snapshotId.getSnapshot(), restoreInfo));
                     } catch (Throwable e) {
                         logger.warn("failed to update snapshot status for [{}]", e, listener);
                     }
@@ -695,7 +696,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
             }
             String previousIndex = renamedIndices.put(renamedIndex, index);
             if (previousIndex != null) {
-                throw new SnapshotRestoreException(new SnapshotId(request.repository(), request.name()),
+                throw new SnapshotRestoreException(new Snapshot(request.repository(), request.name()),
                         "indices [" + index + "] and [" + previousIndex + "] are renamed into the same index [" + renamedIndex + "]");
             }
         }
@@ -705,16 +706,16 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     /**
      * Checks that snapshots can be restored and have compatible version
      *
-     * @param snapshotId snapshot id
-     * @param snapshot   snapshot metadata
+     * @param snapshot       snapshot id
+     * @param snapshotInfo   snapshot metadata
      */
-    private void validateSnapshotRestorable(SnapshotId snapshotId, SnapshotInfo snapshot) {
-        if (!snapshot.state().restorable()) {
-            throw new SnapshotRestoreException(snapshotId, "unsupported snapshot state [" + snapshot.state() + "]");
+    private void validateSnapshotRestorable(Snapshot snapshot, SnapshotInfo snapshotInfo) {
+        if (!snapshotInfo.state().restorable()) {
+            throw new SnapshotRestoreException(snapshot, "unsupported snapshot state [" + snapshotInfo.state() + "]");
         }
-        if (Version.CURRENT.before(snapshot.version())) {
-            throw new SnapshotRestoreException(snapshotId, "the snapshot was created with Elasticsearch version [" +
-                    snapshot.version() + "] which is higher than the version of this node [" + Version.CURRENT + "]");
+        if (Version.CURRENT.before(snapshotInfo.version())) {
+            throw new SnapshotRestoreException(snapshot, "the snapshot was created with Elasticsearch version [" +
+                    snapshotInfo.version() + "] which is higher than the version of this node [" + Version.CURRENT + "]");
         }
     }
 
@@ -861,9 +862,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
 
         final private String cause;
 
-        final private String name;
-
-        final private String repository;
+        final private Snapshot snapshot;
 
         final private String[] indices;
 
@@ -891,8 +890,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
          * Constructs new restore request
          *
          * @param cause              cause for restoring the snapshot
-         * @param repository         repository name
-         * @param name               snapshot name
+         * @param snapshot           snapshot
          * @param indices            list of indices to restore
          * @param indicesOptions     indices options
          * @param renamePattern      pattern to rename indices
@@ -904,13 +902,12 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
          * @param indexSettings      index settings that should be changed on restore
          * @param ignoreIndexSettings index settings that shouldn't be restored
          */
-        public RestoreRequest(String cause, String repository, String name, String[] indices, IndicesOptions indicesOptions,
+        public RestoreRequest(String cause, Snapshot snapshot, String[] indices, IndicesOptions indicesOptions,
                               String renamePattern, String renameReplacement, Settings settings,
                               TimeValue masterNodeTimeout, boolean includeGlobalState, boolean partial, boolean includeAliases,
                               Settings indexSettings, String[] ignoreIndexSettings ) {
             this.cause = cause;
-            this.name = name;
-            this.repository = repository;
+            this.snapshot = snapshot;
             this.indices = indices;
             this.renamePattern = renamePattern;
             this.renameReplacement = renameReplacement;
@@ -940,7 +937,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
          * @return snapshot name
          */
         public String name() {
-            return name;
+            return snapshot.getName();
         }
 
         /**
@@ -949,7 +946,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
          * @return repository name
          */
         public String repository() {
-            return repository;
+            return snapshot.getRepository();
         }
 
         /**
@@ -1077,7 +1074,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         @Override
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
-            snapshotId = SnapshotId.readSnapshotId(in);
+            snapshotId = new SnapshotId(in);
             shardId = ShardId.readShardId(in);
             status = ShardRestoreStatus.readShardRestoreStatus(in);
         }

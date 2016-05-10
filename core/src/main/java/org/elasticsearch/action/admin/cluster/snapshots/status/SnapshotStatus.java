@@ -124,7 +124,7 @@ public class SnapshotStatus implements ToXContent, Streamable {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        snapshotId = SnapshotId.readSnapshotId(in);
+        snapshotId = new SnapshotId(in);
         state = State.fromValue(in.readByte());
         int size = in.readVInt();
         List<SnapshotIndexShardStatus> builder = new ArrayList<>();

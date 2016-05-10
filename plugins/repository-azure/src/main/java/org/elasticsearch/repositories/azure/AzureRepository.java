@@ -166,7 +166,7 @@ public class AzureRepository extends BlobStoreRepository {
             super.initializeSnapshot(snapshotId, indices, metaData);
         } catch (StorageException | URISyntaxException e) {
             logger.warn("can not initialize container [{}]: [{}]", blobStore.container(), e.getMessage());
-            throw new SnapshotCreationException(snapshotId, e);
+            throw new SnapshotCreationException(snapshotId.getSnapshot(), e);
         }
     }
 

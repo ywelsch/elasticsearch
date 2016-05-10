@@ -192,13 +192,13 @@ public class TransportNodesSnapshotsStatus extends TransportNodesAction<Transpor
         @Override
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
-            snapshotIds = in.readList(SnapshotId::readSnapshotId);
+            snapshotIds = in.readList(streamInput -> new SnapshotId(streamInput));
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
-            out.writeStreamableList(snapshotIds);
+            out.writeList(snapshotIds);
         }
     }
 
@@ -224,7 +224,7 @@ public class TransportNodesSnapshotsStatus extends TransportNodesAction<Transpor
             int numberOfSnapshots = in.readVInt();
             Map<SnapshotId, Map<ShardId, SnapshotIndexShardStatus>> snapshotMapBuilder = new HashMap<>(numberOfSnapshots);
             for (int i = 0; i < numberOfSnapshots; i++) {
-                SnapshotId snapshotId = SnapshotId.readSnapshotId(in);
+                SnapshotId snapshotId = new SnapshotId(in);
                 int numberOfShards = in.readVInt();
                 Map<ShardId, SnapshotIndexShardStatus> shardMapBuilder = new HashMap<>(numberOfShards);
                 for (int j = 0; j < numberOfShards; j++) {

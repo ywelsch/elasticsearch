@@ -36,6 +36,7 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -197,20 +198,20 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
         if (Strings.hasText(request.repository())) {
             if (request.snapshots() != null && request.snapshots().length > 0) {
                 for (String snapshotName : request.snapshots()) {
-                    SnapshotId snapshotId = new SnapshotId(request.repository(), snapshotName);
-                    if (currentSnapshotIds.contains(snapshotId)) {
+                    Snapshot snapshot = new Snapshot(request.repository(), snapshotName);
+                    if (currentSnapshotIds.contains(snapshot)) {
                         // This is a snapshot the is currently running - skipping
                         continue;
                     }
-                    SnapshotInfo snapshot = snapshotsService.snapshot(snapshotId);
+                    SnapshotInfo snapshotInfo = snapshotsService.snapshot(snapshot);
                     List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
-                    if (snapshot.state().completed()) {
-                        Map<ShardId, IndexShardSnapshotStatus> shardStatues = snapshotsService.snapshotShards(snapshotId);
+                    if (snapshotInfo.state().completed()) {
+                        Map<ShardId, IndexShardSnapshotStatus> shardStatues = snapshotsService.snapshotShards(snapshot);
                         for (Map.Entry<ShardId, IndexShardSnapshotStatus> shardStatus : shardStatues.entrySet()) {
                             shardStatusBuilder.add(new SnapshotIndexShardStatus(shardStatus.getKey(), shardStatus.getValue()));
                         }
                         final SnapshotsInProgress.State state;
-                        switch (snapshot.state()) {
+                        switch (snapshotInfo.state()) {
                             case FAILED:
                                 state = SnapshotsInProgress.State.FAILED;
                                 break;
@@ -221,9 +222,9 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
                                 state = SnapshotsInProgress.State.SUCCESS;
                                 break;
                             default:
-                                throw new IllegalArgumentException("Unknown snapshot state " + snapshot.state());
+                                throw new IllegalArgumentException("Unknown snapshot state " + snapshotInfo.state());
                         }
-                        builder.add(new SnapshotStatus(snapshotId, state, Collections.unmodifiableList(shardStatusBuilder)));
+                        builder.add(new SnapshotStatus(SnapshotId.get(snapshot, snapshotInfo.uuid()), state, Collections.unmodifiableList(shardStatusBuilder)));
                     }
                 }
             }

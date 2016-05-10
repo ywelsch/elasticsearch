@@ -73,7 +73,7 @@ public class RestoreSource implements Streamable, ToXContent {
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
-        snapshotId = SnapshotId.readSnapshotId(in);
+        snapshotId = new SnapshotId(in);
         version = Version.readVersion(in);
         index = in.readString();
     }

@@ -19,7 +19,6 @@
 
 package org.elasticsearch.snapshots;
 
-import org.elasticsearch.cluster.metadata.SnapshotId;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.rest.RestStatus;
 
@@ -30,8 +29,8 @@ import java.io.IOException;
  */
 public class InvalidSnapshotNameException extends SnapshotException {
 
-    public InvalidSnapshotNameException(SnapshotId snapshot, String desc) {
-        super(snapshot, "Invalid snapshot name [" + snapshot.getSnapshot() + "], " + desc);
+    public InvalidSnapshotNameException(Snapshot snapshot, String desc) {
+        super(snapshot, "Invalid snapshot name [" + snapshot.getName() + "], " + desc);
     }
 
     public InvalidSnapshotNameException(StreamInput in) throws IOException {

@@ -409,7 +409,7 @@ public class RestoreInProgress extends AbstractDiffable<Custom> implements Custo
     public RestoreInProgress readFrom(StreamInput in) throws IOException {
         Entry[] entries = new Entry[in.readVInt()];
         for (int i = 0; i < entries.length; i++) {
-            SnapshotId snapshotId = SnapshotId.readSnapshotId(in);
+            SnapshotId snapshotId = new SnapshotId(in);
             State state = State.fromValue(in.readByte());
             int indices = in.readVInt();
             List<String> indexBuilder = new ArrayList<>();
@@ -471,7 +471,7 @@ public class RestoreInProgress extends AbstractDiffable<Custom> implements Custo
      */
     public void toXContent(Entry entry, XContentBuilder builder, ToXContent.Params params) throws IOException {
         builder.startObject();
-        builder.field("snapshot", entry.snapshotId().getSnapshot());
+        builder.field("snapshot", entry.snapshotId().getName());
         builder.field("repository", entry.snapshotId().getRepository());
         builder.field("state", entry.state());
         builder.startArray("indices");

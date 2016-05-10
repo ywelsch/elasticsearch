@@ -43,9 +43,10 @@ import java.util.List;
  */
 public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent, FromXContentBuilder<SnapshotInfo>, Writeable {
 
-    public static final SnapshotInfo PROTO = new SnapshotInfo("", Collections.emptyList(), 0);
+    public static final SnapshotInfo PROTO = new SnapshotInfo("", "", Collections.emptyList(), 0);
     private static final FormatDateTimeFormatter DATE_TIME_FORMATTER = Joda.forPattern("strictDateOptionalTime");
     private static final String SNAPSHOT = "snapshot";
+    private static final String UUID = "uuid";
     private static final String INDICES = "indices";
     private static final String STATE = "state";
     private static final String REASON = "reason";
@@ -68,6 +69,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
 
     private final String name;
 
+    private final String uuid;
+
     private final SnapshotState state;
 
     private final String reason;
@@ -86,23 +89,24 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
 
     private final List<SnapshotShardFailure> shardFailures;
 
-    public SnapshotInfo(String name, List<String> indices, long startTime) {
-        this(name, indices, SnapshotState.IN_PROGRESS, null, Version.CURRENT, startTime, 0L, 0, 0, Collections.emptyList());
+    public SnapshotInfo(String name, String uuid, List<String> indices, long startTime) {
+        this(name, uuid, indices, SnapshotState.IN_PROGRESS, null, Version.CURRENT, startTime, 0L, 0, 0, Collections.emptyList());
     }
 
-    public SnapshotInfo(String name, List<String> indices, long startTime, String reason, long endTime,
+    public SnapshotInfo(String name, String uuid, List<String> indices, long startTime, String reason, long endTime,
                         int totalShards, List<SnapshotShardFailure> shardFailures) {
-        this(name, indices, snapshotState(reason, shardFailures), reason, Version.CURRENT,
+        this(name, uuid, indices, snapshotState(reason, shardFailures), reason, Version.CURRENT,
              startTime, endTime, totalShards, totalShards - shardFailures.size(), shardFailures);
     }
 
-    private SnapshotInfo(String name, List<String> indices, SnapshotState state, String reason, Version version, long startTime,
-                         long endTime, int totalShards, int successfulShards, List<SnapshotShardFailure> shardFailures) {
+    private SnapshotInfo(String name, String uuid, List<String> indices, SnapshotState state, String reason, Version version,
+                         long startTime, long endTime, int totalShards, int successfulShards, List<SnapshotShardFailure> shardFailures) {
         assert name != null;
         assert indices != null;
         assert state != null;
         assert shardFailures != null;
         this.name = name;
+        this.uuid = uuid;
         this.indices = indices;
         this.state = state;
         this.reason = reason;
@@ -119,6 +123,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
      */
     public SnapshotInfo(final StreamInput in) throws IOException {
         name = in.readString();
+        uuid = in.readString();
         int size = in.readVInt();
         List<String> indicesListBuilder = new ArrayList<>();
         for (int i = 0; i < size; i++) {
@@ -151,6 +156,15 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
      */
     public String name() {
         return name;
+    }
+
+    /**
+     * Returns snapshot uuid
+     *
+     * @return snapshot uuid
+     */
+    public String uuid() {
+        return uuid;
     }
 
     /**
@@ -268,12 +282,13 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         }
 
         final SnapshotInfo that = (SnapshotInfo) o;
-        return startTime == that.startTime && name.equals(that.name);
+        return startTime == that.startTime && name.equals(that.name) && uuid.equals(that.uuid);
     }
 
     @Override
     public int hashCode() {
         int result = name.hashCode();
+        result = 31 * result + uuid.hashCode();
         result = 31 * result + Long.hashCode(startTime);
         return result;
     }
@@ -296,6 +311,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     public XContentBuilder toXContent(final XContentBuilder builder, final Params params) throws IOException {
         builder.startObject(SNAPSHOT);
         builder.field(NAME, name);
+        builder.field(UUID, uuid);
         builder.field(VERSION_ID, version.id);
         builder.startArray(INDICES);
         for (String index : indices) {
@@ -327,6 +343,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     public XContentBuilder toExternalXContent(final XContentBuilder builder, final ToXContent.Params params) throws IOException {
         builder.startObject();
         builder.field(SNAPSHOT, name);
+        builder.field(UUID, uuid);
         builder.field(VERSION_ID, version.id);
         builder.field(VERSION, version.toString());
         builder.startArray(INDICES);
@@ -375,13 +392,14 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
      */
     public static SnapshotInfo fromXContent(final XContentParser parser) throws IOException {
         String name = null;
+        String uuid = null;
         Version version = Version.CURRENT;
         SnapshotState state = SnapshotState.IN_PROGRESS;
         String reason = null;
         List<String> indices = Collections.emptyList();
         long startTime = 0;
         long endTime = 0;
-        int totalShard = 0;
+        int totalShards = 0;
         int successfulShards = 0;
         List<SnapshotShardFailure> shardFailures = Collections.emptyList();
         if (parser.currentToken() == null) { // fresh parser? move to the first token
@@ -401,6 +419,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
                         if (token.isValue()) {
                             if (NAME.equals(currentFieldName)) {
                                 name = parser.text();
+                            } else if (UUID.equals(currentFieldName)) {
+                                uuid = parser.text();
                             } else if (STATE.equals(currentFieldName)) {
                                 state = SnapshotState.valueOf(parser.text());
                             } else if (REASON.equals(currentFieldName)) {
@@ -410,7 +430,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
                             } else if (END_TIME.equals(currentFieldName)) {
                                 endTime = parser.longValue();
                             } else if (TOTAL_SHARDS.equals(currentFieldName)) {
-                                totalShard = parser.intValue();
+                                totalShards = parser.intValue();
                             } else if (SUCCESSFUL_SHARDS.equals(currentFieldName)) {
                                 successfulShards = parser.intValue();
                             } else if (VERSION_ID.equals(currentFieldName)) {
@@ -443,12 +463,18 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         } else {
             throw new ElasticsearchParseException("unexpected token  [" + token + "]");
         }
-        return new SnapshotInfo(name, indices, state, reason, version, startTime, endTime, totalShard, successfulShards, shardFailures);
+        if (uuid == null) {
+            // the old format where there wasn't a UUID
+            uuid = "";
+        }
+        return new SnapshotInfo(name, uuid, indices, state, reason, version, startTime, endTime, totalShards,
+                                successfulShards, shardFailures);
     }
 
     @Override
     public void writeTo(final StreamOutput out) throws IOException {
         out.writeString(name);
+        out.writeString(uuid);
         out.writeVInt(indices.size());
         for (String index : indices) {
             out.writeString(index);

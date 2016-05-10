@@ -32,6 +32,7 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.snapshots.RestoreInfo;
 import org.elasticsearch.snapshots.RestoreService;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -73,8 +74,9 @@ public class TransportRestoreSnapshotAction extends TransportMasterNodeAction<Re
 
     @Override
     protected void masterOperation(final RestoreSnapshotRequest request, ClusterState state, final ActionListener<RestoreSnapshotResponse> listener) {
+        final Snapshot snapshot = new Snapshot(request.repository(), request.snapshot());
         RestoreService.RestoreRequest restoreRequest = new RestoreService.RestoreRequest(
-                "restore_snapshot[" + request.snapshot() + "]", request.repository(), request.snapshot(),
+                "restore_snapshot[" + request.snapshot() + "]", snapshot,
                 request.indices(), request.indicesOptions(), request.renamePattern(), request.renameReplacement(),
                 request.settings(), request.masterNodeTimeout(), request.includeGlobalState(), request.partial(), request.includeAliases(),
                 request.indexSettings(), request.ignoreIndexSettings());
@@ -84,11 +86,9 @@ public class TransportRestoreSnapshotAction extends TransportMasterNodeAction<Re
             public void onResponse(RestoreInfo restoreInfo) {
                 if (restoreInfo == null && request.waitForCompletion()) {
                     restoreService.addListener(new ActionListener<RestoreService.RestoreCompletionResponse>() {
-                        SnapshotId snapshotId = new SnapshotId(request.repository(), request.snapshot());
-
                         @Override
                         public void onResponse(RestoreService.RestoreCompletionResponse restoreCompletionResponse) {
-                            if (this.snapshotId.equals(restoreCompletionResponse.getSnapshotId())) {
+                            if (snapshot.equals(restoreCompletionResponse.getSnapshot())) {
                                 listener.onResponse(new RestoreSnapshotResponse(restoreCompletionResponse.getRestoreInfo()));
                                 restoreService.removeListener(this);
                             }

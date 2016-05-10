@@ -19,7 +19,6 @@
 
 package org.elasticsearch.snapshots;
 
-import org.elasticsearch.cluster.metadata.SnapshotId;
 import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.IOException;
@@ -33,7 +32,7 @@ public class SnapshotCreationException extends SnapshotException {
         super(in);
     }
 
-    public SnapshotCreationException(SnapshotId snapshot, Throwable cause) {
+    public SnapshotCreationException(Snapshot snapshot, Throwable cause) {
         super(snapshot, "failed to create snapshot", cause);
     }
 }

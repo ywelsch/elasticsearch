@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.metadata.SnapshotId;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -71,8 +72,9 @@ public class TransportCreateSnapshotAction extends TransportMasterNodeAction<Cre
 
     @Override
     protected void masterOperation(final CreateSnapshotRequest request, ClusterState state, final ActionListener<CreateSnapshotResponse> listener) {
+        final Snapshot snapshot = new Snapshot(request.repository(), request.snapshot());
         SnapshotsService.SnapshotRequest snapshotRequest =
-                new SnapshotsService.SnapshotRequest("create_snapshot [" + request.snapshot() + "]", request.snapshot(), request.repository())
+                new SnapshotsService.SnapshotRequest("create_snapshot [" + request.snapshot() + "]", snapshot)
                         .indices(request.indices())
                         .indicesOptions(request.indicesOptions())
                         .partial(request.partial())
@@ -84,19 +86,17 @@ public class TransportCreateSnapshotAction extends TransportMasterNodeAction<Cre
             public void onResponse() {
                 if (request.waitForCompletion()) {
                     snapshotsService.addListener(new SnapshotsService.SnapshotCompletionListener() {
-                        SnapshotId snapshotId = new SnapshotId(request.repository(), request.snapshot());
-
                         @Override
-                        public void onSnapshotCompletion(SnapshotId snapshotId, SnapshotInfo snapshot) {
-                            if (this.snapshotId.equals(snapshotId)) {
-                                listener.onResponse(new CreateSnapshotResponse(snapshot));
+                        public void onSnapshotCompletion(SnapshotId snapshotId, SnapshotInfo snapshotInfo) {
+                            if (snapshot.equals(snapshotId.getSnapshot())) {
+                                listener.onResponse(new CreateSnapshotResponse(snapshotInfo));
                                 snapshotsService.removeListener(this);
                             }
                         }
 
                         @Override
                         public void onSnapshotFailure(SnapshotId snapshotId, Throwable t) {
-                            if (this.snapshotId.equals(snapshotId)) {
+                            if (snapshot.equals(snapshotId.getSnapshot())) {
                                 listener.onFailure(t);
                                 snapshotsService.removeListener(this);
                             }
