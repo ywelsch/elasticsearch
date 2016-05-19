@@ -27,7 +27,6 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.SnapshotsInProgress;
-import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -199,8 +198,7 @@ public class SnapshotShardsService extends AbstractLifecycleComponent<SnapshotSh
         // First, remove snapshots that are no longer there
         for (Map.Entry<Snapshot, SnapshotShards> entry : shardSnapshots.entrySet()) {
             final Snapshot snapshot = entry.getKey();
-            if (snapshotsInProgress != null &&
-                    snapshotsInProgress.snapshot(snapshot.getRepository(), snapshot.getSnapshotId().getName()) != null) {
+            if (snapshotsInProgress != null && snapshotsInProgress.snapshot(snapshot) != null) {
                 survivors.put(entry.getKey(), entry.getValue());
             }
         }

@@ -29,7 +29,7 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -278,7 +278,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         }
     }
 
-    public static enum State {
+    public enum State {
         INIT((byte) 0, false, false),
         STARTED((byte) 1, false, false),
         SUCCESS((byte) 2, true, false),
@@ -348,10 +348,10 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         return this.entries;
     }
 
-    public Entry snapshot(final String repositoryName, final String snapshotName) {
+    public Entry snapshot(final Snapshot snapshot) {
         for (Entry entry : entries) {
-            final Snapshot snapshot = entry.snapshot();
-            if (snapshot.isSame(repositoryName, snapshotName)) {
+            final Snapshot curr = entry.snapshot();
+            if (curr.equals(snapshot)) {
                 return entry;
             }
         }

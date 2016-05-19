@@ -50,7 +50,6 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.cluster.metadata.MetaDataIndexStateService;
-import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -72,9 +71,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_REPLICAS;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
@@ -2203,4 +2204,164 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
             assertThat(ex.getSnapshotName(), equalTo("test-snap-2"));
         }
     }
+
+    public void testCannotCreateSnapshotsWithSameName() throws Exception {
+        final String repositoryName = "test-repo";
+        final String snapshotName = "test-snap";
+        final String indexName = "test-idx";
+        final Client client = client();
+        final Path repo = randomRepoPath();
+
+        logger.info("-->  creating repository at {}", repo.toAbsolutePath());
+        assertAcked(client.admin().cluster().preparePutRepository(repositoryName)
+                                            .setType("fs").setSettings(Settings.builder()
+                                                            .put("location", repo)
+                                                            .put("compress", false)
+                                                            .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)));
+        logger.info("--> creating an index and indexing documents");
+        createIndex(indexName);
+        ensureGreen();
+        for (int i = 0; i < 10; i++) {
+            index(indexName, "doc", Integer.toString(i), "foo", "bar" + i);
+        }
+        refresh();
+
+        logger.info("--> take first snapshot");
+        CreateSnapshotResponse createSnapshotResponse = client.admin()
+                                                              .cluster()
+                                                              .prepareCreateSnapshot(repositoryName, snapshotName)
+                                                              .setWaitForCompletion(true)
+                                                              .setIndices(indexName)
+                                                              .get();
+        assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
+        assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(),
+                   equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
+
+        logger.info("--> index more documents");
+        for (int i = 10; i < 20; i++) {
+            index(indexName, "doc", Integer.toString(i), "foo", "bar" + i);
+        }
+        refresh();
+
+        logger.info("--> second snapshot of the same name should fail");
+        try {
+            createSnapshotResponse = client.admin()
+                                           .cluster()
+                                           .prepareCreateSnapshot(repositoryName, snapshotName)
+                                           .setWaitForCompletion(true)
+                                           .setIndices(indexName)
+                                           .get();
+            fail("should not be allowed to create a snapshot with the same name as an already existing snapshot: " +
+                 createSnapshotResponse.getSnapshotInfo().snapshotId());
+        } catch (InvalidSnapshotNameException e) {
+            assertThat(e.getMessage(), containsString("snapshot with the same name already exists"));
+        }
+
+        logger.info("--> delete the first snapshot");
+        client.admin().cluster().prepareDeleteSnapshot(repositoryName, snapshotName).get();
+
+        logger.info("--> try creating a snapshot with the same name, now it should work because the first one was deleted");
+        createSnapshotResponse = client.admin()
+                                       .cluster()
+                                       .prepareCreateSnapshot(repositoryName, snapshotName)
+                                       .setWaitForCompletion(true)
+                                       .setIndices(indexName)
+                                       .get();
+        assertThat(createSnapshotResponse.getSnapshotInfo().snapshotId().getName(), equalTo(snapshotName));
+    }
+
+    public void testGetSnapshotsRequest() throws Exception {
+        final String repositoryName = "test-repo";
+        final String indexName = "test-idx";
+        final Client client = client();
+        final Path repo = randomRepoPath();
+
+        logger.info("-->  creating repository at {}", repo.toAbsolutePath());
+        assertAcked(client.admin().cluster().preparePutRepository(repositoryName)
+                        .setType("fs").setSettings(Settings.builder()
+                                                       .put("location", repo)
+                                                       .put("compress", false)
+                                                       .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)));
+
+        logger.info("--> get snapshots on an empty repository");
+        /*expectThrows(SnapshotMissingException.class, () -> client.admin()
+                                                                 .cluster()
+                                                                 .prepareGetSnapshots(repositoryName)
+                                                                 .addSnapshots("non-existent-snapshot")
+                                                                 .get());*/
+        // with ignore unavailable set to true, should not throw an exception
+        GetSnapshotsResponse getSnapshotsResponse = client.admin()
+                                                          .cluster()
+                                                          .prepareGetSnapshots(repositoryName)
+                                                          .setIgnoreUnavailable(true)
+                                                          .addSnapshots("non-existent-snapshot")
+                                                          .get();
+        assertThat(getSnapshotsResponse.getSnapshots().size(), equalTo(0));
+
+        logger.info("--> creating an index and indexing documents");
+        createIndex(indexName);
+        ensureGreen();
+        for (int i = 0; i < 10; i++) {
+            index(indexName, "doc", Integer.toString(i), "foo", "bar" + i);
+        }
+        refresh();
+
+        final int numSnapshots = randomIntBetween(1, 3);
+        logger.info("--> take {} snapshot(s)", numSnapshots);
+        final String[] snapshotNames = new String[numSnapshots];
+        for (int i = 0; i < numSnapshots; i++) {
+            final String snapshotName = randomAsciiOfLength(8).toLowerCase(Locale.ROOT);
+            CreateSnapshotResponse createSnapshotResponse = client.admin()
+                                                                  .cluster()
+                                                                  .prepareCreateSnapshot(repositoryName, snapshotName)
+                                                                  .setWaitForCompletion(true)
+                                                                  .setIndices(indexName)
+                                                                  .get();
+            assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
+            snapshotNames[i] = snapshotName;
+        }
+
+        logger.info("--> get all snapshots");
+        // with ignore unavailable set to true, should not throw an exception
+        getSnapshotsResponse = client.admin().cluster()
+                                             .prepareGetSnapshots(repositoryName)
+                                             .addSnapshots("_all")
+                                             .get();
+        List<String> sortedNames = Arrays.asList(snapshotNames);
+        Collections.sort(sortedNames);
+        assertThat(getSnapshotsResponse.getSnapshots().size(), equalTo(numSnapshots));
+        assertThat(getSnapshotsResponse.getSnapshots().stream()
+                                                      .map(s -> s.snapshotId().getName())
+                                                      .sorted()
+                                                      .collect(Collectors.toList()), equalTo(sortedNames));
+
+        getSnapshotsResponse = client.admin().cluster()
+                                   .prepareGetSnapshots(repositoryName)
+                                   .addSnapshots(snapshotNames)
+                                   .get();
+        sortedNames = Arrays.asList(snapshotNames);
+        Collections.sort(sortedNames);
+        assertThat(getSnapshotsResponse.getSnapshots().size(), equalTo(numSnapshots));
+        assertThat(getSnapshotsResponse.getSnapshots().stream()
+                                                      .map(s -> s.snapshotId().getName())
+                                                      .sorted()
+                                                      .collect(Collectors.toList()), equalTo(sortedNames));
+
+        logger.info("--> make sure duplicates are not returned in the response");
+        String regexName = snapshotNames[randomIntBetween(0, numSnapshots - 1)];
+        final int splitPos = regexName.length() / 2;
+        final String firstRegex = regexName.substring(0, splitPos) + "*";
+        final String secondRegex = "*" + regexName.substring(splitPos);
+        getSnapshotsResponse = client.admin().cluster()
+                                             .prepareGetSnapshots(repositoryName)
+                                             .addSnapshots(snapshotNames)
+                                             .addSnapshots(firstRegex, secondRegex)
+                                             .get();
+        assertThat(getSnapshotsResponse.getSnapshots().size(), equalTo(numSnapshots));
+        assertThat(getSnapshotsResponse.getSnapshots().stream()
+                                                      .map(s -> s.snapshotId().getName())
+                                                      .sorted()
+                                                      .collect(Collectors.toList()), equalTo(sortedNames));
+    }
+
 }

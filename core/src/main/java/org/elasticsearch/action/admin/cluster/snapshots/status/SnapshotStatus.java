@@ -20,7 +20,7 @@
 package org.elasticsearch.action.admin.cluster.snapshots.status;
 
 import org.elasticsearch.cluster.SnapshotsInProgress.State;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;

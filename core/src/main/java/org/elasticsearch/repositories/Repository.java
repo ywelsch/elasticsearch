@@ -145,9 +145,11 @@ public interface Repository extends LifecycleComponent<Repository> {
      * where not found in the repository, a {@link SnapshotMissingException} is thrown.
      *
      * @param snapshotNames list of snapshot names to resolve
+     * @param ignoreUnavailable true if a snapshot should be ignored if it was not found,
+     *                          false if it should throw a SnapshotMissingException
      * @return snapshot ids
-     * @throws SnapshotMissingException if a snapshot is not found
+     * @throws SnapshotMissingException if a snapshot is not found and ignoreUnavailable is false
      */
-    List<SnapshotId> resolveSnapshotNames(List<String> snapshotNames);
+    List<SnapshotId> resolveSnapshotNames(List<String> snapshotNames, boolean ignoreUnavailable);
 
 }

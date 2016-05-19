@@ -20,18 +20,14 @@
 package org.elasticsearch.cluster.routing;
 
 import org.elasticsearch.Version;
-import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.metadata.IndexMetaData;
-import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
-
-import static org.hamcrest.Matchers.equalTo;
 
 public class ShardRoutingTests extends ESTestCase {
 
@@ -156,7 +152,7 @@ public class ShardRoutingTests extends ESTestCase {
                 case 4:
                     // change restore source
                     otherRouting = TestShardRouting.newShardRouting(otherRouting.getIndexName(), otherRouting.id(), otherRouting.currentNodeId(), otherRouting.relocatingNodeId(),
-                            otherRouting.restoreSource() == null ? new RestoreSource(new Snapshot("test", new SnapshotId("s1")), Version.CURRENT, "test") :
+                            otherRouting.restoreSource() == null ? new RestoreSource(new Snapshot("test", new SnapshotId("s1", UUIDs.randomBase64UUID())), Version.CURRENT, "test") :
                                     new RestoreSource(otherRouting.restoreSource().snapshot(), Version.CURRENT, otherRouting.index() + "_1"),
                             otherRouting.primary(), otherRouting.state(), otherRouting.unassignedInfo());
                     break;

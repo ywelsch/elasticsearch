@@ -39,7 +39,6 @@ import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.MetaDataCreateIndexService;
 import org.elasticsearch.cluster.metadata.MetaDataIndexUpgradeService;
 import org.elasticsearch.cluster.metadata.RepositoriesMetaData;
-import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
@@ -191,7 +190,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         try {
             // Read snapshot info and metadata from the repository
             Repository repository = repositoriesService.repository(request.repositoryName);
-            final List<SnapshotId> resolvedSnapshots = repository.resolveSnapshotNames(Arrays.asList(request.snapshotName));
+            final List<SnapshotId> resolvedSnapshots = repository.resolveSnapshotNames(Arrays.asList(request.snapshotName), false);
             final SnapshotInfo snapshotInfo = repository.readSnapshot(resolvedSnapshots.get(0));
             final SnapshotId snapshotId = snapshotInfo.snapshotId();
             final Snapshot snapshot = new Snapshot(request.repositoryName, snapshotId);

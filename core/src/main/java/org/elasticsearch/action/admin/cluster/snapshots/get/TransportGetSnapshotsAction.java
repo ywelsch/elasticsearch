@@ -39,7 +39,9 @@ import org.elasticsearch.transport.TransportService;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Transport Action for get snapshots operation
@@ -81,21 +83,33 @@ public class TransportGetSnapshotsAction extends TransportMasterNodeAction<GetSn
                 snapshotInfoBuilder.addAll(snapshotsService.currentSnapshots(repository));
             } else {
                 List<SnapshotInfo> snapshots = null;
+                final Map<String, SnapshotInfo> snapshotInfos = new HashMap<>();
                 for (String snapshotOrPattern : request.snapshots()) {
                     if (Regex.isSimpleMatchPattern(snapshotOrPattern) == false) {
-                        List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repository, Arrays.asList(snapshotOrPattern));
-                        snapshotInfoBuilder.add(snapshotsService.snapshot(repository, snapshotIds.get(0)));
+                        if (snapshotInfos.containsKey(snapshotOrPattern)) {
+                            continue; // already got the snapshot info for this snapshot
+                        }
+                        List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repository,
+                                                                                             Arrays.asList(snapshotOrPattern),
+                                                                                             request.ignoreUnavailable());
+                        if (snapshotIds.isEmpty() == false) { // could be empty if ignoreUnavailable is set
+                            snapshotInfos.put(snapshotOrPattern, snapshotsService.snapshot(repository, snapshotIds.get(0)));
+                        }
                     } else {
                         if (snapshots == null) { // lazily load snapshots
                             snapshots = snapshotsService.snapshots(repository, request.ignoreUnavailable());
                         }
                         for (SnapshotInfo snapshot : snapshots) {
+                            if (snapshotInfos.containsKey(snapshot.snapshotId().getName())) {
+                                continue; // already got the snapshot info for this snapshot
+                            }
                             if (Regex.simpleMatch(snapshotOrPattern, snapshot.snapshotId().getName())) {
                                 snapshotInfoBuilder.add(snapshot);
                             }
                         }
                     }
                 }
+                snapshotInfoBuilder.addAll(snapshotInfos.values());
             }
             listener.onResponse(new GetSnapshotsResponse(Collections.unmodifiableList(snapshotInfoBuilder)));
         } catch (Throwable t) {

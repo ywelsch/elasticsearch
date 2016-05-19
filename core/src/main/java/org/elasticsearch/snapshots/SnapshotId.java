@@ -19,7 +19,6 @@
 
 package org.elasticsearch.snapshots;
 
-import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
@@ -52,18 +51,6 @@ public final class SnapshotId implements Writeable {
     public SnapshotId(final String name, final String uuid) {
         this.name = Objects.requireNonNull(name);
         this.uuid = Objects.requireNonNull(uuid);
-        this.hashCode = computeHashCode();
-    }
-
-    /**
-     * Constructs a new SnapshotId with a new UUID.  This should be used when getting
-     * a SnapshotId for a new snapshot.
-     *
-     * @param name   snapshot name
-     */
-    public SnapshotId(final String name) {
-        this.name = Objects.requireNonNull(name);
-        this.uuid = UUIDs.randomBase64UUID();
         this.hashCode = computeHashCode();
     }
 

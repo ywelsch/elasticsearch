@@ -17,11 +17,11 @@
  * under the License.
  */
 
-package org.elasticsearch.cluster.metadata;
+package org.elasticsearch.snapshots;
 
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
-import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
@@ -35,7 +35,7 @@ import static org.hamcrest.CoreMatchers.equalTo;
 public class SnapshotTests extends ESTestCase {
 
     public void testSnapshotEquals() {
-        final SnapshotId snapshotId = new SnapshotId("snap");
+        final SnapshotId snapshotId = new SnapshotId("snap", UUIDs.randomBase64UUID());
         final Snapshot original = new Snapshot("repo", snapshotId);
         final Snapshot expected = new Snapshot(original.getRepository(), original.getSnapshotId());
         assertThat(expected, equalTo(original));
@@ -46,20 +46,12 @@ public class SnapshotTests extends ESTestCase {
     }
 
     public void testSerialization() throws IOException {
-        final SnapshotId snapshotId = new SnapshotId(randomAsciiOfLength(randomIntBetween(2, 8)));
+        final SnapshotId snapshotId = new SnapshotId(randomAsciiOfLength(randomIntBetween(2, 8)), UUIDs.randomBase64UUID());
         final Snapshot original = new Snapshot(randomAsciiOfLength(randomIntBetween(2, 8)), snapshotId);
         final BytesStreamOutput out = new BytesStreamOutput();
         original.writeTo(out);
         final ByteBufferStreamInput in = new ByteBufferStreamInput(ByteBuffer.wrap(out.bytes().toBytes()));
         assertThat(new Snapshot(in), equalTo(original));
-    }
-
-    public void testIsSame() {
-        final String repositoryName = "repo";
-        final String snapshotName = "snap";
-        final SnapshotId snapshotId = new SnapshotId(snapshotName);
-        final Snapshot snapshot = new Snapshot(repositoryName, snapshotId);
-        assertTrue(snapshot.isSame(repositoryName, snapshotName));
     }
 
 }

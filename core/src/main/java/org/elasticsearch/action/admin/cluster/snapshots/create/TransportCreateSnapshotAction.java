@@ -29,7 +29,7 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -86,7 +86,8 @@ public class TransportCreateSnapshotAction extends TransportMasterNodeAction<Cre
                     snapshotsService.addListener(new SnapshotsService.SnapshotCompletionListener() {
                         @Override
                         public void onSnapshotCompletion(Snapshot snapshot, SnapshotInfo snapshotInfo) {
-                            if (snapshot.isSame(request.repository(), request.snapshot())) {
+                            if (snapshot.getRepository().equals(request.repository()) &&
+                                    snapshot.getSnapshotId().getName().equals(request.snapshot())) {
                                 listener.onResponse(new CreateSnapshotResponse(snapshotInfo));
                                 snapshotsService.removeListener(this);
                             }
@@ -94,7 +95,8 @@ public class TransportCreateSnapshotAction extends TransportMasterNodeAction<Cre
 
                         @Override
                         public void onSnapshotFailure(Snapshot snapshot, Throwable t) {
-                            if (snapshot.isSame(request.repository(), request.snapshot())) {
+                            if (snapshot.getRepository().equals(request.repository()) &&
+                                    snapshot.getSnapshotId().getName().equals(request.snapshot())) {
                                 listener.onFailure(t);
                                 snapshotsService.removeListener(this);
                             }

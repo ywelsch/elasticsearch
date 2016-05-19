@@ -17,12 +17,11 @@
  * under the License.
  */
 
-package org.elasticsearch.cluster.metadata;
+package org.elasticsearch.snapshots;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
-import org.elasticsearch.snapshots.SnapshotId;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -98,13 +97,6 @@ public final class Snapshot implements Writeable {
     public void writeTo(final StreamOutput out) throws IOException {
         out.writeString(repository);
         snapshotId.writeTo(out);
-    }
-
-    /**
-     * Returns whether the snapshot logically equivalent to the given repository name + snapshot name combination.
-     */
-    public boolean isSame(final String repositoryName, final String snapshotName) {
-        return repository.equals(repositoryName) && snapshotId.getName().equals(snapshotName);
     }
 
 }

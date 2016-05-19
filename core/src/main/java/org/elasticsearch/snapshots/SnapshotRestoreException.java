@@ -19,7 +19,6 @@
 
 package org.elasticsearch.snapshots;
 
-import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.IOException;

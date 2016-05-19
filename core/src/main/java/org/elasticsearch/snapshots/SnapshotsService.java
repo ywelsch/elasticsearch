@@ -36,7 +36,6 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.RepositoriesMetaData;
-import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
@@ -45,6 +44,7 @@ import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
@@ -199,7 +199,12 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         final String repositoryName = request.repositoryName;
         final String snapshotName = request.snapshotName;
         validate(repositoryName, snapshotName);
-        final SnapshotId snapshotId = new SnapshotId(snapshotName); // creates a new UUID for the snapshot
+        final SnapshotId snapshotId = new SnapshotId(snapshotName, UUIDs.randomBase64UUID()); // new UUID for the snapshot
+
+        // check if the snapshot name already exists in the repository
+        if (snapshotNameExists(repositoryName, snapshotName)) {
+            throw new InvalidSnapshotNameException(repositoryName, snapshotName, "snapshot with the same name already exists");
+        }
 
         clusterService.submitStateUpdateTask(request.cause(), new ClusterStateUpdateTask() {
 
@@ -208,11 +213,6 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
             @Override
             public ClusterState execute(ClusterState currentState) {
                 validate(request, currentState);
-
-                // check if the snapshot name already exists in the repository
-                if (snapshotNameExists(repositoryName, snapshotName)) {
-                    throw new InvalidSnapshotNameException(repositoryName, snapshotName, "snapshot with the same name already exists");
-                }
 
                 SnapshotsInProgress snapshots = currentState.custom(SnapshotsInProgress.TYPE);
                 if (snapshots == null || snapshots.entries().isEmpty()) {
@@ -920,7 +920,7 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * @param listener        listener
      */
     public void deleteSnapshot(final String repositoryName, final String snapshotName, final DeleteSnapshotListener listener) {
-        final List<SnapshotId> snapshotIds = resolveSnapshotNames(repositoryName, Arrays.asList(snapshotName));
+        final List<SnapshotId> snapshotIds = resolveSnapshotNames(repositoryName, Arrays.asList(snapshotName), false);
         deleteSnapshot(new Snapshot(repositoryName, snapshotIds.get(0)), listener);
     }
 
@@ -944,7 +944,7 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
                     // No snapshots running - we can continue
                     return currentState;
                 }
-                SnapshotsInProgress.Entry snapshotEntry = snapshots.snapshot(snapshot.getRepository(), snapshot.getSnapshotId().getName());
+                SnapshotsInProgress.Entry snapshotEntry = snapshots.snapshot(snapshot);
                 if (snapshotEntry == null) {
                     // This snapshot is not running - continue
                     if (!snapshots.entries().isEmpty()) {
@@ -1218,12 +1218,14 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
     /**
      * Resolve the {@link SnapshotId}s for the given snapshot names.
      *
-     * @param repositoryName  repository name
-     * @param snapshotNames   snapshot names
+     * @param repositoryName     repository name
+     * @param snapshotNames      snapshot names
+     * @param ignoreUnavailable  true if a snapshot should be ignored if it was not found,
+     *                           false if it should throw a SnapshotMissingException
      * @return the snapshot ids
-     * @throws SnapshotMissingException if a snapshot could not be found
+     * @throws SnapshotMissingException if a snapshot could not be found and ignoreUnavailable is false
      */
-    public List<SnapshotId> resolveSnapshotNames(final String repositoryName, final List<String> snapshotNames) {
+    public List<SnapshotId> resolveSnapshotNames(final String repositoryName, final List<String> snapshotNames, final boolean ignoreUnavailable) {
         Objects.requireNonNull(repositoryName);
         Objects.requireNonNull(snapshotNames);
         List<SnapshotId> ids = new ArrayList<>();
@@ -1238,9 +1240,10 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         }
         Repository repository = repositoriesService.repository(repositoryName);
         if (snapshots.isEmpty() == false) {
-            ids.addAll(repository.resolveSnapshotNames(new ArrayList<>(snapshots)));
+            ids.addAll(repository.resolveSnapshotNames(new ArrayList<>(snapshots), ignoreUnavailable));
         }
-        assert ids.size() == snapshotNames.size(); // if a snapshot name couldn't be resolved, an exception should've been thrown
+        // if ignoreUnavailable is false, then an unresolved snapshot should throw a SnapshotMissingException
+        assert ignoreUnavailable || ids.size() == snapshotNames.size();
         return Collections.unmodifiableList(ids);
     }
 

@@ -21,7 +21,7 @@ package org.elasticsearch.cluster;
 
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import org.elasticsearch.cluster.ClusterState.Custom;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -72,24 +72,6 @@ public class RestoreInProgress extends AbstractDiffable<Custom> implements Custo
      */
     public List<Entry> entries() {
         return this.entries;
-    }
-
-    /**
-     * Returns currently running restore process with corresponding snapshot id or null if this snapshot is not being
-     * restored
-     *
-     * @param repositoryName  repository name
-     * @param snapshotName    snapshot name
-     * @return restore metadata or null
-     */
-    public Entry snapshot(final String repositoryName, final String snapshotName) {
-        for (Entry entry : entries) {
-            final Snapshot snapshot = entry.snapshot();
-            if (snapshot.isSame(repositoryName, snapshotName)) {
-                return entry;
-            }
-        }
-        return null;
     }
 
     @Override

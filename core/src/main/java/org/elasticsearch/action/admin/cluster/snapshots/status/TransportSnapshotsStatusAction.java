@@ -36,7 +36,7 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
@@ -200,10 +200,11 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
         // Now add snapshots on disk that are not currently running
         final String repositoryName = request.repository();
         if (Strings.hasText(repositoryName) && request.snapshots() != null && request.snapshots().length > 0) {
-            final List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repositoryName,
-                Arrays.asList(request.snapshots()).stream()
-                                                  .filter(s -> currentSnapshots.contains(Tuple.tuple(repositoryName, s)) == false)
-                                                  .collect(Collectors.toList()));
+            final List<String> snapshotNames = Arrays.asList(request.snapshots())
+                                                     .stream()
+                                                     .filter(s -> currentSnapshots.contains(Tuple.tuple(repositoryName, s)) == false)
+                                                     .collect(Collectors.toList());
+            final List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repositoryName, snapshotNames, false);
             for (SnapshotId snapshotId : snapshotIds) {
                 SnapshotInfo snapshotInfo = snapshotsService.snapshot(repositoryName, snapshotId);
                 List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();

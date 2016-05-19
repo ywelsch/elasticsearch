@@ -21,6 +21,7 @@ package org.elasticsearch.rest.action.cat;
 
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.admin.indices.recovery.RecoveryResponse;
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.RestoreSource;
@@ -32,7 +33,7 @@ import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.rest.RestController;
-import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.ArrayList;
@@ -77,7 +78,8 @@ public class RestRecoveryActionTests extends ESTestCase {
 
             final RestoreSource restoreSource = randomBoolean() ? mock(RestoreSource.class) : null;
             if (restoreSource != null) {
-                final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8), new SnapshotId(randomAsciiOfLength(8)));
+                final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8),
+                                                       new SnapshotId(randomAsciiOfLength(8), UUIDs.randomBase64UUID()));
                 when(restoreSource.snapshot()).thenReturn(snapshot);
             }
 

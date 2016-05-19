@@ -714,7 +714,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
     }
 
     @Override
-    public List<SnapshotId> resolveSnapshotNames(final List<String> snapshotNames) {
+    public List<SnapshotId> resolveSnapshotNames(final List<String> snapshotNames, final boolean ignoreUnavailable) {
         List<SnapshotId> ids = new ArrayList<>();
         final List<SnapshotId> snapshotIds = snapshots();
         for (String snapshotName : snapshotNames) {
@@ -724,19 +724,22 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                     resolvedSnapshotId = snapshotId;
                 }
             }
-            if (resolvedSnapshotId == null) {
+            if (ignoreUnavailable == false && resolvedSnapshotId == null) {
                 throw new SnapshotMissingException(repositoryName, snapshotName);
             }
-            ids.add(resolvedSnapshotId);
+            if (resolvedSnapshotId != null) {
+                ids.add(resolvedSnapshotId);
+            }
         }
-        assert snapshotNames.size() == ids.size(); // assert that each snapshot name was resolved into an id
+        // assert that each snapshot name was resolved into an id, if ignoreUnavailable is false
+        assert ignoreUnavailable || snapshotNames.size() == ids.size();
         return Collections.unmodifiableList(ids);
     }
 
     // TODO: this will go away once readSnapshotsList uses the index file instead of listing blobs
     // to know which snapshots are part of a repository.  See #18156
     // Package private for testing.
-    Tuple<String, String> parseNameUUIDFromBlobName(final String str) {
+    static Tuple<String, String> parseNameUUIDFromBlobName(final String str) {
         final String name;
         final String uuid;
         final int sizeOfUUID = 22; // uuid is 22 chars in length
@@ -756,7 +759,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
         return Tuple.tuple(name, uuid);
     }
 
-    private String blobId(final SnapshotId snapshotId) {
+    private static String blobId(final SnapshotId snapshotId) {
         final String uuid = snapshotId.getUUID();
         if (uuid.equals(SnapshotId.UNASSIGNED_UUID)) {
             // the old snapshot blob naming

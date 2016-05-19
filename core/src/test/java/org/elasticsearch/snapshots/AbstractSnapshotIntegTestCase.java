@@ -115,8 +115,20 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
                 // Make sure that snapshot clean up operations are finished
                 ClusterStateResponse stateResponse = client().admin().cluster().prepareState().get();
                 SnapshotsInProgress snapshotsInProgress = stateResponse.getState().custom(SnapshotsInProgress.TYPE);
-                if (snapshotsInProgress == null || snapshotsInProgress.snapshot(repository, snapshotName) == null) {
+                if (snapshotsInProgress == null) {
                     return snapshotInfos.get(0);
+                } else {
+                    boolean found = false;
+                    for (SnapshotsInProgress.Entry entry : snapshotsInProgress.entries()) {
+                        final Snapshot curr = entry.snapshot();
+                        if (curr.getRepository().equals(repository) && curr.getSnapshotId().getName().equals(snapshotName)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found == false) {
+                        return snapshotInfos.get(0);
+                    }
                 }
             }
             Thread.sleep(100);

@@ -31,6 +31,7 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.snapshots.RestoreInfo;
 import org.elasticsearch.snapshots.RestoreService;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -84,7 +85,9 @@ public class TransportRestoreSnapshotAction extends TransportMasterNodeAction<Re
                     restoreService.addListener(new ActionListener<RestoreService.RestoreCompletionResponse>() {
                         @Override
                         public void onResponse(RestoreService.RestoreCompletionResponse restoreCompletionResponse) {
-                            if (restoreCompletionResponse.getSnapshot().isSame(request.repository(), request.snapshot())) {
+                            final Snapshot snapshot = restoreCompletionResponse.getSnapshot();
+                            if (snapshot.getRepository().equals(request.repository()) &&
+                                    snapshot.getSnapshotId().getName().equals(request.snapshot())) {
                                 listener.onResponse(new RestoreSnapshotResponse(restoreCompletionResponse.getRestoreInfo()));
                                 restoreService.removeListener(this);
                             }
