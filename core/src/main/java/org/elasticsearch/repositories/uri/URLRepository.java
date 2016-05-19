@@ -19,7 +19,7 @@
 
 package org.elasticsearch.repositories.uri;
 
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.BlobStore;
 import org.elasticsearch.common.blobstore.url.URLBlobStore;

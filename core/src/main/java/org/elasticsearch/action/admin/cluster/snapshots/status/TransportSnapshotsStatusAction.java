@@ -29,14 +29,15 @@ import org.elasticsearch.cluster.SnapshotsInProgress;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
-import org.elasticsearch.cluster.metadata.SnapshotId;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.cluster.metadata.Snapshot;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -44,12 +45,14 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  */
@@ -88,8 +91,8 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
     protected void masterOperation(final SnapshotsStatusRequest request,
                                    final ClusterState state,
                                    final ActionListener<SnapshotsStatusResponse> listener) throws Exception {
-        List<SnapshotsInProgress.Entry> currentSnapshots = snapshotsService.currentSnapshots(request.repository(), request.snapshots());
-
+        List<SnapshotsInProgress.Entry> currentSnapshots =
+            snapshotsService.currentSnapshots(request.repository(), Arrays.asList(request.snapshots()));
         if (currentSnapshots.isEmpty()) {
             listener.onResponse(buildResponse(request, currentSnapshots, null));
             return;
@@ -106,19 +109,19 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
 
         if (!nodesIds.isEmpty()) {
             // There are still some snapshots running - check their progress
-            SnapshotId[] snapshotIds = new SnapshotId[currentSnapshots.size()];
+            Snapshot[] snapshots = new Snapshot[currentSnapshots.size()];
             for (int i = 0; i < currentSnapshots.size(); i++) {
-                snapshotIds[i] = currentSnapshots.get(i).snapshotId();
+                snapshots[i] = currentSnapshots.get(i).snapshot();
             }
 
             TransportNodesSnapshotsStatus.Request nodesRequest = new TransportNodesSnapshotsStatus.Request(nodesIds.toArray(new String[nodesIds.size()]))
-                    .snapshotIds(snapshotIds).timeout(request.masterNodeTimeout());
+                    .snapshots(snapshots).timeout(request.masterNodeTimeout());
             transportNodesSnapshotsStatus.execute(nodesRequest, new ActionListener<TransportNodesSnapshotsStatus.NodesSnapshotStatus>() {
                         @Override
                         public void onResponse(TransportNodesSnapshotsStatus.NodesSnapshotStatus nodeSnapshotStatuses) {
                             try {
                                 List<SnapshotsInProgress.Entry> currentSnapshots =
-                                        snapshotsService.currentSnapshots(request.repository(), request.snapshots());
+                                        snapshotsService.currentSnapshots(request.repository(), Arrays.asList(request.snapshots()));
                                 listener.onResponse(buildResponse(request, currentSnapshots, nodeSnapshotStatuses));
                             } catch (Throwable e) {
                                 listener.onFailure(e);
@@ -137,12 +140,12 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
 
     }
 
-    private SnapshotsStatusResponse buildResponse(SnapshotsStatusRequest request, List<SnapshotsInProgress.Entry> currentSnapshots,
+    private SnapshotsStatusResponse buildResponse(SnapshotsStatusRequest request, List<SnapshotsInProgress.Entry> currentSnapshotEntries,
                                                   TransportNodesSnapshotsStatus.NodesSnapshotStatus nodeSnapshotStatuses) throws IOException {
         // First process snapshot that are currently processed
         List<SnapshotStatus> builder = new ArrayList<>();
-        Set<SnapshotId> currentSnapshotIds = new HashSet<>();
-        if (!currentSnapshots.isEmpty()) {
+        Set<Tuple<String, String>> currentSnapshots = new HashSet<>(); // set of tuples of repository name and snapshot name
+        if (!currentSnapshotEntries.isEmpty()) {
             Map<String, TransportNodesSnapshotsStatus.NodeSnapshotStatus> nodeSnapshotStatusMap;
             if (nodeSnapshotStatuses != null) {
                 nodeSnapshotStatusMap = nodeSnapshotStatuses.getNodesMap();
@@ -150,8 +153,8 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
                 nodeSnapshotStatusMap = new HashMap<>();
             }
 
-            for (SnapshotsInProgress.Entry entry : currentSnapshots) {
-                currentSnapshotIds.add(entry.snapshotId());
+            for (SnapshotsInProgress.Entry entry : currentSnapshotEntries) {
+                currentSnapshots.add(Tuple.tuple(entry.snapshot().getRepository(), entry.snapshot().getSnapshotId().getName()));
                 List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
                 for (ObjectObjectCursor<ShardId, SnapshotsInProgress.ShardSnapshotStatus> shardEntry : entry.shards()) {
                     SnapshotsInProgress.ShardSnapshotStatus status = shardEntry.value;
@@ -159,7 +162,7 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
                         // We should have information about this shard from the shard:
                         TransportNodesSnapshotsStatus.NodeSnapshotStatus nodeStatus = nodeSnapshotStatusMap.get(status.nodeId());
                         if (nodeStatus != null) {
-                            Map<ShardId, SnapshotIndexShardStatus> shardStatues = nodeStatus.status().get(entry.snapshotId());
+                            Map<ShardId, SnapshotIndexShardStatus> shardStatues = nodeStatus.status().get(entry.snapshot());
                             if (shardStatues != null) {
                                 SnapshotIndexShardStatus shardStatus = shardStatues.get(shardEntry.key);
                                 if (shardStatus != null) {
@@ -191,41 +194,40 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
                     SnapshotIndexShardStatus shardStatus = new SnapshotIndexShardStatus(shardEntry.key, stage);
                     shardStatusBuilder.add(shardStatus);
                 }
-                builder.add(new SnapshotStatus(entry.snapshotId(), entry.state(), Collections.unmodifiableList(shardStatusBuilder)));
+                builder.add(new SnapshotStatus(entry.snapshot(), entry.state(), Collections.unmodifiableList(shardStatusBuilder)));
             }
         }
         // Now add snapshots on disk that are not currently running
-        if (Strings.hasText(request.repository())) {
-            if (request.snapshots() != null && request.snapshots().length > 0) {
-                for (String snapshotName : request.snapshots()) {
-                    Snapshot snapshot = new Snapshot(request.repository(), snapshotName);
-                    if (currentSnapshotIds.contains(snapshot)) {
-                        // This is a snapshot the is currently running - skipping
-                        continue;
+        final String repositoryName = request.repository();
+        if (Strings.hasText(repositoryName) && request.snapshots() != null && request.snapshots().length > 0) {
+            final List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repositoryName,
+                Arrays.asList(request.snapshots()).stream()
+                                                  .filter(s -> currentSnapshots.contains(Tuple.tuple(repositoryName, s)) == false)
+                                                  .collect(Collectors.toList()));
+            for (SnapshotId snapshotId : snapshotIds) {
+                SnapshotInfo snapshotInfo = snapshotsService.snapshot(repositoryName, snapshotId);
+                List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
+                if (snapshotInfo.state().completed()) {
+                    Map<ShardId, IndexShardSnapshotStatus> shardStatues =
+                        snapshotsService.snapshotShards(request.repository(), snapshotInfo);
+                    for (Map.Entry<ShardId, IndexShardSnapshotStatus> shardStatus : shardStatues.entrySet()) {
+                        shardStatusBuilder.add(new SnapshotIndexShardStatus(shardStatus.getKey(), shardStatus.getValue()));
                     }
-                    SnapshotInfo snapshotInfo = snapshotsService.snapshot(snapshot);
-                    List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
-                    if (snapshotInfo.state().completed()) {
-                        Map<ShardId, IndexShardSnapshotStatus> shardStatues = snapshotsService.snapshotShards(snapshot);
-                        for (Map.Entry<ShardId, IndexShardSnapshotStatus> shardStatus : shardStatues.entrySet()) {
-                            shardStatusBuilder.add(new SnapshotIndexShardStatus(shardStatus.getKey(), shardStatus.getValue()));
-                        }
-                        final SnapshotsInProgress.State state;
-                        switch (snapshotInfo.state()) {
-                            case FAILED:
-                                state = SnapshotsInProgress.State.FAILED;
-                                break;
-                            case SUCCESS:
-                            case PARTIAL:
-                                // Translating both PARTIAL and SUCCESS to SUCCESS for now
-                                // TODO: add the differentiation on the metadata level in the next major release
-                                state = SnapshotsInProgress.State.SUCCESS;
-                                break;
-                            default:
-                                throw new IllegalArgumentException("Unknown snapshot state " + snapshotInfo.state());
-                        }
-                        builder.add(new SnapshotStatus(SnapshotId.get(snapshot, snapshotInfo.uuid()), state, Collections.unmodifiableList(shardStatusBuilder)));
+                    final SnapshotsInProgress.State state;
+                    switch (snapshotInfo.state()) {
+                        case FAILED:
+                            state = SnapshotsInProgress.State.FAILED;
+                            break;
+                        case SUCCESS:
+                        case PARTIAL:
+                            // Translating both PARTIAL and SUCCESS to SUCCESS for now
+                            // TODO: add the differentiation on the metadata level in the next major release
+                            state = SnapshotsInProgress.State.SUCCESS;
+                            break;
+                        default:
+                            throw new IllegalArgumentException("Unknown snapshot state " + snapshotInfo.state());
                     }
+                    builder.add(new SnapshotStatus(new Snapshot(repositoryName, snapshotInfo.snapshotId()), state, Collections.unmodifiableList(shardStatusBuilder)));
                 }
             }
         }

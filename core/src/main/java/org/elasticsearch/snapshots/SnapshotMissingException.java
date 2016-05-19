@@ -29,12 +29,16 @@ import java.io.IOException;
  */
 public class SnapshotMissingException extends SnapshotException {
 
-    public SnapshotMissingException(Snapshot snapshot, Throwable cause) {
-        super(snapshot, "is missing", cause);
+    public SnapshotMissingException(final String repositoryName, final SnapshotId snapshotId, final Throwable cause) {
+        super(repositoryName, snapshotId, "is missing", cause);
     }
 
-    public SnapshotMissingException(Snapshot snapshot) {
-        super(snapshot, "is missing");
+    public SnapshotMissingException(final String repositoryName, final SnapshotId snapshotId) {
+        super(repositoryName, snapshotId, "is missing");
+    }
+
+    public SnapshotMissingException(final String repositoryName, final String snapshotName) {
+        super(repositoryName, snapshotName, "is missing");
     }
 
     public SnapshotMissingException(StreamInput in) throws IOException {

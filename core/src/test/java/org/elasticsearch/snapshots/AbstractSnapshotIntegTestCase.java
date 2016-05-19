@@ -108,7 +108,6 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
 
     public SnapshotInfo waitForCompletion(String repository, String snapshotName, TimeValue timeout) throws InterruptedException {
         long start = System.currentTimeMillis();
-        Snapshot snapshot = new Snapshot(repository, snapshotName);
         while (System.currentTimeMillis() - start < timeout.millis()) {
             List<SnapshotInfo> snapshotInfos = client().admin().cluster().prepareGetSnapshots(repository).setSnapshots(snapshotName).get().getSnapshots();
             assertThat(snapshotInfos.size(), equalTo(1));
@@ -116,7 +115,7 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
                 // Make sure that snapshot clean up operations are finished
                 ClusterStateResponse stateResponse = client().admin().cluster().prepareState().get();
                 SnapshotsInProgress snapshotsInProgress = stateResponse.getState().custom(SnapshotsInProgress.TYPE);
-                if (snapshotsInProgress == null || snapshotsInProgress.snapshot(snapshot) == null) {
+                if (snapshotsInProgress == null || snapshotsInProgress.snapshot(repository, snapshotName) == null) {
                     return snapshotInfos.get(0);
                 }
             }

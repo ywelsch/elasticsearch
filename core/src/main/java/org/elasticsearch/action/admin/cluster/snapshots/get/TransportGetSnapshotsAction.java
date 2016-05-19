@@ -30,17 +30,16 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Transport Action for get snapshots operation
@@ -74,31 +73,28 @@ public class TransportGetSnapshotsAction extends TransportMasterNodeAction<GetSn
     @Override
     protected void masterOperation(final GetSnapshotsRequest request, ClusterState state, final ActionListener<GetSnapshotsResponse> listener) {
         try {
+            final String repository = request.repository();
             List<SnapshotInfo> snapshotInfoBuilder = new ArrayList<>();
             if (isAllSnapshots(request.snapshots())) {
-                snapshotInfoBuilder.addAll(snapshotsService.snapshots(request.repository(), request.ignoreUnavailable()));
+                snapshotInfoBuilder.addAll(snapshotsService.snapshots(repository, request.ignoreUnavailable()));
             } else if (isCurrentSnapshots(request.snapshots())) {
-                snapshotInfoBuilder.addAll(snapshotsService.currentSnapshots(request.repository()));
+                snapshotInfoBuilder.addAll(snapshotsService.currentSnapshots(repository));
             } else {
-                Set<String> snapshotsToGet = new LinkedHashSet<>(); // to keep insertion order
                 List<SnapshotInfo> snapshots = null;
                 for (String snapshotOrPattern : request.snapshots()) {
                     if (Regex.isSimpleMatchPattern(snapshotOrPattern) == false) {
-                        snapshotsToGet.add(snapshotOrPattern);
+                        List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repository, Arrays.asList(snapshotOrPattern));
+                        snapshotInfoBuilder.add(snapshotsService.snapshot(repository, snapshotIds.get(0)));
                     } else {
                         if (snapshots == null) { // lazily load snapshots
-                            snapshots = snapshotsService.snapshots(request.repository(), request.ignoreUnavailable());
+                            snapshots = snapshotsService.snapshots(repository, request.ignoreUnavailable());
                         }
                         for (SnapshotInfo snapshot : snapshots) {
-                            if (Regex.simpleMatch(snapshotOrPattern, snapshot.name())) {
-                                snapshotsToGet.add(snapshot.name());
+                            if (Regex.simpleMatch(snapshotOrPattern, snapshot.snapshotId().getName())) {
+                                snapshotInfoBuilder.add(snapshot);
                             }
                         }
                     }
-                }
-                for (String snapshotName : snapshotsToGet) {
-                    final Snapshot snapshot = new Snapshot(request.repository(), snapshotName);
-                    snapshotInfoBuilder.add(snapshotsService.snapshot(snapshot));
                 }
             }
             listener.onResponse(new GetSnapshotsResponse(Collections.unmodifiableList(snapshotInfoBuilder)));

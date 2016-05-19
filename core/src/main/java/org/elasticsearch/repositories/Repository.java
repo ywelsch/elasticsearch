@@ -20,7 +20,7 @@ package org.elasticsearch.repositories;
 
 import org.apache.lucene.index.IndexCommit;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
@@ -40,7 +40,7 @@ import java.util.List;
  * <p>
  * Typical snapshot usage pattern:
  * <ul>
- * <li>Master calls {@link #initializeSnapshot(org.elasticsearch.cluster.metadata.SnapshotId, List, org.elasticsearch.cluster.metadata.MetaData)}
+ * <li>Master calls {@link #initializeSnapshot(SnapshotId, List, org.elasticsearch.cluster.metadata.MetaData)}
  * with list of indices that will be included into the snapshot</li>
  * <li>Data nodes call {@link org.elasticsearch.index.snapshots.IndexShardRepository#snapshot(SnapshotId, ShardId, IndexCommit, IndexShardSnapshotStatus)} for each shard</li>
  * <li>When all shard calls return master calls {@link #finalizeSnapshot}
@@ -52,10 +52,10 @@ public interface Repository extends LifecycleComponent<Repository> {
     /**
      * Reads snapshot description from repository.
      *
-     * @param snapshotName snapshot name
+     * @param snapshotId  snapshot id
      * @return information about snapshot
      */
-    SnapshotInfo readSnapshot(String snapshotName);
+    SnapshotInfo readSnapshot(SnapshotId snapshotId);
 
     /**
      * Returns global metadata associate with the snapshot.
@@ -141,13 +141,13 @@ public interface Repository extends LifecycleComponent<Repository> {
     boolean readOnly();
 
     /**
-     * Resolves snapshot name(s) in the repository to {@link SnapshotId}(s).  If any snapshots
-     * are not found, a {@link SnapshotMissingException} is thrown.
+     * Resolves snapshot names in the repository to {@link SnapshotId}s.  If any of the snapshot names
+     * where not found in the repository, a {@link SnapshotMissingException} is thrown.
      *
-     * @param snapshotNames snapshot name(s)
+     * @param snapshotNames list of snapshot names to resolve
      * @return snapshot ids
      * @throws SnapshotMissingException if a snapshot is not found
      */
-    List<SnapshotId> resolveSnapshots(String... snapshotNames);
+    List<SnapshotId> resolveSnapshotNames(List<String> snapshotNames);
 
 }

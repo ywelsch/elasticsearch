@@ -24,7 +24,7 @@ import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RestoreSource;
@@ -40,7 +40,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.shard.ShardStateMetaData;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.test.ESAllocationTestCase;
 import org.junit.Before;
 
@@ -341,7 +341,7 @@ public class PrimaryShardAllocatorTests extends ESAllocationTestCase {
             .build();
 
         RoutingTable routingTable = RoutingTable.builder()
-            .addAsRestore(metaData.index(shardId.getIndex()), new RestoreSource(SnapshotId.createNew(new Snapshot("test", "test")), version, shardId.getIndexName()))
+            .addAsRestore(metaData.index(shardId.getIndex()), new RestoreSource(new Snapshot("test", new SnapshotId("test")), version, shardId.getIndexName()))
             .build();
         ClusterState state = ClusterState.builder(org.elasticsearch.cluster.ClusterName.DEFAULT)
             .metaData(metaData)
@@ -420,7 +420,7 @@ public class PrimaryShardAllocatorTests extends ESAllocationTestCase {
             .build();
 
         RoutingTable routingTable = RoutingTable.builder()
-            .addAsRestore(metaData.index(shardId.getIndex()), new RestoreSource(SnapshotId.createNew(new Snapshot("test", "test")), Version.CURRENT, shardId.getIndexName()))
+            .addAsRestore(metaData.index(shardId.getIndex()), new RestoreSource(new Snapshot("test", new SnapshotId("test")), Version.CURRENT, shardId.getIndexName()))
             .build();
         ClusterState state = ClusterState.builder(org.elasticsearch.cluster.ClusterName.DEFAULT)
             .metaData(metaData)

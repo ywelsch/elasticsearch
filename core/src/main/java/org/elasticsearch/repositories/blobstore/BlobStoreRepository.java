@@ -24,7 +24,7 @@ import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.common.ParseFieldMatcher;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.UUIDs;
@@ -57,8 +57,6 @@ import org.elasticsearch.repositories.Repository;
 import org.elasticsearch.repositories.RepositoryException;
 import org.elasticsearch.repositories.RepositorySettings;
 import org.elasticsearch.repositories.RepositoryVerificationException;
-import org.elasticsearch.snapshots.InvalidSnapshotNameException;
-import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotCreationException;
 import org.elasticsearch.snapshots.SnapshotException;
 import org.elasticsearch.snapshots.SnapshotInfo;
@@ -271,9 +269,9 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
         }
         try {
             final String snapshotName = snapshotId.getName();
-            if (snapshotFormat.exists(snapshotsBlobContainer, snapshotId.blobId()) ||
+            if (snapshotFormat.exists(snapshotsBlobContainer, blobId(snapshotId)) ||
                     snapshotLegacyFormat.exists(snapshotsBlobContainer, snapshotName)) {
-                throw new InvalidSnapshotNameException(snapshotId.getSnapshot(), "snapshot with such name already exists");
+                throw new SnapshotCreationException(repositoryName, snapshotId, "snapshot with such name already exists");
             }
             // Write Global MetaData
             globalMetaDataFormat.write(metaData, snapshotsBlobContainer, snapshotName);
@@ -284,7 +282,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                 indexMetaDataFormat.write(indexMetaData, indexMetaDataBlobContainer, snapshotName);
             }
         } catch (IOException ex) {
-            throw new SnapshotCreationException(snapshotId.getSnapshot(), ex);
+            throw new SnapshotCreationException(repositoryName, snapshotId, ex);
         }
     }
 
@@ -320,11 +318,11 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
             final String snapshotName = snapshotId.getName();
             // Delete snapshot file first so we wouldn't end up with partially deleted snapshot that looks OK
             if (snapshot != null) {
-                snapshotFormat(snapshot.version()).delete(snapshotsBlobContainer, snapshotId.blobId());
+                snapshotFormat(snapshot.version()).delete(snapshotsBlobContainer, blobId(snapshotId));
                 globalMetaDataFormat(snapshot.version()).delete(snapshotsBlobContainer, snapshotName);
             } else {
                 // We don't know which version was the snapshot created with - try deleting both current and legacy formats
-                snapshotFormat.delete(snapshotsBlobContainer, snapshotId.blobId());
+                snapshotFormat.delete(snapshotsBlobContainer, blobId(snapshotId));
                 snapshotLegacyFormat.delete(snapshotsBlobContainer, snapshotName);
                 globalMetaDataLegacyFormat.delete(snapshotsBlobContainer, snapshotName);
                 globalMetaDataFormat.delete(snapshotsBlobContainer, snapshotName);
@@ -372,10 +370,21 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
      * {@inheritDoc}
      */
     @Override
-    public SnapshotInfo finalizeSnapshot(SnapshotId snapshotId, List<String> indices, long startTime, String failure, int totalShards, List<SnapshotShardFailure> shardFailures) {
+    public SnapshotInfo finalizeSnapshot(final SnapshotId snapshotId,
+                                         final List<String> indices,
+                                         final long startTime,
+                                         final String failure,
+                                         final int totalShards,
+                                         final List<SnapshotShardFailure> shardFailures) {
         try {
-            SnapshotInfo blobStoreSnapshot = new SnapshotInfo(snapshotId.getName(), snapshotId.getUUID(), indices, startTime, failure, System.currentTimeMillis(), totalShards, shardFailures);
-            snapshotFormat.write(blobStoreSnapshot, snapshotsBlobContainer, snapshotId.blobId());
+            SnapshotInfo blobStoreSnapshot = new SnapshotInfo(snapshotId,
+                                                              indices,
+                                                              startTime,
+                                                              failure,
+                                                              System.currentTimeMillis(),
+                                                              totalShards,
+                                                              shardFailures);
+            snapshotFormat.write(blobStoreSnapshot, snapshotsBlobContainer, blobId(snapshotId));
             List<SnapshotId> snapshotIds = snapshots();
             if (!snapshotIds.contains(snapshotId)) {
                 snapshotIds = new ArrayList<>(snapshotIds);
@@ -424,7 +433,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                     // not sure what it was - ignore
                     continue;
                 }
-                snapshots.add(SnapshotId.get(new Snapshot(repositoryName, name), uuid));
+                snapshots.add(new SnapshotId(name, uuid));
             }
             return Collections.unmodifiableList(snapshots);
         } catch (IOException ex) {
@@ -437,35 +446,24 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
      */
     @Override
     public MetaData readSnapshotMetaData(SnapshotInfo snapshot, List<String> indices) throws IOException {
-        final SnapshotId snapshotId = SnapshotId.get(new Snapshot(repositoryName, snapshot.name()), snapshot.uuid());
-        return readSnapshotMetaData(snapshotId, snapshot.version(), indices, false);
+        return readSnapshotMetaData(snapshot.snapshotId(), snapshot.version(), indices, false);
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    public SnapshotInfo readSnapshot(String snapshotName) {
-        final List<SnapshotId> ids = resolveSnapshots(snapshotName);
-        assert ids.size() == 1;
-        final SnapshotId snapshotId = ids.get(0);
-        return readSnapshot(snapshotId);
-    }
-
-    private SnapshotInfo readSnapshot(final SnapshotId snapshotId) {
+    public SnapshotInfo readSnapshot(final SnapshotId snapshotId) {
         try {
-            return snapshotFormat.read(snapshotsBlobContainer, snapshotId.blobId());
+            return snapshotFormat.read(snapshotsBlobContainer, blobId(snapshotId));
         } catch (FileNotFoundException | NoSuchFileException ex) {
             // File is missing - let's try legacy format instead
             try {
                 return snapshotLegacyFormat.read(snapshotsBlobContainer, snapshotId.getName());
             } catch (FileNotFoundException | NoSuchFileException ex1) {
-                throw new SnapshotMissingException(snapshotId.getSnapshot(), ex);
+                throw new SnapshotMissingException(repositoryName, snapshotId, ex);
             } catch (IOException | NotXContentException ex1) {
-                throw new SnapshotException(snapshotId.getSnapshot(), "failed to get snapshots", ex1);
+                throw new SnapshotException(repositoryName, snapshotId, "failed to get snapshots", ex1);
             }
         } catch (IOException | NotXContentException ex) {
-            throw new SnapshotException(snapshotId.getSnapshot(), "failed to get snapshots", ex);
+            throw new SnapshotException(repositoryName, snapshotId, "failed to get snapshots", ex);
         }
     }
 
@@ -478,17 +476,17 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
             if (globalMetaDataFormat.exists(snapshotsBlobContainer, snapshotId.getName())) {
                 snapshotVersion = Version.CURRENT;
             } else if (globalMetaDataLegacyFormat.exists(snapshotsBlobContainer, snapshotId.getName())) {
-                throw new SnapshotException(snapshotId.getSnapshot(), "snapshot is too old");
+                throw new SnapshotException(repositoryName, snapshotId, "snapshot is too old");
             } else {
-                throw new SnapshotMissingException(snapshotId.getSnapshot());
+                throw new SnapshotMissingException(repositoryName, snapshotId);
             }
         }
         try {
             metaData = globalMetaDataFormat(snapshotVersion).read(snapshotsBlobContainer, snapshotId.getName());
         } catch (FileNotFoundException | NoSuchFileException ex) {
-            throw new SnapshotMissingException(snapshotId.getSnapshot(), ex);
+            throw new SnapshotMissingException(repositoryName, snapshotId, ex);
         } catch (IOException ex) {
-            throw new SnapshotException(snapshotId.getSnapshot(), "failed to get snapshots", ex);
+            throw new SnapshotException(repositoryName, snapshotId, "failed to get snapshots", ex);
         }
         MetaData.Builder metaDataBuilder = MetaData.builder(metaData);
         for (String index : indices) {
@@ -612,16 +610,6 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
      * @throws IOException I/O errors
      */
     protected List<SnapshotId> readSnapshotList() throws IOException {
-        try {
-            if (snapshotsBlobContainer.blobExists(SNAPSHOTS_FILE) == false) {
-                return Collections.emptyList();
-            }
-        } catch(UnsupportedOperationException e){
-            // the BlobContainer does not support the blobExists operation, the best we
-            // can do is assume the snapshots index file is there and try to read it
-            logger.debug("Unsupported blobExists operation to verify the index file exists on disk.");
-        }
-
         try (InputStream blob = snapshotsBlobContainer.readBlob(SNAPSHOTS_FILE)) {
             BytesStreamOutput out = new BytesStreamOutput();
             Streams.copy(blob, out);
@@ -646,12 +634,12 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                                                 uuid = parser.text();
                                             }
                                         }
-                                        snapshots.add(SnapshotId.get(new Snapshot(repositoryName, name), uuid));
+                                        snapshots.add(new SnapshotId(name, uuid));
                                     }
                                     // the old format pre 5.0 that only contains the snapshot name, use the name as the uuid too
                                     else {
                                         name = parser.text();
-                                        snapshots.add(SnapshotId.get(new Snapshot(repositoryName, name), SnapshotId.UNASSIGNED_UUID));
+                                        snapshots.add(new SnapshotId(name, SnapshotId.UNASSIGNED_UUID));
                                     }
                                 }
                             }
@@ -726,7 +714,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
     }
 
     @Override
-    public List<SnapshotId> resolveSnapshots(final String... snapshotNames) {
+    public List<SnapshotId> resolveSnapshotNames(final List<String> snapshotNames) {
         List<SnapshotId> ids = new ArrayList<>();
         final List<SnapshotId> snapshotIds = snapshots();
         for (String snapshotName : snapshotNames) {
@@ -737,19 +725,21 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                 }
             }
             if (resolvedSnapshotId == null) {
-                throw new SnapshotMissingException(new Snapshot(repositoryName, snapshotName));
+                throw new SnapshotMissingException(repositoryName, snapshotName);
             }
             ids.add(resolvedSnapshotId);
         }
+        assert snapshotNames.size() == ids.size(); // assert that each snapshot name was resolved into an id
         return Collections.unmodifiableList(ids);
     }
 
     // TODO: this will go away once readSnapshotsList uses the index file instead of listing blobs
     // to know which snapshots are part of a repository.  See #18156
-    private Tuple<String, String> parseNameUUIDFromBlobName(final String str) {
+    // Package private for testing.
+    Tuple<String, String> parseNameUUIDFromBlobName(final String str) {
         final String name;
         final String uuid;
-        final int sizeOfUUID = 22;
+        final int sizeOfUUID = 22; // uuid is 22 chars in length
         // unreliable, but highly unlikely to have a snapshot name with a dash followed by 22 characters,
         // and this will go away before a release (see #18156).
         //norelease
@@ -764,5 +754,14 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
             uuid = SnapshotId.UNASSIGNED_UUID;
         }
         return Tuple.tuple(name, uuid);
+    }
+
+    private String blobId(final SnapshotId snapshotId) {
+        final String uuid = snapshotId.getUUID();
+        if (uuid.equals(SnapshotId.UNASSIGNED_UUID)) {
+            // the old snapshot blob naming
+            return snapshotId.getName();
+        }
+        return snapshotId.getName() + "-" + uuid;
     }
 }

@@ -37,13 +37,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Information about a snapshot
  */
 public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent, FromXContentBuilder<SnapshotInfo>, Writeable {
 
-    public static final SnapshotInfo PROTO = new SnapshotInfo("", "", Collections.emptyList(), 0);
+    public static final SnapshotInfo PROTO = new SnapshotInfo(new SnapshotId("", ""), Collections.emptyList(), 0);
     private static final FormatDateTimeFormatter DATE_TIME_FORMATTER = Joda.forPattern("strictDateOptionalTime");
     private static final String SNAPSHOT = "snapshot";
     private static final String UUID = "uuid";
@@ -67,9 +68,7 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     private static final String TOTAL_SHARDS = "total_shards";
     private static final String SUCCESSFUL_SHARDS = "successful_shards";
 
-    private final String name;
-
-    private final String uuid;
+    private final SnapshotId snapshotId;
 
     private final SnapshotState state;
 
@@ -89,41 +88,35 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
 
     private final List<SnapshotShardFailure> shardFailures;
 
-    public SnapshotInfo(String name, String uuid, List<String> indices, long startTime) {
-        this(name, uuid, indices, SnapshotState.IN_PROGRESS, null, Version.CURRENT, startTime, 0L, 0, 0, Collections.emptyList());
+    public SnapshotInfo(SnapshotId snapshotId, List<String> indices, long startTime) {
+        this(snapshotId, indices, SnapshotState.IN_PROGRESS, null, Version.CURRENT, startTime, 0L, 0, 0, Collections.emptyList());
     }
 
-    public SnapshotInfo(String name, String uuid, List<String> indices, long startTime, String reason, long endTime,
+    public SnapshotInfo(SnapshotId snapshotId, List<String> indices, long startTime, String reason, long endTime,
                         int totalShards, List<SnapshotShardFailure> shardFailures) {
-        this(name, uuid, indices, snapshotState(reason, shardFailures), reason, Version.CURRENT,
+        this(snapshotId, indices, snapshotState(reason, shardFailures), reason, Version.CURRENT,
              startTime, endTime, totalShards, totalShards - shardFailures.size(), shardFailures);
     }
 
-    private SnapshotInfo(String name, String uuid, List<String> indices, SnapshotState state, String reason, Version version,
+    private SnapshotInfo(SnapshotId snapshotId, List<String> indices, SnapshotState state, String reason, Version version,
                          long startTime, long endTime, int totalShards, int successfulShards, List<SnapshotShardFailure> shardFailures) {
-        assert name != null;
-        assert indices != null;
-        assert state != null;
-        assert shardFailures != null;
-        this.name = name;
-        this.uuid = uuid;
-        this.indices = indices;
-        this.state = state;
+        this.snapshotId = Objects.requireNonNull(snapshotId);
+        this.indices = Objects.requireNonNull(indices);
+        this.state = Objects.requireNonNull(state);
         this.reason = reason;
         this.version = version;
         this.startTime = startTime;
         this.endTime = endTime;
         this.totalShards = totalShards;
         this.successfulShards = successfulShards;
-        this.shardFailures = shardFailures;
+        this.shardFailures = Objects.requireNonNull(shardFailures);
     }
 
     /**
      * Constructs snapshot information from stream input
      */
     public SnapshotInfo(final StreamInput in) throws IOException {
-        name = in.readString();
-        uuid = in.readString();
+        snapshotId = new SnapshotId(in);
         int size = in.readVInt();
         List<String> indicesListBuilder = new ArrayList<>();
         for (int i = 0; i < size; i++) {
@@ -150,21 +143,12 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     }
 
     /**
-     * Returns snapshot name
+     * Returns snapshot id
      *
-     * @return snapshot name
+     * @return snapshot id
      */
-    public String name() {
-        return name;
-    }
-
-    /**
-     * Returns snapshot uuid
-     *
-     * @return snapshot uuid
-     */
-    public String uuid() {
-        return uuid;
+    public SnapshotId snapshotId() {
+        return snapshotId;
     }
 
     /**
@@ -282,15 +266,19 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         }
 
         final SnapshotInfo that = (SnapshotInfo) o;
-        return startTime == that.startTime && name.equals(that.name) && uuid.equals(that.uuid);
+        return startTime == that.startTime && snapshotId.equals(that.snapshotId);
     }
 
     @Override
     public int hashCode() {
-        int result = name.hashCode();
-        result = 31 * result + uuid.hashCode();
+        int result = snapshotId.hashCode();
         result = 31 * result + Long.hashCode(startTime);
         return result;
+    }
+
+    @Override
+    public String toString() {
+        return "SnapshotInfo[snapshotId=" + snapshotId + ", state=" + state + ", indices=" + indices + "]";
     }
 
     /**
@@ -310,8 +298,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
     @Override
     public XContentBuilder toXContent(final XContentBuilder builder, final Params params) throws IOException {
         builder.startObject(SNAPSHOT);
-        builder.field(NAME, name);
-        builder.field(UUID, uuid);
+        builder.field(NAME, snapshotId.getName());
+        builder.field(UUID, snapshotId.getUUID());
         builder.field(VERSION_ID, version.id);
         builder.startArray(INDICES);
         for (String index : indices) {
@@ -342,8 +330,8 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
      */
     public XContentBuilder toExternalXContent(final XContentBuilder builder, final ToXContent.Params params) throws IOException {
         builder.startObject();
-        builder.field(SNAPSHOT, name);
-        builder.field(UUID, uuid);
+        builder.field(SNAPSHOT, snapshotId.getName());
+        builder.field(UUID, snapshotId.getUUID());
         builder.field(VERSION_ID, version.id);
         builder.field(VERSION, version.toString());
         builder.startArray(INDICES);
@@ -465,16 +453,23 @@ public final class SnapshotInfo implements Comparable<SnapshotInfo>, ToXContent,
         }
         if (uuid == null) {
             // the old format where there wasn't a UUID
-            uuid = "";
+            uuid = SnapshotId.UNASSIGNED_UUID;
         }
-        return new SnapshotInfo(name, uuid, indices, state, reason, version, startTime, endTime, totalShards,
-                                successfulShards, shardFailures);
+        return new SnapshotInfo(new SnapshotId(name, uuid),
+                                indices,
+                                state,
+                                reason,
+                                version,
+                                startTime,
+                                endTime,
+                                totalShards,
+                                successfulShards,
+                                shardFailures);
     }
 
     @Override
     public void writeTo(final StreamOutput out) throws IOException {
-        out.writeString(name);
-        out.writeString(uuid);
+        snapshotId.writeTo(out);
         out.writeVInt(indices.size());
         for (String index : indices) {
             out.writeString(index);

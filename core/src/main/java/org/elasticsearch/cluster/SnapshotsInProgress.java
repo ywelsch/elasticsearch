@@ -23,14 +23,13 @@ import com.carrotsearch.hppc.ObjectContainer;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import org.elasticsearch.cluster.ClusterState.Custom;
-import org.elasticsearch.cluster.metadata.SnapshotId;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.cluster.metadata.Snapshot;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -67,7 +66,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
 
     public static class Entry {
         private final State state;
-        private final SnapshotId snapshotId;
+        private final Snapshot snapshot;
         private final boolean includeGlobalState;
         private final boolean partial;
         private final ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards;
@@ -75,9 +74,10 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         private final ImmutableOpenMap<String, List<ShardId>> waitingIndices;
         private final long startTime;
 
-        public Entry(SnapshotId snapshotId, boolean includeGlobalState, boolean partial, State state, List<String> indices, long startTime, ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards) {
+        public Entry(Snapshot snapshot, boolean includeGlobalState, boolean partial, State state, List<String> indices, long startTime,
+                     ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards) {
             this.state = state;
-            this.snapshotId = snapshotId;
+            this.snapshot = snapshot;
             this.includeGlobalState = includeGlobalState;
             this.partial = partial;
             this.indices = indices;
@@ -92,15 +92,15 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         }
 
         public Entry(Entry entry, State state, ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards) {
-            this(entry.snapshotId, entry.includeGlobalState, entry.partial, state, entry.indices, entry.startTime, shards);
+            this(entry.snapshot, entry.includeGlobalState, entry.partial, state, entry.indices, entry.startTime, shards);
         }
 
         public Entry(Entry entry, ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards) {
             this(entry, entry.state, shards);
         }
 
-        public SnapshotId snapshotId() {
-            return this.snapshotId;
+        public Snapshot snapshot() {
+            return this.snapshot;
         }
 
         public ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards() {
@@ -143,7 +143,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
             if (startTime != entry.startTime) return false;
             if (!indices.equals(entry.indices)) return false;
             if (!shards.equals(entry.shards)) return false;
-            if (!snapshotId.equals(entry.snapshotId)) return false;
+            if (!snapshot.equals(entry.snapshot)) return false;
             if (state != entry.state) return false;
             if (!waitingIndices.equals(entry.waitingIndices)) return false;
 
@@ -153,7 +153,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         @Override
         public int hashCode() {
             int result = state.hashCode();
-            result = 31 * result + snapshotId.hashCode();
+            result = 31 * result + snapshot.hashCode();
             result = 31 * result + (includeGlobalState ? 1 : 0);
             result = 31 * result + (partial ? 1 : 0);
             result = 31 * result + shards.hashCode();
@@ -348,9 +348,10 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
         return this.entries;
     }
 
-    public Entry snapshot(Snapshot snapshot) {
+    public Entry snapshot(final String repositoryName, final String snapshotName) {
         for (Entry entry : entries) {
-            if (entry.snapshotId().getSnapshot().equals(snapshot)) {
+            final Snapshot snapshot = entry.snapshot();
+            if (snapshot.isSame(repositoryName, snapshotName)) {
                 return entry;
             }
         }
@@ -366,7 +367,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
     public SnapshotsInProgress readFrom(StreamInput in) throws IOException {
         Entry[] entries = new Entry[in.readVInt()];
         for (int i = 0; i < entries.length; i++) {
-            SnapshotId snapshotId = new SnapshotId(in);
+            Snapshot snapshot = new Snapshot(in);
             boolean includeGlobalState = in.readBoolean();
             boolean partial = in.readBoolean();
             State state = State.fromValue(in.readByte());
@@ -384,7 +385,13 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
                 State shardState = State.fromValue(in.readByte());
                 builder.put(shardId, new ShardSnapshotStatus(nodeId, shardState));
             }
-            entries[i] = new Entry(snapshotId, includeGlobalState, partial, state, Collections.unmodifiableList(indexBuilder), startTime, builder.build());
+            entries[i] = new Entry(snapshot,
+                                   includeGlobalState,
+                                   partial,
+                                   state,
+                                   Collections.unmodifiableList(indexBuilder),
+                                   startTime,
+                                   builder.build());
         }
         return new SnapshotsInProgress(entries);
     }
@@ -393,7 +400,7 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
     public void writeTo(StreamOutput out) throws IOException {
         out.writeVInt(entries.size());
         for (Entry entry : entries) {
-            entry.snapshotId().writeTo(out);
+            entry.snapshot().writeTo(out);
             out.writeBoolean(entry.includeGlobalState());
             out.writeBoolean(entry.partial());
             out.writeByte(entry.state().value());
@@ -438,9 +445,9 @@ public class SnapshotsInProgress extends AbstractDiffable<Custom> implements Cus
 
     public void toXContent(Entry entry, XContentBuilder builder, ToXContent.Params params) throws IOException {
         builder.startObject();
-        builder.field(REPOSITORY, entry.snapshotId().getRepository());
-        builder.field(SNAPSHOT, entry.snapshotId().getName());
-        builder.field(UUID, entry.snapshotId().getUUID());
+        builder.field(REPOSITORY, entry.snapshot().getRepository());
+        builder.field(SNAPSHOT, entry.snapshot().getSnapshotId().getName());
+        builder.field(UUID, entry.snapshot().getSnapshotId().getUUID());
         builder.field(INCLUDE_GLOBAL_STATE, entry.includeGlobalState());
         builder.field(PARTIAL, entry.partial());
         builder.field(STATE, entry.state());

@@ -17,29 +17,32 @@
  * under the License.
  */
 
-package org.elasticsearch.snapshots;
+package org.elasticsearch.cluster.metadata;
 
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.snapshots.SnapshotId;
 
 import java.io.IOException;
 import java.util.Objects;
 
 /**
- * A snapshot, which consists of a repository name and a snapshot name.
+ * Basic information about a snapshot - a SnapshotId and the repository that the snapshot belongs to.
  */
-public class Snapshot implements Writeable {
+public final class Snapshot implements Writeable {
 
     private final String repository;
-    private final String name;
+    private final SnapshotId snapshotId;
+    private final int hashCode;
 
     /**
      * Constructs a snapshot.
      */
-    public Snapshot(final String repository, final String name) {
+    public Snapshot(final String repository, final SnapshotId snapshotId) {
         this.repository = Objects.requireNonNull(repository);
-        this.name = Objects.requireNonNull(name);
+        this.snapshotId = Objects.requireNonNull(snapshotId);
+        this.hashCode = computeHashCode();
     }
 
     /**
@@ -47,7 +50,8 @@ public class Snapshot implements Writeable {
      */
     public Snapshot(final StreamInput in) throws IOException {
         repository = in.readString();
-        name = in.readString();
+        snapshotId = new SnapshotId(in);
+        hashCode = computeHashCode();
     }
 
     /**
@@ -58,15 +62,15 @@ public class Snapshot implements Writeable {
     }
 
     /**
-     * Gets the snapshot name for the snapshot.
+     * Gets the snapshot id for the snapshot.
      */
-    public String getName() {
-        return name;
+    public SnapshotId getSnapshotId() {
+        return snapshotId;
     }
 
     @Override
     public String toString() {
-        return repository + ":" + name;
+        return repository + ":" + snapshotId.toString();
     }
 
     @Override
@@ -78,18 +82,29 @@ public class Snapshot implements Writeable {
             return false;
         }
         @SuppressWarnings("unchecked") Snapshot that = (Snapshot) o;
-        return repository.equals(that.repository) && name.equals(that.name);
+        return repository.equals(that.repository) && snapshotId.equals(that.snapshotId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(repository, name);
+        return hashCode;
+    }
+
+    private int computeHashCode() {
+        return Objects.hash(repository, snapshotId);
     }
 
     @Override
     public void writeTo(final StreamOutput out) throws IOException {
         out.writeString(repository);
-        out.writeString(name);
+        snapshotId.writeTo(out);
+    }
+
+    /**
+     * Returns whether the snapshot logically equivalent to the given repository name + snapshot name combination.
+     */
+    public boolean isSame(final String repositoryName, final String snapshotName) {
+        return repository.equals(repositoryName) && snapshotId.getName().equals(snapshotName);
     }
 
 }

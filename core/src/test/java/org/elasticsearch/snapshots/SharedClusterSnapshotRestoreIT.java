@@ -50,7 +50,7 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.cluster.metadata.MetaDataIndexStateService;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -909,7 +909,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
 
         logger.info("--> truncate snapshot file to make it unreadable");
-        Path snapshotPath = repo.resolve("snap-test-snap-1-" + createSnapshotResponse.getSnapshotInfo().uuid() + ".dat");
+        Path snapshotPath = repo.resolve("snap-test-snap-1-" + createSnapshotResponse.getSnapshotInfo().snapshotId().getUUID() + ".dat");
         try(SeekableByteChannel outChan = Files.newByteChannel(snapshotPath, StandardOpenOption.WRITE)) {
             outChan.truncate(randomInt(10));
         }
@@ -1985,14 +1985,17 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         Client client = client();
 
         logger.info("-->  creating repository");
-        assertAcked(client.admin().cluster().preparePutRepository("test-repo")
+        final String repositoryName = "test-repo";
+        assertAcked(client.admin().cluster().preparePutRepository(repositoryName)
                 .setType("mock").setSettings(Settings.builder()
                                 .put("location", randomRepoPath())
                                 .put("compress", randomBoolean())
                                 .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)
                 ));
 
-        createIndex("test-idx");
+        logger.info("--> create the index");
+        final String idxName = "test-idx";
+        createIndex(idxName);
         ensureGreen();
 
         ClusterService clusterService = internalCluster().getInstance(ClusterService.class, internalCluster().getMasterName());
@@ -2000,7 +2003,8 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         final CountDownLatch countDownLatch = new CountDownLatch(1);
 
         logger.info("--> snapshot");
-        CreateSnapshotResponse createSnapshotResponse = client.admin().cluster().prepareCreateSnapshot("test-repo", "test-snap").setWaitForCompletion(true).setIndices("test-idx").get();
+        final String snapshotName = "test-snap";
+        CreateSnapshotResponse createSnapshotResponse = client.admin().cluster().prepareCreateSnapshot(repositoryName, snapshotName).setWaitForCompletion(true).setIndices(idxName).get();
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
 
@@ -2012,11 +2016,18 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
             public ClusterState execute(ClusterState currentState) {
                 // Simulate orphan snapshot
                 ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shards = ImmutableOpenMap.builder();
-                shards.put(new ShardId("test-idx", "_na_", 0), new ShardSnapshotStatus("unknown-node", State.ABORTED));
-                shards.put(new ShardId("test-idx", "_na_", 1), new ShardSnapshotStatus("unknown-node", State.ABORTED));
-                shards.put(new ShardId("test-idx", "_na_", 2), new ShardSnapshotStatus("unknown-node", State.ABORTED));
+                shards.put(new ShardId(idxName, "_na_", 0), new ShardSnapshotStatus("unknown-node", State.ABORTED));
+                shards.put(new ShardId(idxName, "_na_", 1), new ShardSnapshotStatus("unknown-node", State.ABORTED));
+                shards.put(new ShardId(idxName, "_na_", 2), new ShardSnapshotStatus("unknown-node", State.ABORTED));
                 List<Entry> entries = new ArrayList<>();
-                entries.add(new Entry(SnapshotId.createNew(new Snapshot("test-repo", "test-snap")), true, false, State.ABORTED, Collections.singletonList("test-idx"), System.currentTimeMillis(), shards.build()));
+                entries.add(new Entry(new Snapshot(repositoryName,
+                                                   createSnapshotResponse.getSnapshotInfo().snapshotId()),
+                                                   true,
+                                                   false,
+                                                   State.ABORTED,
+                                                   Collections.singletonList(idxName),
+                                                   System.currentTimeMillis(),
+                                                   shards.build()));
                 return ClusterState.builder(currentState).putCustom(SnapshotsInProgress.TYPE, new SnapshotsInProgress(Collections.unmodifiableList(entries))).build();
             }
 
@@ -2034,8 +2045,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         countDownLatch.await();
         logger.info("--> try deleting the orphan snapshot");
 
-        assertAcked(client.admin().cluster().prepareDeleteSnapshot("test-repo", "test-snap").get("10s"));
-
+        assertAcked(client.admin().cluster().prepareDeleteSnapshot(repositoryName, snapshotName).get("10s"));
     }
 
     private boolean waitForIndex(final String index, TimeValue timeout) throws InterruptedException {
@@ -2135,33 +2145,14 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
                         .put("compress", randomBoolean())
                         .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)));
 
-        try {
-            client.admin().cluster().prepareGetSnapshots("test-repo").setSnapshots("_foo").get();
-            fail("shouldn't be here");
-        } catch (InvalidSnapshotNameException ex) {
-            assertThat(ex.getMessage(), containsString("Invalid snapshot name"));
-        }
-
-        try {
-            client.admin().cluster().prepareCreateSnapshot("test-repo", "_foo").get();
-            fail("shouldn't be here");
-        } catch (InvalidSnapshotNameException ex) {
-            assertThat(ex.getMessage(), containsString("Invalid snapshot name"));
-        }
-
-        try {
-            client.admin().cluster().prepareDeleteSnapshot("test-repo", "_foo").get();
-            fail("shouldn't be here");
-        } catch (InvalidSnapshotNameException ex) {
-            assertThat(ex.getMessage(), containsString("Invalid snapshot name"));
-        }
-
-        try {
-            client.admin().cluster().prepareSnapshotStatus("test-repo").setSnapshots("_foo").get();
-            fail("shouldn't be here");
-        } catch (InvalidSnapshotNameException ex) {
-            assertThat(ex.getMessage(), containsString("Invalid snapshot name"));
-        }
+        expectThrows(InvalidSnapshotNameException.class,
+                     () -> client.admin().cluster().prepareCreateSnapshot("test-repo", "_foo").get());
+        expectThrows(SnapshotMissingException.class,
+                     () -> client.admin().cluster().prepareGetSnapshots("test-repo").setSnapshots("_foo").get());
+        expectThrows(SnapshotMissingException.class,
+                     () -> client.admin().cluster().prepareDeleteSnapshot("test-repo", "_foo").get());
+        expectThrows(SnapshotMissingException.class,
+                     () -> client.admin().cluster().prepareSnapshotStatus("test-repo").setSnapshots("_foo").get());
     }
 
     public void testListCorruptedSnapshot() throws Exception {
@@ -2191,7 +2182,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
 
         logger.info("--> truncate snapshot file to make it unreadable");
-        Path snapshotPath = repo.resolve("snap-test-snap-2-" + createSnapshotResponse.getSnapshotInfo().uuid() + ".dat");
+        Path snapshotPath = repo.resolve("snap-test-snap-2-" + createSnapshotResponse.getSnapshotInfo().snapshotId().getUUID() + ".dat");
         try(SeekableByteChannel outChan = Files.newByteChannel(snapshotPath, StandardOpenOption.WRITE)) {
             outChan.truncate(randomInt(10));
         }
@@ -2203,13 +2194,13 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
 
         assertThat(snapshotInfos.size(), equalTo(1));
         assertThat(snapshotInfos.get(0).state(), equalTo(SnapshotState.SUCCESS));
-        assertThat(snapshotInfos.get(0).name(), equalTo("test-snap-1"));
+        assertThat(snapshotInfos.get(0).snapshotId().getName(), equalTo("test-snap-1"));
 
         try {
             client.admin().cluster().prepareGetSnapshots("test-repo").setIgnoreUnavailable(false).get().getSnapshots();
         } catch (SnapshotException ex) {
-            assertThat(ex.snapshot().getRepository(), equalTo("test-repo"));
-            assertThat(ex.snapshot().getName(), equalTo("test-snap-2"));
+            assertThat(ex.getRepositoryName(), equalTo("test-repo"));
+            assertThat(ex.getSnapshotName(), equalTo("test-snap-2"));
         }
     }
 }

@@ -29,8 +29,8 @@ import java.io.IOException;
  */
 public class InvalidSnapshotNameException extends SnapshotException {
 
-    public InvalidSnapshotNameException(Snapshot snapshot, String desc) {
-        super(snapshot, "Invalid snapshot name [" + snapshot.getName() + "], " + desc);
+    public InvalidSnapshotNameException(final String repositoryName, final String snapshotName, String desc) {
+        super(repositoryName, snapshotName, "Invalid snapshot name [" + snapshotName + "], " + desc);
     }
 
     public InvalidSnapshotNameException(StreamInput in) throws IOException {

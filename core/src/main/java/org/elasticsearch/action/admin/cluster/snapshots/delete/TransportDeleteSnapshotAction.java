@@ -29,7 +29,6 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
@@ -66,8 +65,7 @@ public class TransportDeleteSnapshotAction extends TransportMasterNodeAction<Del
 
     @Override
     protected void masterOperation(final DeleteSnapshotRequest request, ClusterState state, final ActionListener<DeleteSnapshotResponse> listener) {
-        final Snapshot snapshot = new Snapshot(request.repository(), request.snapshot());
-        snapshotsService.deleteSnapshot(snapshot, new SnapshotsService.DeleteSnapshotListener() {
+        snapshotsService.deleteSnapshot(request.repository(), request.snapshot(), new SnapshotsService.DeleteSnapshotListener() {
             @Override
             public void onResponse() {
                 listener.onResponse(new DeleteSnapshotResponse(true));

@@ -21,7 +21,7 @@ package org.elasticsearch.rest.action.cat;
 
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.admin.indices.recovery.RecoveryResponse;
-import org.elasticsearch.cluster.metadata.SnapshotId;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.common.Randomness;
@@ -32,7 +32,7 @@ import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.rest.RestController;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.ArrayList;
@@ -77,12 +77,8 @@ public class RestRecoveryActionTests extends ESTestCase {
 
             final RestoreSource restoreSource = randomBoolean() ? mock(RestoreSource.class) : null;
             if (restoreSource != null) {
-                final SnapshotId snapshotId = mock(SnapshotId.class);
-                final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8), randomAsciiOfLength(8));
-                when(snapshotId.getRepository()).thenReturn(snapshot.getRepository());
-                when(snapshotId.getName()).thenReturn(snapshot.getName());
-                when(snapshotId.getSnapshot()).thenReturn(snapshot);
-                when(restoreSource.snapshotId()).thenReturn(snapshotId);
+                final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8), new SnapshotId(randomAsciiOfLength(8)));
+                when(restoreSource.snapshot()).thenReturn(snapshot);
             }
 
             RecoveryState.Index index = mock(RecoveryState.Index.class);
@@ -169,10 +165,10 @@ public class RestRecoveryActionTests extends ESTestCase {
             assertThat(cells.get(8).value, equalTo(state.getTargetNode().getName()));
             assertThat(
                     cells.get(9).value,
-                    equalTo(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshotId().getRepository()));
+                    equalTo(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshot().getRepository()));
             assertThat(
                     cells.get(10).value,
-                    equalTo(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshotId().getName()));
+                    equalTo(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshot().getSnapshotId().getName()));
             assertThat(cells.get(11).value, equalTo(state.getIndex().totalRecoverFiles()));
             assertThat(cells.get(12).value, equalTo(state.getIndex().recoveredFileCount()));
             assertThat(cells.get(13).value, equalTo(percent(state.getIndex().recoveredFilesPercent())));

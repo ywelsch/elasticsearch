@@ -21,9 +21,8 @@ package org.elasticsearch.cluster.metadata;
 
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.test.ESTestCase;
-import org.hamcrest.Matchers;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -31,28 +30,36 @@ import java.nio.ByteBuffer;
 import static org.hamcrest.CoreMatchers.equalTo;
 
 /**
- * Tests for the {@link SnapshotId} class.
+ * Tests for the {@link Snapshot} class.
  */
-public class SnapshotIdTests extends ESTestCase {
+public class SnapshotTests extends ESTestCase {
 
     public void testSnapshotEquals() {
-        final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8), randomAsciiOfLength(8));
-        final SnapshotId original = SnapshotId.createNew(snapshot);
-        final SnapshotId expected = SnapshotId.get(original.getSnapshot(), original.getUUID());
+        final SnapshotId snapshotId = new SnapshotId("snap");
+        final Snapshot original = new Snapshot("repo", snapshotId);
+        final Snapshot expected = new Snapshot(original.getRepository(), original.getSnapshotId());
         assertThat(expected, equalTo(original));
         assertThat(expected.getRepository(), equalTo(original.getRepository()));
-        assertThat(expected.getSnapshot(), equalTo(original.getSnapshot()));
-        assertThat(expected.getName(), equalTo(original.getName()));
-        assertThat(expected.getUUID(), equalTo(original.getUUID()));
+        assertThat(expected.getSnapshotId(), equalTo(original.getSnapshotId()));
+        assertThat(expected.getSnapshotId().getName(), equalTo(original.getSnapshotId().getName()));
+        assertThat(expected.getSnapshotId().getUUID(), equalTo(original.getSnapshotId().getUUID()));
     }
 
     public void testSerialization() throws IOException {
-        final Snapshot snapshot = new Snapshot(randomAsciiOfLength(8), randomAsciiOfLength(8));
-        final SnapshotId original = SnapshotId.createNew(snapshot);
+        final SnapshotId snapshotId = new SnapshotId(randomAsciiOfLength(randomIntBetween(2, 8)));
+        final Snapshot original = new Snapshot(randomAsciiOfLength(randomIntBetween(2, 8)), snapshotId);
         final BytesStreamOutput out = new BytesStreamOutput();
         original.writeTo(out);
         final ByteBufferStreamInput in = new ByteBufferStreamInput(ByteBuffer.wrap(out.bytes().toBytes()));
-        assertThat(new SnapshotId(in), Matchers.equalTo(original));
+        assertThat(new Snapshot(in), equalTo(original));
+    }
+
+    public void testIsSame() {
+        final String repositoryName = "repo";
+        final String snapshotName = "snap";
+        final SnapshotId snapshotId = new SnapshotId(snapshotName);
+        final Snapshot snapshot = new Snapshot(repositoryName, snapshotId);
+        assertTrue(snapshot.isSame(repositoryName, snapshotName));
     }
 
 }

@@ -19,6 +19,7 @@
 
 package org.elasticsearch.snapshots;
 
+import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.rest.RestStatus;
 
@@ -28,7 +29,12 @@ import java.io.IOException;
  * Thrown when a user tries to start multiple snapshots at the same time
  */
 public class ConcurrentSnapshotExecutionException extends SnapshotException {
-    public ConcurrentSnapshotExecutionException(Snapshot snapshot, String msg) {
+
+    public ConcurrentSnapshotExecutionException(final String repositoryName, final String snapshotName, final String msg) {
+        super(repositoryName, snapshotName, msg);
+    }
+
+    public ConcurrentSnapshotExecutionException(final Snapshot snapshot, final String msg) {
         super(snapshot, msg);
     }
 

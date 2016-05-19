@@ -69,8 +69,9 @@ import org.elasticsearch.search.SearchException;
 import org.elasticsearch.search.SearchParseException;
 import org.elasticsearch.search.SearchShardTarget;
 import org.elasticsearch.search.internal.SearchContext;
-import org.elasticsearch.snapshots.Snapshot;
+import org.elasticsearch.cluster.metadata.Snapshot;
 import org.elasticsearch.snapshots.SnapshotException;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.TestSearchContext;
 import org.elasticsearch.test.VersionUtils;
@@ -303,15 +304,16 @@ public class ExceptionSerializationTests extends ESTestCase {
     }
 
     public void testSnapshotException() throws IOException {
-        final Snapshot snapshot = new Snapshot("repo", "snap");
-        SnapshotException ex = serialize(
-                new SnapshotException(snapshot, "no such snapshot", new NullPointerException()));
-        assertEquals(ex.snapshot(), snapshot);
-        assertEquals(ex.getMessage(), "[repo:snap] no such snapshot");
+        final Snapshot snapshot = new Snapshot("repo", new SnapshotId("snap"));
+        SnapshotException ex = serialize(new SnapshotException(snapshot, "no such snapshot", new NullPointerException()));
+        assertEquals(ex.getRepositoryName(), snapshot.getRepository());
+        assertEquals(ex.getSnapshotName(), snapshot.getSnapshotId().getName());
+        assertEquals(ex.getMessage(), "[" + snapshot + "] no such snapshot");
         assertTrue(ex.getCause() instanceof NullPointerException);
 
         ex = serialize(new SnapshotException(null, "no such snapshot", new NullPointerException()));
-        assertEquals(ex.snapshot(), null);
+        assertNull(ex.getRepositoryName());
+        assertNull(ex.getSnapshotName());
         assertEquals(ex.getMessage(), "[_na] no such snapshot");
         assertTrue(ex.getCause() instanceof NullPointerException);
     }

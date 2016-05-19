@@ -17,25 +17,27 @@
  * under the License.
  */
 
-package org.elasticsearch.cluster.metadata;
+package org.elasticsearch.snapshots;
 
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
-import org.elasticsearch.snapshots.Snapshot;
 
 import java.io.IOException;
 import java.util.Objects;
 
 /**
- * SnapshotId - snapshot (repository name + snapshot name) + snapshot UUID
+ * SnapshotId - snapshot name + snapshot UUID
  */
-public class SnapshotId implements Writeable {
+public final class SnapshotId implements Writeable {
 
-    public static final String UNASSIGNED_UUID = ""; // empty string so its compatible with old blob naming
+    /**
+     * This value is for older snapshots that don't have a UUID.
+     */
+    public static final String UNASSIGNED_UUID = "_na_";
 
-    private final Snapshot snapshot;
+    private final String name;
     private final String uuid;
 
     // Caching hash code
@@ -44,12 +46,24 @@ public class SnapshotId implements Writeable {
     /**
      * Constructs a new snapshot
      *
-     * @param snapshot snapshot description
-     * @param uuid     snapshot uuid
+     * @param name   snapshot name
+     * @param uuid   snapshot uuid
      */
-    private SnapshotId(final Snapshot snapshot, final String uuid) {
-        this.snapshot = Objects.requireNonNull(snapshot);
+    public SnapshotId(final String name, final String uuid) {
+        this.name = Objects.requireNonNull(name);
         this.uuid = Objects.requireNonNull(uuid);
+        this.hashCode = computeHashCode();
+    }
+
+    /**
+     * Constructs a new SnapshotId with a new UUID.  This should be used when getting
+     * a SnapshotId for a new snapshot.
+     *
+     * @param name   snapshot name
+     */
+    public SnapshotId(final String name) {
+        this.name = Objects.requireNonNull(name);
+        this.uuid = UUIDs.randomBase64UUID();
         this.hashCode = computeHashCode();
     }
 
@@ -59,47 +73,9 @@ public class SnapshotId implements Writeable {
      * @param in  input stream
      */
     public SnapshotId(final StreamInput in) throws IOException {
-        snapshot = new Snapshot(in);
+        name = in.readString();
         uuid = in.readString();
         hashCode = computeHashCode();
-    }
-
-    /**
-     * Create a new SnapshotId with a new UUID.  This should be used when getting a
-     * SnapshotId for a new snapshot.
-     *
-     * @param snapshot snapshot
-     * @return snapshot id
-     */
-    public static SnapshotId createNew(final Snapshot snapshot) {
-        return new SnapshotId(snapshot, UUIDs.randomBase64UUID());
-    }
-
-    /**
-     * Get a SnapshotId from the given components.
-     *
-     * @param snapshot   the snapshot description
-     * @param uuid       the snapshot uuid
-     * @return snapshot id
-     */
-    public static SnapshotId get(final Snapshot snapshot, final String uuid) {
-        return new SnapshotId(snapshot, uuid);
-    }
-
-    /**
-     * Returns the snapshot.
-     */
-    public Snapshot getSnapshot() {
-        return snapshot;
-    }
-
-    /**
-     * Returns repository name
-     *
-     * @return repository name
-     */
-    public String getRepository() {
-        return snapshot.getRepository();
     }
 
     /**
@@ -108,7 +84,7 @@ public class SnapshotId implements Writeable {
      * @return snapshot name
      */
     public String getName() {
-        return snapshot.getName();
+        return name;
     }
 
     /**
@@ -122,7 +98,7 @@ public class SnapshotId implements Writeable {
 
     @Override
     public String toString() {
-        return snapshot.toString() + "/" + uuid;
+        return name + "/" + uuid;
     }
 
     @Override
@@ -134,7 +110,7 @@ public class SnapshotId implements Writeable {
             return false;
         }
         @SuppressWarnings("unchecked") final SnapshotId that = (SnapshotId) o;
-        return snapshot.equals(that.snapshot) && uuid.equals(that.uuid);
+        return name.equals(that.name) && uuid.equals(that.uuid);
     }
 
     @Override
@@ -143,21 +119,13 @@ public class SnapshotId implements Writeable {
     }
 
     private int computeHashCode() {
-        return Objects.hash(snapshot, uuid);
+        return Objects.hash(name, uuid);
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        snapshot.writeTo(out);
+        out.writeString(name);
         out.writeString(uuid);
-    }
-
-    public String blobId() {
-        if (uuid.equals(UNASSIGNED_UUID)) {
-            // the old snapshot blob naming
-            return snapshot.getName();
-        }
-        return snapshot.getName() + "-" + uuid;
     }
 
 }
