@@ -759,7 +759,8 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
         return Tuple.tuple(name, uuid);
     }
 
-    private static String blobId(final SnapshotId snapshotId) {
+    // Package private for testing
+    static String blobId(final SnapshotId snapshotId) {
         final String uuid = snapshotId.getUUID();
         if (uuid.equals(SnapshotId.UNASSIGNED_UUID)) {
             // the old snapshot blob naming
