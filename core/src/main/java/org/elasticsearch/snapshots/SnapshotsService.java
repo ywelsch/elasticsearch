@@ -201,11 +201,6 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         validate(repositoryName, snapshotName);
         final SnapshotId snapshotId = new SnapshotId(snapshotName, UUIDs.randomBase64UUID()); // new UUID for the snapshot
 
-        // check if the snapshot name already exists in the repository
-        if (snapshotNameExists(repositoryName, snapshotName)) {
-            throw new InvalidSnapshotNameException(repositoryName, snapshotName, "snapshot with the same name already exists");
-        }
-
         clusterService.submitStateUpdateTask(request.cause(), new ClusterStateUpdateTask() {
 
             private SnapshotsInProgress.Entry newSnapshot = null;
@@ -261,14 +256,10 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
     /**
      * Checks if a snapshot by the same name exists in the repository, either
      * currently in progress or persisted in the repository.
-     *
-     * Package private for testing
      */
-    boolean snapshotNameExists(final String repositoryName, final String snapshotName) {
-        if (currentSnapshots(repositoryName, Arrays.asList(snapshotName)).isEmpty() == false) {
-            return true;
-        }
-        final Repository repository = repositoriesService.repository(repositoryName);
+    private boolean snapshotNameExists(final Snapshot snapshot) {
+        final String snapshotName = snapshot.getSnapshotId().getName();
+        final Repository repository = repositoriesService.repository(snapshot.getRepository());
         assert repository != null; // should only be called once we've validated the repository exists
         for (SnapshotId snapshotId : repository.snapshots()) {
             if (snapshotId.getName().equals(snapshotName)) {
@@ -329,9 +320,19 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * @param partial                    allow partial snapshots
      * @param userCreateSnapshotListener listener
      */
-    private void beginSnapshot(ClusterState clusterState, final SnapshotsInProgress.Entry snapshot, final boolean partial, final CreateSnapshotListener userCreateSnapshotListener) {
+    private void beginSnapshot(final ClusterState clusterState,
+                               final SnapshotsInProgress.Entry snapshot,
+                               final boolean partial,
+                               final CreateSnapshotListener userCreateSnapshotListener) {
         boolean snapshotCreated = false;
         try {
+            // check if the snapshot name already exists in the repository
+            if (snapshotNameExists(snapshot.snapshot())) {
+                throw new InvalidSnapshotNameException(snapshot.snapshot().getRepository(),
+                                                       snapshot.snapshot().getSnapshotId().getName(),
+                                                       "snapshot with the same name already exists");
+            }
+
             Repository repository = repositoriesService.repository(snapshot.snapshot().getRepository());
 
             MetaData metaData = clusterState.metaData();
@@ -397,7 +398,9 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
                             entries.add(entry);
                         }
                     }
-                    return ClusterState.builder(currentState).putCustom(SnapshotsInProgress.TYPE, new SnapshotsInProgress(Collections.unmodifiableList(entries))).build();
+                    return ClusterState.builder(currentState)
+                                       .putCustom(SnapshotsInProgress.TYPE, new SnapshotsInProgress(Collections.unmodifiableList(entries)))
+                                       .build();
                 }
 
                 @Override
