@@ -42,6 +42,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Read-only URL-based implementation of the BlobStoreRepository
@@ -124,9 +125,9 @@ public class URLRepository extends BlobStoreRepository {
     }
 
     @Override
-    public List<SnapshotId> snapshots() {
+    public List<SnapshotId> snapshots(final Predicate<String> filter) {
         if (listDirectories) {
-            return super.snapshots();
+            return super.snapshots(filter);
         } else {
             try {
                 return readSnapshotList();

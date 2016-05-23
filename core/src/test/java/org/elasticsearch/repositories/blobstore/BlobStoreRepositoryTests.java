@@ -27,7 +27,6 @@ import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.snapshots.SnapshotId;
-import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.ESSingleNodeTestCase;
 
@@ -48,7 +47,7 @@ import static org.hamcrest.Matchers.equalTo;
  */
 public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
 
-    public void testResolveSnapshotNames() throws Exception {
+    public void testRetrieveSnapshots() throws Exception {
         final Client client = client();
         final Path location = ESIntegTestCase.randomRepoPath(node().settings());
         final String repositoryName = "test-repo";
@@ -96,26 +95,19 @@ public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
             (BlobStoreRepository) repositoriesService.repository(repositoryName);
         final List<SnapshotId> originalSnapshots = Arrays.asList(snapshotId1, snapshotId2);
 
-        List<SnapshotId> snapshotIds = repository.resolveSnapshotNames(
-            originalSnapshots.stream().map(SnapshotId::getName).collect(Collectors.toList()),
-            false
+        List<SnapshotId> snapshotIds = repository.snapshots(s ->
+                originalSnapshots.stream().map(SnapshotId::getName).collect(Collectors.toList()).contains(s)
         );
         assertThat(snapshotIds, equalTo(originalSnapshots));
 
         final SnapshotId missingSnapshot = new SnapshotId(randomAsciiOfLength(8), UUIDs.randomBase64UUID());
         final List<SnapshotId> withMissingEntry = Stream.concat(originalSnapshots.stream(), Arrays.asList(missingSnapshot).stream())
                                                       .collect(Collectors.toList());
-        snapshotIds = repository.resolveSnapshotNames(
-            withMissingEntry.stream().map(SnapshotId::getName).collect(Collectors.toList()),
-            true
+        snapshotIds = repository.snapshots(s ->
+            withMissingEntry.stream().map(SnapshotId::getName).collect(Collectors.toList()).contains(s)
         );
         assertThat(snapshotIds, equalTo(originalSnapshots));
         assertFalse(snapshotIds.contains(missingSnapshot));
-
-        expectThrows(SnapshotMissingException.class, () -> repository.resolveSnapshotNames(
-            withMissingEntry.stream().map(SnapshotId::getName).collect(Collectors.toList()),
-            false
-        ));
     }
 
     public void testSnapshotIndexFile() throws Exception {

@@ -77,7 +77,6 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -154,8 +153,6 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
 
     private final MetaDataCreateIndexService createIndexService;
 
-    private final ClusterSettings dynamicSettings;
-
     private final MetaDataIndexUpgradeService metaDataIndexUpgradeService;
 
     private final CopyOnWriteArrayList<ActionListener<RestoreCompletionResponse>> listeners = new CopyOnWriteArrayList<>();
@@ -165,7 +162,7 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
 
     @Inject
     public RestoreService(Settings settings, ClusterService clusterService, RepositoriesService repositoriesService, TransportService transportService,
-                          AllocationService allocationService, MetaDataCreateIndexService createIndexService, ClusterSettings dynamicSettings,
+                          AllocationService allocationService, MetaDataCreateIndexService createIndexService,
                           MetaDataIndexUpgradeService metaDataIndexUpgradeService, ClusterSettings clusterSettings) {
         super(settings);
         this.clusterService = clusterService;
@@ -173,7 +170,6 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         this.transportService = transportService;
         this.allocationService = allocationService;
         this.createIndexService = createIndexService;
-        this.dynamicSettings = dynamicSettings;
         this.metaDataIndexUpgradeService = metaDataIndexUpgradeService;
         transportService.registerRequestHandler(UPDATE_RESTORE_ACTION_NAME, UpdateIndexShardRestoreStatusRequest::new, ThreadPool.Names.SAME, new UpdateRestoreStateRequestHandler());
         clusterService.add(this);
@@ -190,9 +186,12 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         try {
             // Read snapshot info and metadata from the repository
             Repository repository = repositoriesService.repository(request.repositoryName);
-            final List<SnapshotId> resolvedSnapshots = repository.resolveSnapshotNames(Arrays.asList(request.snapshotName), false);
-            final SnapshotInfo snapshotInfo = repository.readSnapshot(resolvedSnapshots.get(0));
-            final SnapshotId snapshotId = snapshotInfo.snapshotId();
+            final List<SnapshotId> matchingIds = repository.snapshots(snapName -> snapName.equals(request.snapshotName));
+            if (matchingIds.size() < 1) {
+                throw new SnapshotRestoreException(request.repositoryName, request.snapshotName, "snapshot does not exist");
+            }
+            final SnapshotId snapshotId = matchingIds.get(0);
+            final SnapshotInfo snapshotInfo = repository.readSnapshot(snapshotId);
             final Snapshot snapshot = new Snapshot(request.repositoryName, snapshotId);
             List<String> filteredIndices = SnapshotUtils.filterIndices(snapshotInfo.indices(), request.indices(), request.indicesOptions());
             MetaData metaDataIn = repository.readSnapshotMetaData(snapshotInfo, filteredIndices);

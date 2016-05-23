@@ -37,8 +37,8 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
 import org.elasticsearch.snapshots.Snapshot;
-import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotInfo;
+import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
@@ -52,6 +52,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -204,9 +205,15 @@ public class TransportSnapshotsStatusAction extends TransportMasterNodeAction<Sn
                                                      .stream()
                                                      .filter(s -> currentSnapshots.contains(Tuple.tuple(repositoryName, s)) == false)
                                                      .collect(Collectors.toList());
-            final List<SnapshotId> snapshotIds = snapshotsService.resolveSnapshotNames(repositoryName, snapshotNames, false);
-            for (SnapshotId snapshotId : snapshotIds) {
-                SnapshotInfo snapshotInfo = snapshotsService.snapshot(repositoryName, snapshotId);
+            final Map<String, SnapshotInfo> snapshotInfos =
+                snapshotsService.snapshots(repositoryName, s -> snapshotNames.contains(s), false)
+                                .stream()
+                                .collect(Collectors.toMap(s -> s.snapshotId().getName(), Function.identity()));
+            for (final String snapshotName : snapshotNames) {
+                final SnapshotInfo snapshotInfo = snapshotInfos.get(snapshotName);
+                if (snapshotInfo == null) {
+                    throw new SnapshotMissingException(repositoryName, snapshotName);
+                }
                 List<SnapshotIndexShardStatus> shardStatusBuilder = new ArrayList<>();
                 if (snapshotInfo.state().completed()) {
                     Map<ShardId, IndexShardSnapshotStatus> shardStatues =

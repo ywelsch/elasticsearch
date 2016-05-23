@@ -67,13 +67,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Predicate;
 
 import static java.util.Collections.unmodifiableMap;
 import static org.elasticsearch.cluster.SnapshotsInProgress.completed;
@@ -141,18 +141,19 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * Returns a list of snapshots from repository sorted by snapshot creation date
      *
      * @param repositoryName repository name
+     * @param filter         predicate to filter by snapshot name
      * @param ignoreUnavailable if true, snapshots that could not be read will only be logged with a warning,
      *                          if false, they will throw an error
      * @return list of snapshots
      */
-    public List<SnapshotInfo> snapshots(final String repositoryName, final boolean ignoreUnavailable) {
+    public List<SnapshotInfo> snapshots(final String repositoryName, final Predicate<String> filter, final boolean ignoreUnavailable) {
         Set<SnapshotInfo> snapshotSet = new HashSet<>();
         List<SnapshotsInProgress.Entry> entries = currentSnapshots(repositoryName, Collections.emptyList());
         for (SnapshotsInProgress.Entry entry : entries) {
             snapshotSet.add(inProgressSnapshot(entry));
         }
         Repository repository = repositoriesService.repository(repositoryName);
-        List<SnapshotId> snapshotIds = repository.snapshots();
+        List<SnapshotId> snapshotIds = repository.snapshots(filter);
         for (SnapshotId snapshotId : snapshotIds) {
             try {
                 snapshotSet.add(repository.readSnapshot(snapshotId));
@@ -261,12 +262,7 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         final String snapshotName = snapshot.getSnapshotId().getName();
         final Repository repository = repositoriesService.repository(snapshot.getRepository());
         assert repository != null; // should only be called once we've validated the repository exists
-        for (SnapshotId snapshotId : repository.snapshots()) {
-            if (snapshotId.getName().equals(snapshotName)) {
-                return true;
-            }
-        }
-        return false;
+        return repository.snapshots(name -> name.equals(snapshotName)).size() > 0;
     }
 
     /**
@@ -923,7 +919,22 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * @param listener        listener
      */
     public void deleteSnapshot(final String repositoryName, final String snapshotName, final DeleteSnapshotListener listener) {
-        final List<SnapshotId> snapshotIds = resolveSnapshotNames(repositoryName, Arrays.asList(snapshotName), false);
+        final List<SnapshotId> snapshotIds = new ArrayList<>();
+        // first, look for the snapshot in the current running snapshots in the cluster state
+        List<SnapshotsInProgress.Entry> entries = currentSnapshots(repositoryName, Collections.emptyList());
+        for (SnapshotsInProgress.Entry entry : entries) {
+            if (snapshotName.equals(entry.snapshot().getSnapshotId().getName())) {
+                snapshotIds.add(entry.snapshot().getSnapshotId());
+            }
+        }
+        // if nothing found by the same name, then look in the repository
+        if (snapshotIds.size() < 1) {
+            final Repository repository = repositoriesService.repository(repositoryName);
+            snapshotIds.addAll(repository.snapshots(name -> name.equals(snapshotName)));
+        }
+        if (snapshotIds.size() < 1) {
+            throw new SnapshotMissingException(repositoryName, snapshotName);
+        }
         deleteSnapshot(new Snapshot(repositoryName, snapshotIds.get(0)), listener);
     }
 
@@ -1216,37 +1227,6 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
 
     public RepositoriesService getRepositoriesService() {
         return repositoriesService;
-    }
-
-    /**
-     * Resolve the {@link SnapshotId}s for the given snapshot names.
-     *
-     * @param repositoryName     repository name
-     * @param snapshotNames      snapshot names
-     * @param ignoreUnavailable  true if a snapshot should be ignored if it was not found,
-     *                           false if it should throw a SnapshotMissingException
-     * @return the snapshot ids
-     * @throws SnapshotMissingException if a snapshot could not be found and ignoreUnavailable is false
-     */
-    public List<SnapshotId> resolveSnapshotNames(final String repositoryName, final List<String> snapshotNames, final boolean ignoreUnavailable) {
-        Objects.requireNonNull(repositoryName);
-        Objects.requireNonNull(snapshotNames);
-        List<SnapshotId> ids = new ArrayList<>();
-        final List<SnapshotInfo> currentSnapshots = currentSnapshots(repositoryName);
-        for (SnapshotInfo snapshotInfo : currentSnapshots) {
-            final SnapshotId snapshotId = snapshotInfo.snapshotId();
-            if (snapshotNames.contains(snapshotId.getName())) {
-                ids.add(snapshotId);
-                snapshotNames.removeIf(snapName -> snapName.equals(snapshotId.getName())); // handles potential duplicates in the list
-            }
-        }
-        Repository repository = repositoriesService.repository(repositoryName);
-        if (snapshotNames.isEmpty() == false) {
-            ids.addAll(repository.resolveSnapshotNames(new ArrayList<>(snapshotNames), ignoreUnavailable));
-        }
-        // if ignoreUnavailable is false, then an unresolved snapshot should throw a SnapshotMissingException
-        assert ignoreUnavailable || ids.size() == snapshotNames.size();
-        return Collections.unmodifiableList(ids);
     }
 
     /**

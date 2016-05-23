@@ -71,6 +71,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * BlobStore - based implementation of Snapshot Repository
@@ -328,7 +329,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                 globalMetaDataFormat.delete(snapshotsBlobContainer, snapshotName);
             }
             // Delete snapshot from the snapshot list
-            List<SnapshotId> snapshotIds = snapshots();
+            List<SnapshotId> snapshotIds = snapshots(s -> true);
             if (snapshotIds.contains(snapshotId)) {
                 List<SnapshotId> builder = new ArrayList<>();
                 for (SnapshotId id : snapshotIds) {
@@ -385,7 +386,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                                                               totalShards,
                                                               shardFailures);
             snapshotFormat.write(blobStoreSnapshot, snapshotsBlobContainer, blobId(snapshotId));
-            List<SnapshotId> snapshotIds = snapshots();
+            List<SnapshotId> snapshotIds = snapshots(s -> true);
             if (!snapshotIds.contains(snapshotId)) {
                 snapshotIds = new ArrayList<>(snapshotIds);
                 snapshotIds.add(snapshotId);
@@ -402,7 +403,7 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
      * {@inheritDoc}
      */
     @Override
-    public List<SnapshotId> snapshots() {
+    public List<SnapshotId> snapshots(final Predicate<String> filter) {
         try {
             List<SnapshotId> snapshots = new ArrayList<>();
             Map<String, BlobMetaData> blobs;
@@ -433,7 +434,9 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
                     // not sure what it was - ignore
                     continue;
                 }
-                snapshots.add(new SnapshotId(name, uuid));
+                if (filter.test(name)) {
+                    snapshots.add(new SnapshotId(name, uuid));
+                }
             }
             return Collections.unmodifiableList(snapshots);
         } catch (IOException ex) {
@@ -711,29 +714,6 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent<Rep
     @Override
     public boolean readOnly() {
         return readOnly;
-    }
-
-    @Override
-    public List<SnapshotId> resolveSnapshotNames(final List<String> snapshotNames, final boolean ignoreUnavailable) {
-        List<SnapshotId> ids = new ArrayList<>();
-        final List<SnapshotId> snapshotIds = snapshots();
-        for (String snapshotName : snapshotNames) {
-            SnapshotId resolvedSnapshotId = null;
-            for (SnapshotId snapshotId : snapshotIds) {
-                if (snapshotName.equals(snapshotId.getName())) {
-                    resolvedSnapshotId = snapshotId;
-                }
-            }
-            if (ignoreUnavailable == false && resolvedSnapshotId == null) {
-                throw new SnapshotMissingException(repositoryName, snapshotName);
-            }
-            if (resolvedSnapshotId != null) {
-                ids.add(resolvedSnapshotId);
-            }
-        }
-        // assert that each snapshot name was resolved into an id, if ignoreUnavailable is false
-        assert ignoreUnavailable || snapshotNames.size() == ids.size();
-        return Collections.unmodifiableList(ids);
     }
 
     // TODO: this will go away once readSnapshotsList uses the index file instead of listing blobs

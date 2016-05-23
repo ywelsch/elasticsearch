@@ -25,11 +25,11 @@ import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
 import org.elasticsearch.snapshots.SnapshotInfo;
-import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.snapshots.SnapshotShardFailure;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.function.Predicate;
 
 /**
  * Snapshot repository interface.
@@ -69,11 +69,13 @@ public interface Repository extends LifecycleComponent<Repository> {
     MetaData readSnapshotMetaData(SnapshotInfo snapshot, List<String> indices) throws IOException;
 
     /**
-     * Returns the list of snapshots currently stored in the repository
+     * Returns the list of snapshots currently stored in the repository that match the given predicate on the snapshot name.
+     * To get all snapshots, the predicate filter should return true regardless of the input.
      *
+     * @param  filter  the predicate to evaluate to determine if the snapshot should be returned
      * @return snapshot list
      */
-    List<SnapshotId> snapshots();
+    List<SnapshotId> snapshots(Predicate<String> filter);
 
     /**
      * Starts snapshotting process
@@ -139,17 +141,5 @@ public interface Repository extends LifecycleComponent<Repository> {
      * @return true if the repository is read/only
      */
     boolean readOnly();
-
-    /**
-     * Resolves snapshot names in the repository to {@link SnapshotId}s.  If any of the snapshot names
-     * where not found in the repository, a {@link SnapshotMissingException} is thrown.
-     *
-     * @param snapshotNames list of snapshot names to resolve
-     * @param ignoreUnavailable true if a snapshot should be ignored if it was not found,
-     *                          false if it should throw a SnapshotMissingException
-     * @return snapshot ids
-     * @throws SnapshotMissingException if a snapshot is not found and ignoreUnavailable is false
-     */
-    List<SnapshotId> resolveSnapshotNames(List<String> snapshotNames, boolean ignoreUnavailable);
 
 }
