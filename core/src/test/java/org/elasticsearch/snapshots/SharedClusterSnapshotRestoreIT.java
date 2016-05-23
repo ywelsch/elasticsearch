@@ -2284,11 +2284,11 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
                                                        .put("chunk_size", randomIntBetween(100, 1000), ByteSizeUnit.BYTES)));
 
         logger.info("--> get snapshots on an empty repository");
-        /*expectThrows(SnapshotMissingException.class, () -> client.admin()
+        expectThrows(SnapshotMissingException.class, () -> client.admin()
                                                                  .cluster()
                                                                  .prepareGetSnapshots(repositoryName)
                                                                  .addSnapshots("non-existent-snapshot")
-                                                                 .get());*/
+                                                                 .get());
         // with ignore unavailable set to true, should not throw an exception
         GetSnapshotsResponse getSnapshotsResponse = client.admin()
                                                           .cluster()

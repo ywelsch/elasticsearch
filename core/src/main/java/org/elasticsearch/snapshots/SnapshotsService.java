@@ -1232,18 +1232,17 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         Objects.requireNonNull(repositoryName);
         Objects.requireNonNull(snapshotNames);
         List<SnapshotId> ids = new ArrayList<>();
-        Set<String> snapshots = new LinkedHashSet<>(snapshotNames);
         final List<SnapshotInfo> currentSnapshots = currentSnapshots(repositoryName);
         for (SnapshotInfo snapshotInfo : currentSnapshots) {
             final SnapshotId snapshotId = snapshotInfo.snapshotId();
-            if (snapshots.contains(snapshotId.getName())) {
+            if (snapshotNames.contains(snapshotId.getName())) {
                 ids.add(snapshotId);
-                snapshots.remove(snapshotId.getName());
+                snapshotNames.removeIf(snapName -> snapName.equals(snapshotId.getName())); // handles potential duplicates in the list
             }
         }
         Repository repository = repositoriesService.repository(repositoryName);
-        if (snapshots.isEmpty() == false) {
-            ids.addAll(repository.resolveSnapshotNames(new ArrayList<>(snapshots), ignoreUnavailable));
+        if (snapshotNames.isEmpty() == false) {
+            ids.addAll(repository.resolveSnapshotNames(new ArrayList<>(snapshotNames), ignoreUnavailable));
         }
         // if ignoreUnavailable is false, then an unresolved snapshot should throw a SnapshotMissingException
         assert ignoreUnavailable || ids.size() == snapshotNames.size();

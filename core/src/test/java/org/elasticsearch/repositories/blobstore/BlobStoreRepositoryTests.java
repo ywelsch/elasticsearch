@@ -26,7 +26,6 @@ import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.repositories.RepositoriesService;
-import org.elasticsearch.repositories.fs.FsRepository;
 import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -91,9 +90,10 @@ public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
                                        .get();
         final SnapshotId snapshotId2 = createSnapshotResponse.getSnapshotInfo().snapshotId();
 
-        logger.info("--> make sure each node's repository can resolve the snapshots");
+        logger.info("--> make sure the node's repository can resolve the snapshots");
         final RepositoriesService repositoriesService = getInstanceFromNode(RepositoriesService.class);
-        @SuppressWarnings("unchecked") final FsRepository repository = (FsRepository) repositoriesService.repository(repositoryName);
+        @SuppressWarnings("unchecked") final BlobStoreRepository repository =
+            (BlobStoreRepository) repositoriesService.repository(repositoryName);
         final List<SnapshotId> originalSnapshots = Arrays.asList(snapshotId1, snapshotId2);
 
         List<SnapshotId> snapshotIds = repository.resolveSnapshotNames(
@@ -131,7 +131,8 @@ public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
         assertThat(putRepositoryResponse.isAcknowledged(), equalTo(true));
 
         final RepositoriesService repositoriesService = getInstanceFromNode(RepositoriesService.class);
-        @SuppressWarnings("unchecked") final FsRepository repository = (FsRepository) repositoriesService.repository(repositoryName);
+        @SuppressWarnings("unchecked") final BlobStoreRepository repository =
+            (BlobStoreRepository) repositoriesService.repository(repositoryName);
 
         // write to and read from a snapshot file with no entries
         repository.writeSnapshotList(Collections.emptyList());
