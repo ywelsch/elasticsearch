@@ -97,7 +97,7 @@ public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
 
         List<SnapshotId> snapshotIds = repository.snapshots(s ->
                 originalSnapshots.stream().map(SnapshotId::getName).collect(Collectors.toList()).contains(s)
-        );
+        ).stream().sorted((s1, s2) -> s1.getName().compareTo(s2.getName())).collect(Collectors.toList());
         assertThat(snapshotIds, equalTo(originalSnapshots));
 
         final SnapshotId missingSnapshot = new SnapshotId(randomAsciiOfLength(8), UUIDs.randomBase64UUID());
@@ -105,7 +105,7 @@ public class BlobStoreRepositoryTests extends ESSingleNodeTestCase {
                                                       .collect(Collectors.toList());
         snapshotIds = repository.snapshots(s ->
             withMissingEntry.stream().map(SnapshotId::getName).collect(Collectors.toList()).contains(s)
-        );
+        ).stream().sorted((s1, s2) -> s1.getName().compareTo(s2.getName())).collect(Collectors.toList());
         assertThat(snapshotIds, equalTo(originalSnapshots));
         assertFalse(snapshotIds.contains(missingSnapshot));
     }
