@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.snapshots.SnapshotsService;
@@ -82,46 +83,35 @@ public class TransportGetSnapshotsAction extends TransportMasterNodeAction<GetSn
             final String repository = request.repository();
             List<SnapshotInfo> snapshotInfoBuilder = new ArrayList<>();
             if (isAllSnapshots(request.snapshots())) {
-                snapshotInfoBuilder.addAll(snapshotsService.snapshots(repository, s -> true, request.ignoreUnavailable()));
+                snapshotInfoBuilder.addAll(snapshotsService.snapshots(repository, snapshotsService.snapshotIds(repository),
+                    request.ignoreUnavailable()));
             } else if (isCurrentSnapshots(request.snapshots())) {
                 snapshotInfoBuilder.addAll(snapshotsService.currentSnapshots(repository));
             } else {
-                Map<String, SnapshotInfo> snapshotInfos = null;
-                final Set<String> toResolve = new LinkedHashSet<>(); // maintain order
+                Map<String, SnapshotId> allSnapshotIds = snapshotsService.snapshotIds(repository)
+                    .stream().collect(Collectors.toMap(SnapshotId::getName, Function.identity()));
+                final Set<SnapshotId> toResolve = new LinkedHashSet<>(); // maintain order
                 for (String snapshotOrPattern : request.snapshots()) {
-                    if (Regex.isSimpleMatchPattern(snapshotOrPattern) == false) {
-                        toResolve.add(snapshotOrPattern);
-                    } else {
-                        if (snapshotInfos == null) { // lazily load snapshots
-                            snapshotInfos = snapshotsService.snapshots(repository, s -> true, request.ignoreUnavailable())
-                                                            .stream()
-                                                            .collect(Collectors.toMap(s -> s.snapshotId().getName(), Function.identity()));
+                    if (Regex.isSimpleMatchPattern(snapshotOrPattern)) {
+                        if (allSnapshotIds.containsKey(snapshotOrPattern)) {
+                            toResolve.add(allSnapshotIds.get(snapshotOrPattern));
+                        } else if (request.ignoreUnavailable() == false) {
+                            throw new SnapshotMissingException(repository, snapshotOrPattern);
                         }
-                        for (SnapshotInfo snapshot : snapshotInfos.values()) {
-                            if (Regex.simpleMatch(snapshotOrPattern, snapshot.snapshotId().getName())) {
-                                toResolve.add(snapshot.snapshotId().getName());
+                    } else {
+                        for (Map.Entry<String, SnapshotId> entry : allSnapshotIds.entrySet()) {
+                            if (Regex.simpleMatch(snapshotOrPattern, entry.getKey())) {
+                                toResolve.add(allSnapshotIds.get(entry.getValue()));
                             }
                         }
                     }
                 }
-                // only get snapshots if snapshotInfos is not set; otherwise, just use the SnapshotInfos we already have
-                if (snapshotInfos == null) {
-                    snapshotInfos = snapshotsService.snapshots(repository, s -> toResolve.contains(s), request.ignoreUnavailable())
-                                                    .stream()
-                                                    .collect(Collectors.toMap(s -> s.snapshotId().getName(), Function.identity()));
+
+                if (toResolve.isEmpty() && request.ignoreUnavailable() == false) {
+                    throw new SnapshotMissingException(repository, request.snapshots()[0]);
                 }
-                for (String snapshotName : toResolve) {
-                    final SnapshotInfo snapshotInfo = snapshotInfos.get(snapshotName);
-                    if (snapshotInfo != null) {
-                        snapshotInfoBuilder.add(snapshotInfo);
-                    } else if (request.ignoreUnavailable() == false) {
-                        // Its possible that we didn't find a snapshot info for the given name, for example,
-                        // if we had a pre fetched map, so we didn't need to resolve snapshot ids.  In this case,
-                        // if the request does not permit ignoring unavailable snapshots, then throw an exception
-                        // if we could not find the snapshot info.
-                        throw new SnapshotMissingException(repository, snapshotName);
-                    }
-                }
+
+                snapshotInfoBuilder.addAll(snapshotsService.snapshots(repository, new ArrayList<>(toResolve), request.ignoreUnavailable()));
             }
             listener.onResponse(new GetSnapshotsResponse(Collections.unmodifiableList(snapshotInfoBuilder)));
         } catch (Throwable t) {

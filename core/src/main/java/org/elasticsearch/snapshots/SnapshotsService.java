@@ -71,9 +71,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Predicate;
 
 import static java.util.Collections.unmodifiableMap;
 import static org.elasticsearch.cluster.SnapshotsInProgress.completed;
@@ -122,6 +122,18 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
     }
 
     /**
+     * Retrieves list of snapshot ids that are present in a repository
+     *
+     * @param repositoryName repository name
+     * @return list of snapshot ids
+     */
+    public List<SnapshotId> snapshotIds(final String repositoryName) {
+        Repository repository = repositoriesService.repository(repositoryName);
+        assert repository != null; // should only be called once we've validated the repository exists
+        return repository.snapshots();
+    }
+
+    /**
      * Retrieves snapshot from repository
      *
      * @param repositoryName  repository name
@@ -141,19 +153,18 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * Returns a list of snapshots from repository sorted by snapshot creation date
      *
      * @param repositoryName repository name
-     * @param filter         predicate to filter by snapshot name
+     * @param snapshotIds       snapshots for which to fetch snapshot information
      * @param ignoreUnavailable if true, snapshots that could not be read will only be logged with a warning,
      *                          if false, they will throw an error
      * @return list of snapshots
      */
-    public List<SnapshotInfo> snapshots(final String repositoryName, final Predicate<String> filter, final boolean ignoreUnavailable) {
+    public List<SnapshotInfo> snapshots(final String repositoryName, List<SnapshotId> snapshotIds, final boolean ignoreUnavailable) {
         Set<SnapshotInfo> snapshotSet = new HashSet<>();
         List<SnapshotsInProgress.Entry> entries = currentSnapshots(repositoryName, Collections.emptyList());
         for (SnapshotsInProgress.Entry entry : entries) {
             snapshotSet.add(inProgressSnapshot(entry));
         }
         Repository repository = repositoriesService.repository(repositoryName);
-        List<SnapshotId> snapshotIds = repository.snapshots(filter);
         for (SnapshotId snapshotId : snapshotIds) {
             try {
                 snapshotSet.add(repository.readSnapshot(snapshotId));
@@ -262,7 +273,7 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
         final String snapshotName = snapshot.getSnapshotId().getName();
         final Repository repository = repositoriesService.repository(snapshot.getRepository());
         assert repository != null; // should only be called once we've validated the repository exists
-        return repository.snapshots(name -> name.equals(snapshotName)).size() > 0;
+        return repository.snapshots().stream().anyMatch(s -> s.getName().equals(snapshotName));
     }
 
     /**
@@ -919,23 +930,18 @@ public class SnapshotsService extends AbstractLifecycleComponent<SnapshotsServic
      * @param listener        listener
      */
     public void deleteSnapshot(final String repositoryName, final String snapshotName, final DeleteSnapshotListener listener) {
-        final List<SnapshotId> snapshotIds = new ArrayList<>();
         // first, look for the snapshot in the current running snapshots in the cluster state
-        List<SnapshotsInProgress.Entry> entries = currentSnapshots(repositoryName, Collections.emptyList());
-        for (SnapshotsInProgress.Entry entry : entries) {
-            if (snapshotName.equals(entry.snapshot().getSnapshotId().getName())) {
-                snapshotIds.add(entry.snapshot().getSnapshotId());
-            }
-        }
+        Optional<SnapshotId> matchedEntry = currentSnapshots(repositoryName, Collections.emptyList()).stream()
+            .map(e -> e.snapshot().getSnapshotId()).filter(s -> s.getName().equals(snapshotName)).findFirst();
         // if nothing found by the same name, then look in the repository
-        if (snapshotIds.size() < 1) {
+        if (matchedEntry.isPresent() == false) {
             final Repository repository = repositoriesService.repository(repositoryName);
-            snapshotIds.addAll(repository.snapshots(name -> name.equals(snapshotName)));
+            matchedEntry = repository.snapshots().stream().filter(s -> s.getName().equals(snapshotName)).findFirst();
         }
-        if (snapshotIds.size() < 1) {
+        if (matchedEntry.isPresent() == false) {
             throw new SnapshotMissingException(repositoryName, snapshotName);
         }
-        deleteSnapshot(new Snapshot(repositoryName, snapshotIds.get(0)), listener);
+        deleteSnapshot(new Snapshot(repositoryName, matchedEntry.get()), listener);
     }
 
     /**

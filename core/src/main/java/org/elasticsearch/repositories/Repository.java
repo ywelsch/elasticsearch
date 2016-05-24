@@ -72,10 +72,9 @@ public interface Repository extends LifecycleComponent<Repository> {
      * Returns the list of snapshots currently stored in the repository that match the given predicate on the snapshot name.
      * To get all snapshots, the predicate filter should return true regardless of the input.
      *
-     * @param  filter  the predicate to evaluate to determine if the snapshot should be returned
      * @return snapshot list
      */
-    List<SnapshotId> snapshots(Predicate<String> filter);
+    List<SnapshotId> snapshots();
 
     /**
      * Starts snapshotting process

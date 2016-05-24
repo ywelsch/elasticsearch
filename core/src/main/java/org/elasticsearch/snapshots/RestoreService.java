@@ -85,6 +85,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -186,11 +187,12 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         try {
             // Read snapshot info and metadata from the repository
             Repository repository = repositoriesService.repository(request.repositoryName);
-            final List<SnapshotId> matchingIds = repository.snapshots(snapName -> snapName.equals(request.snapshotName));
-            if (matchingIds.size() < 1) {
+            final Optional<SnapshotId> matchingSnapshotId = repository.snapshots().stream()
+                .filter(s -> request.snapshotName.equals(s.getName())).findFirst();
+            if (matchingSnapshotId.isPresent() == false) {
                 throw new SnapshotRestoreException(request.repositoryName, request.snapshotName, "snapshot does not exist");
             }
-            final SnapshotId snapshotId = matchingIds.get(0);
+            final SnapshotId snapshotId = matchingSnapshotId.get();
             final SnapshotInfo snapshotInfo = repository.readSnapshot(snapshotId);
             final Snapshot snapshot = new Snapshot(request.repositoryName, snapshotId);
             List<String> filteredIndices = SnapshotUtils.filterIndices(snapshotInfo.indices(), request.indices(), request.indicesOptions());
