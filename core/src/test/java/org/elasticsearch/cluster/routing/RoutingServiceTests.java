@@ -114,7 +114,7 @@ public class RoutingServiceTests extends ESAllocationTestCase {
         clusterState = ClusterState.builder(clusterState).routingResult(allocation.applyStartedShards(clusterState, clusterState.getRoutingNodes().shardsWithState(INITIALIZING))).build();
         assertFalse("no shards should be unassigned", clusterState.getRoutingNodes().unassigned().size() > 0);
         String nodeId = null;
-        final List<ShardRouting> allShards = clusterState.getRoutingNodes().routingTable().allShards("test");
+        final List<ShardRouting> allShards = clusterState.getRoutingTable().allShards("test");
         // we need to find the node with the replica otherwise we will not reroute
         for (ShardRouting shardRouting : allShards) {
             if (shardRouting.primary() == false) {
@@ -167,7 +167,7 @@ public class RoutingServiceTests extends ESAllocationTestCase {
 
             // find replica of short_delay
             ShardRouting shortDelayReplica = null;
-            for (ShardRouting shardRouting : clusterState.getRoutingNodes().routingTable().allShards("short_delay")) {
+            for (ShardRouting shardRouting : clusterState.getRoutingTable().allShards("short_delay")) {
                 if (shardRouting.primary() == false) {
                     shortDelayReplica = shardRouting;
                     break;
@@ -177,7 +177,7 @@ public class RoutingServiceTests extends ESAllocationTestCase {
 
             // find replica of long_delay
             ShardRouting longDelayReplica = null;
-            for (ShardRouting shardRouting : clusterState.getRoutingNodes().routingTable().allShards("long_delay")) {
+            for (ShardRouting shardRouting : clusterState.getRoutingTable().allShards("long_delay")) {
                 if (shardRouting.primary() == false) {
                     longDelayReplica = shardRouting;
                     break;

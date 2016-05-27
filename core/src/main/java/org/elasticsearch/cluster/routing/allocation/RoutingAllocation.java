@@ -122,6 +122,8 @@ public class RoutingAllocation {
 
     private final MetaData metaData;
 
+    private final RoutingTable routingTable;
+
     private final DiscoveryNodes nodes;
 
     private final ImmutableOpenMap<String, ClusterState.Custom> customs;
@@ -154,6 +156,7 @@ public class RoutingAllocation {
         this.deciders = deciders;
         this.routingNodes = routingNodes;
         this.metaData = clusterState.metaData();
+        this.routingTable = clusterState.routingTable();
         this.nodes = clusterState.nodes();
         this.customs = clusterState.customs();
         this.clusterInfo = clusterInfo;
@@ -179,7 +182,7 @@ public class RoutingAllocation {
      * @return current routing table
      */
     public RoutingTable routingTable() {
-        return routingNodes.routingTable();
+        return routingTable;
     }
 
     /**
