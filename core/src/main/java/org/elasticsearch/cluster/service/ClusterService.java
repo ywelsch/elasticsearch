@@ -54,7 +54,6 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
-import org.elasticsearch.common.util.concurrent.PrioritizedRunnable;
 import org.elasticsearch.common.util.iterable.Iterables;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -62,7 +61,6 @@ import org.elasticsearch.threadpool.ThreadPool;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -84,7 +82,6 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
             Setting.positiveTimeSetting("cluster.service.slow_task_logging_threshold", TimeValue.timeValueSeconds(30),
                     Property.Dynamic, Property.NodeScope);
 
-    public static final String UPDATE_THREAD_NAME = "clusterService#updateTask";
     private final ThreadPool threadPool;
     private final ClusterName clusterName;
 
@@ -428,39 +425,11 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
         }
     }
 
-
-
-
+    /**
+     * Returns task executor that is responsible for executing the cluster state update  tasks
+     */
     public ClusterTaskExecutor clusterTaskExecutor() {
         return clusterTaskExecutor;
-    }
-
-    /**
-     * Returns the tasks that are pending.
-     */
-    public List<PendingClusterTask> pendingTasks() {
-        return clusterTaskExecutor.pendingTasks();
-    }
-
-    /**
-     * Returns the number of currently pending tasks.
-     */
-    public int numberOfPendingTasks() {
-        return clusterTaskExecutor.numberOfPendingTasks();
-    }
-
-    /**
-     * Returns the maximum wait time for tasks in the queue
-     *
-     * @return A zero time value if the queue is empty, otherwise the time value oldest task waiting in the queue
-     */
-    public TimeValue getMaxTaskWaitTime() {
-        return clusterTaskExecutor.getMaxTaskWaitTime();
-    }
-
-    /** asserts that the current thread is the cluster state update thread */
-    public static boolean assertClusterStateThread() {
-        return ClusterTaskExecutor.assertClusterStateThread();
     }
 
     public ClusterName getClusterName() {

@@ -252,7 +252,7 @@ public abstract class AbstractSnapshotIntegTestCase extends ESIntegTestCase {
                 @Override
                 public ClusterState execute(ClusterState currentState) throws Exception {
                     while(System.currentTimeMillis() < stopWaitingAt) {
-                        for (PendingClusterTask task : clusterService.pendingTasks()) {
+                        for (PendingClusterTask task : clusterService.clusterTaskExecutor().pendingTasks()) {
                             if (task.getSource().string().equals("test_block") == false && passThroughPriority.sameOrAfter(task.getPriority())) {
                                 // There are other higher priority tasks in the queue and let them pass through and then set the block again
                                 logger.info("passing through cluster state task {}", task.getSource());

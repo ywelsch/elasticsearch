@@ -35,6 +35,7 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RoutingService;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
 import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.cluster.service.ClusterTaskExecutor;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.component.Lifecycle;
@@ -941,9 +942,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent<Discovery> implemen
     }
 
     protected ClusterState rejoin(ClusterState clusterState, String reason) {
-
-        // *** called from within an cluster state update task *** //
-        assert Thread.currentThread().getName().contains(ClusterService.UPDATE_THREAD_NAME);
+        ClusterTaskExecutor.assertClusterStateThread();
 
         logger.warn("{}, current nodes: {}", reason, clusterState.nodes());
         nodesFD.stop();
@@ -973,7 +972,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent<Discovery> implemen
 
     private ClusterState handleAnotherMaster(ClusterState localClusterState, final DiscoveryNode otherMaster, long otherClusterStateVersion, String reason) {
         assert localClusterState.nodes().isLocalNodeElectedMaster() : "handleAnotherMaster called but current node is not a master";
-        assert Thread.currentThread().getName().contains(ClusterService.UPDATE_THREAD_NAME) : "not called from the cluster state update thread";
+        ClusterTaskExecutor.assertClusterStateThread();
 
         if (otherClusterStateVersion > localClusterState.version()) {
             return rejoin(localClusterState, "zen-disco-discovered another master with a new cluster_state [" + otherMaster + "][" + reason + "]");
@@ -1145,14 +1144,14 @@ public class ZenDiscovery extends AbstractLifecycleComponent<Discovery> implemen
 
         /** cleans any running joining thread and calls {@link #rejoin} */
         public ClusterState stopRunningThreadAndRejoin(ClusterState clusterState, String reason) {
-            ClusterService.assertClusterStateThread();
+            ClusterTaskExecutor.assertClusterStateThread();
             currentJoinThread.set(null);
             return rejoin(clusterState, reason);
         }
 
         /** starts a new joining thread if there is no currently active one and join thread controlling is started */
         public void startNewThreadIfNotRunning() {
-            ClusterService.assertClusterStateThread();
+            ClusterTaskExecutor.assertClusterStateThread();
             if (joinThreadActive()) {
                 return;
             }
@@ -1185,7 +1184,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent<Discovery> implemen
          * If the given thread is not the currently running join thread, the command is ignored.
          */
         public void markThreadAsDoneAndStartNew(Thread joinThread) {
-            ClusterService.assertClusterStateThread();
+            ClusterTaskExecutor.assertClusterStateThread();
             if (!markThreadAsDone(joinThread)) {
                 return;
             }
@@ -1194,7 +1193,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent<Discovery> implemen
 
         /** marks the given joinThread as completed. Returns false if the supplied thread is not the currently active join thread */
         public boolean markThreadAsDone(Thread joinThread) {
-            ClusterService.assertClusterStateThread();
+            ClusterTaskExecutor.assertClusterStateThread();
             return currentJoinThread.compareAndSet(joinThread, null);
         }
 
