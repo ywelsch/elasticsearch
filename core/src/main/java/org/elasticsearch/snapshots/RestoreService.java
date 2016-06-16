@@ -22,6 +22,7 @@ import com.carrotsearch.hppc.IntHashSet;
 import com.carrotsearch.hppc.IntSet;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
+import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.IndicesOptions;
@@ -37,6 +38,7 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexTemplateMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.MetaDataCreateIndexService;
+import org.elasticsearch.cluster.metadata.MetaDataIndexTemplateService;
 import org.elasticsearch.cluster.metadata.MetaDataIndexUpgradeService;
 import org.elasticsearch.cluster.metadata.RepositoriesMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -62,9 +64,11 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.index.Index;
+import org.elasticsearch.index.NodeServicesProvider;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardRepository;
+import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.repositories.Repository;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -156,6 +160,10 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
 
     private final MetaDataIndexUpgradeService metaDataIndexUpgradeService;
 
+    private final IndicesService indicesService;
+
+    private final NodeServicesProvider nodeServicesProvider;
+
     private final CopyOnWriteArrayList<ActionListener<RestoreCompletionResponse>> listeners = new CopyOnWriteArrayList<>();
 
     private final BlockingQueue<UpdateIndexShardRestoreStatusRequest> updatedSnapshotStateQueue = ConcurrentCollections.newBlockingQueue();
@@ -164,7 +172,8 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
     @Inject
     public RestoreService(Settings settings, ClusterService clusterService, RepositoriesService repositoriesService, TransportService transportService,
                           AllocationService allocationService, MetaDataCreateIndexService createIndexService,
-                          MetaDataIndexUpgradeService metaDataIndexUpgradeService, ClusterSettings clusterSettings) {
+                          MetaDataIndexUpgradeService metaDataIndexUpgradeService, IndicesService indicesService,
+                          NodeServicesProvider nodeServicesProvider, ClusterSettings clusterSettings) {
         super(settings);
         this.clusterService = clusterService;
         this.repositoriesService = repositoriesService;
@@ -172,6 +181,8 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
         this.allocationService = allocationService;
         this.createIndexService = createIndexService;
         this.metaDataIndexUpgradeService = metaDataIndexUpgradeService;
+        this.indicesService = indicesService;
+        this.nodeServicesProvider = nodeServicesProvider;
         transportService.registerRequestHandler(UPDATE_RESTORE_ACTION_NAME, UpdateIndexShardRestoreStatusRequest::new, ThreadPool.Names.SAME, new UpdateRestoreStateRequestHandler());
         clusterService.add(this);
         this.clusterSettings = clusterSettings;
@@ -441,9 +452,19 @@ public class RestoreService extends AbstractComponent implements ClusterStateLis
                         }
                         if (metaData.templates() != null) {
                             // TODO: Should all existing templates be deleted first?
+                            List<Exception> exceptions = new ArrayList<>();
                             for (ObjectCursor<IndexTemplateMetaData> cursor : metaData.templates().values()) {
-                                mdBuilder.put(cursor.value);
+                                IndexTemplateMetaData template = cursor.value;
+                                try {
+                                    MetaDataIndexTemplateService.validateTemplate(template, indicesService, nodeServicesProvider);
+                                    mdBuilder.put(template);
+                                } catch (Exception ex) {
+                                    exceptions.add(ex);
+                                    logger.debug("failed to validate template upon restore [{}]", ex, template.getName());
+                                }
                             }
+                            // here we are exhaustive and record all template validations that failed.
+                            ExceptionsHelper.maybeThrowRuntimeAndSuppress(exceptions);
                         }
                         if (metaData.customs() != null) {
                             for (ObjectObjectCursor<String, MetaData.Custom> cursor : metaData.customs()) {

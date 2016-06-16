@@ -21,6 +21,7 @@ package org.elasticsearch.snapshots;
 
 import com.carrotsearch.hppc.IntHashSet;
 import com.carrotsearch.hppc.IntSet;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.ListenableActionFuture;
 import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
@@ -33,17 +34,21 @@ import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
+import org.elasticsearch.cluster.metadata.IndexTemplateMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.MetaDataIndexStateService;
 import org.elasticsearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
+import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.discovery.zen.elect.ElectMasterService;
+import org.elasticsearch.index.mapper.MapperParsingException;
 import org.elasticsearch.index.store.IndexStore;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.indices.ttl.IndicesTTLService;
@@ -159,7 +164,50 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
                 .getMetaData().persistentSettings().getAsInt(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING.getKey(), -1), not(equalTo(2)));
     }
 
-    public void testRestoreCustomMetadata() throws Exception {
+    public void testRestoreBrokenTemplates() throws Throwable {
+        Path tempDir = randomRepoPath();
+
+        logger.info("--> start node");
+        internalCluster().startNode();
+        Client client = client();
+        logger.info("--> add broken template");
+        updateClusterState(new ClusterStateUpdater() {
+            @Override
+            public ClusterState execute(ClusterState currentState) throws Exception {
+                ClusterState.Builder builder = ClusterState.builder(currentState);
+                IndexTemplateMetaData.Builder templateBuilder = IndexTemplateMetaData.builder("brokenTemplate");
+                templateBuilder.order(1);
+                templateBuilder.template("brokenTemplate");
+                templateBuilder.putMapping("mytype", XContentFactory.jsonBuilder().startObject().startObject("type1")
+                    .startObject("properties").startObject("field2").field("type", "string").field("analyzer", "custom_1").endObject()
+                    .endObject().endObject().endObject().string());
+                return builder.metaData(MetaData.builder(currentState.metaData()).put(templateBuilder).build()).build();
+            }
+        });
+
+        logger.info("--> create repository");
+        PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
+            .setType("fs").setSettings(Settings.builder().put("location", tempDir)).execute().actionGet();
+        assertThat(putRepositoryResponse.isAcknowledged(), equalTo(true));
+
+        logger.info("--> start snapshot");
+        client.admin().cluster().prepareCreateSnapshot("test-repo", "test-snap").setWaitForCompletion(true).get();
+        assertThat(client.admin().cluster().prepareGetSnapshots("test-repo").setSnapshots("test-snap").get().getSnapshots().get(0).state(), equalTo(SnapshotState.SUCCESS));
+
+        logger.info("--> remove template");
+        assertAcked(client.admin().indices().prepareDeleteTemplate("brokenTemplate").get());
+
+        logger.info("--> try to restore snapshot with broken template");
+        assertThrows(client.admin().cluster().prepareRestoreSnapshot("test-repo", "test-snap").setRestoreGlobalState(true).setWaitForCompletion(true).execute(),
+            MapperParsingException.class);
+
+        logger.info("--> check that broken template was not restored");
+        ClusterState clusterState = client.admin().cluster().prepareState().get().getState();
+        logger.info("Cluster state: {}", clusterState);
+        assertTrue(clusterState.getMetaData().getTemplates().isEmpty());
+    }
+
+    public void testRestoreCustomMetadata() throws Throwable {
         Path tempDir = randomRepoPath();
 
         logger.info("--> start node");
@@ -261,9 +309,10 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
         assertThat(((SnapshotableGatewayNoApiMetadata) metaData.custom(SnapshotableGatewayNoApiMetadata.TYPE)).getData(), equalTo("before_snapshot_s_gw_noapi"));
     }
 
-    private void updateClusterState(final ClusterStateUpdater updater) throws InterruptedException {
+    private void updateClusterState(final ClusterStateUpdater updater) throws Throwable {
         final CountDownLatch countDownLatch = new CountDownLatch(1);
         final ClusterService clusterService = internalCluster().getInstance(ClusterService.class);
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
         clusterService.submitStateUpdateTask("test", new ClusterStateUpdateTask() {
             @Override
             public ClusterState execute(ClusterState currentState) throws Exception {
@@ -272,6 +321,7 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
 
             @Override
             public void onFailure(String source, @Nullable Throwable t) {
+                failure.set(t);
                 countDownLatch.countDown();
             }
 
@@ -281,6 +331,10 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
             }
         });
         countDownLatch.await();
+        Throwable thrownException = failure.get();
+        if (thrownException != null) {
+            throw thrownException;
+        }
     }
 
     private static interface ClusterStateUpdater {
