@@ -433,7 +433,7 @@ public final class UnassignedInfo implements ToXContent, Writeable {
     }
 
     @Override
-    public boolean equals(Objeclusterct o) {
+    public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
