@@ -27,6 +27,7 @@ import org.elasticsearch.cluster.ClusterState.Builder;
 import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor.BatchResult;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
@@ -54,6 +55,7 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
+import org.elasticsearch.common.util.concurrent.PrioritizedRunnable;
 import org.elasticsearch.common.util.iterable.Iterables;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -61,6 +63,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -454,52 +457,11 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
             toExecute.stream().forEach(task -> task.listener.onNoLongerMaster(task.source));
             return;
         }
-        ClusterStateTaskExecutor.BatchResult<T> batchResult;
         long startTimeNS = currentTimeInNanos();
-        try {
-            List<T> inputs = toExecute.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
-            batchResult = executor.execute(previousClusterState, inputs);
-        } catch (Throwable e) {
-            TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
-            if (logger.isTraceEnabled()) {
-                logger.trace("failed to execute cluster state update in [{}], state:\nversion [{}], source [{}]\n{}{}{}", e, executionTime,
-                        previousClusterState.version(), source, previousClusterState.nodes().prettyPrint(),
-                        previousClusterState.routingTable().prettyPrint(), previousClusterState.getRoutingNodes().prettyPrint());
-            }
-            warnAboutSlowTaskIfNeeded(executionTime, source);
-            batchResult = ClusterStateTaskExecutor.BatchResult.<T>builder()
-                    .failures(toExecute.stream().map(updateTask -> updateTask.task)::iterator, e)
-                    .build(previousClusterState);
-        }
-
-        assert batchResult.executionResults != null;
-        assert batchResult.executionResults.size() == toExecute.size()
-                : String.format(Locale.ROOT, "expected [%d] task result%s but was [%d]", toExecute.size(),
-                toExecute.size() == 1 ? "" : "s", batchResult.executionResults.size());
-        boolean assertsEnabled = false;
-        assert (assertsEnabled = true);
-        if (assertsEnabled) {
-            for (UpdateTask<T> updateTask : toExecute) {
-                assert batchResult.executionResults.containsKey(updateTask.task) : "missing task result for [" + updateTask.task + "]";
-            }
-        }
+        final List<UpdateTask<T>> proccessedListeners = new ArrayList<>();
+        BatchResult<T> batchResult = executeBatch(executor, batch, previousClusterState, startTimeNS, proccessedListeners);
 
         ClusterState newClusterState = batchResult.resultingState;
-        final ArrayList<UpdateTask<T>> proccessedListeners = new ArrayList<>();
-        // fail all tasks that have failed and extract those that are waiting for results
-        for (UpdateTask<T> updateTask : toExecute) {
-            assert batchResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask.task.toString();
-            final ClusterStateTaskExecutor.TaskResult executionResult =
-                    batchResult.executionResults.get(updateTask.task);
-            executionResult.handle(
-                    () -> proccessedListeners.add(updateTask),
-                    ex -> {
-                        logger.debug("cluster state update task [{}] failed", ex, updateTask.source);
-                        updateTask.listener.onFailure(updateTask.source, ex);
-                    }
-            );
-        }
-
         if (previousClusterState == newClusterState) {
             for (UpdateTask<T> task : proccessedListeners) {
                 if (task.listener instanceof AckedClusterStateTaskListener) {
@@ -645,6 +607,58 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
             // TODO: do we want to call updateTask.onFailure here?
         }
 
+    }
+
+    private <T> BatchResult<T> executeBatch(ClusterStateTaskExecutor<T> executor,
+                                                                     BatchedExecution<UpdateTask<T>> batch,
+                                                                     ClusterState previousClusterState, long startTimeNS,
+                                                                     List<UpdateTask<T>> proccessedListeners) {
+        ArrayList<UpdateTask<T>> toExecute = batch.toExecute;
+        String source = batch.combinedSource;
+            BatchResult<T> batchResult;
+        try {
+            List<T> inputs = toExecute.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
+            batchResult = executor.execute(previousClusterState, inputs);
+        } catch (Throwable e) {
+            TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
+            if (logger.isTraceEnabled()) {
+                logger.trace("failed to execute cluster state update in [{}], state:\nversion [{}], source [{}]\n{}{}{}", e, executionTime,
+                        previousClusterState.version(), source, previousClusterState.nodes().prettyPrint(),
+                        previousClusterState.routingTable().prettyPrint(), previousClusterState.getRoutingNodes().prettyPrint());
+            }
+            warnAboutSlowTaskIfNeeded(executionTime, source);
+            batchResult = BatchResult.<T>builder()
+                    .failures(toExecute.stream().map(updateTask -> updateTask.task)::iterator, e)
+                    .build(previousClusterState);
+        }
+
+        assert batchResult.executionResults != null;
+        assert batchResult.executionResults.size() == toExecute.size()
+                : String.format(Locale.ROOT, "expected [%d] task result%s but was [%d]", toExecute.size(),
+                toExecute.size() == 1 ? "" : "s", batchResult.executionResults.size());
+        boolean assertsEnabled = false;
+        assert (assertsEnabled = true);
+        if (assertsEnabled) {
+            for (UpdateTask<T> updateTask : toExecute) {
+                assert batchResult.executionResults.containsKey(updateTask.task) : "missing task result for [" + updateTask.task + "]";
+            }
+        }
+
+        // fail all tasks that have failed and extract those that are waiting for results
+        for (UpdateTask<T> updateTask : toExecute) {
+            assert batchResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask.task.toString();
+            final ClusterStateTaskExecutor.TaskResult executionResult =
+                batchResult.executionResults.get(updateTask.task);
+            executionResult.handle(
+                () -> proccessedListeners.add(updateTask),
+                ex -> {
+                    logger.debug("cluster state update task [{}] failed", ex, updateTask.source);
+                    updateTask.listener.onFailure(updateTask.source, ex);
+                }
+            );
+        }
+
+        return batchResult;
     }
 
     // this one is overridden in tests so we can control time
