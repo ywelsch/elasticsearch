@@ -42,8 +42,10 @@ import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.lease.Releasable;
+import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.index.IndexNotFoundException;
@@ -157,7 +159,7 @@ public abstract class TransportReplicationAction<
 
     /**
      * Synchronous replica operation on nodes with replica copies. This is done under the lock form
-     * {@link #acquireReplicaOperationLock(ShardId, long)}.
+     * {@link #acquireReplicaOperationLock(ShardId, long, Callback, Callback)}.
      */
     protected abstract ReplicaResult shardOperationOnReplica(ReplicaRequest shardRequest);
 
@@ -235,17 +237,48 @@ public abstract class TransportReplicationAction<
         }
 
         @Override
-        public void messageReceived(Request request, TransportChannel channel, Task task) throws Exception {
+        public void messageReceived(Request request, TransportChannel channel, Task task) {
             ReplicationTask replicationTask = (ReplicationTask) task;
-            boolean success = false;
-            PrimaryShardReference primaryShardReference = getPrimaryShardReference(request.shardId());
-            try {
-                if (primaryShardReference.isRelocated()) {
+
+            Callback<Throwable> onFailure = t -> {
+                setPhase(replicationTask, "finished");
+                try {
+                    channel.sendResponse(t);
+                } catch (IOException e) {
+                    e.addSuppressed(t);
+                    logger.warn("failed to send response", e);
+                }
+            };
+
+            Callback<PrimaryShardReference> onReferenceAcquired = primaryShardReference -> {
+                try {
+                    setPhase(replicationTask, "primary");
+                    final IndexMetaData indexMetaData = clusterService.state().getMetaData().index(request.shardId().getIndex());
+                    final boolean executeOnReplicas = (indexMetaData == null) || shouldExecuteReplication(indexMetaData.getSettings());
+                    final ActionListener<Response> listener = createResponseListener(channel, replicationTask, primaryShardReference);
+                    createReplicatedOperation(request, new ActionListener<PrimaryResult>() {
+                        @Override
+                        public void onResponse(PrimaryResult result) {
+                            result.respond(listener);
+                        }
+
+                        @Override
+                        public void onFailure(Throwable e) {
+                            listener.onFailure(e);
+                        }
+                    }, primaryShardReference, executeOnReplicas).execute();
+                } catch (Throwable t) {
+                    primaryShardReference.close();
+                    onFailure.handle(t);
+                }
+            };
+
+            Callback<ShardRouting> onRelocated = primary -> {
+                try {
                     setPhase(replicationTask, "primary_delegation");
                     // delegate primary phase to relocation target
                     // it is safe to execute primary phase on relocation target as there are no more in-flight operations where primary
                     // phase is executed on local shard and all subsequent operations are executed on relocation target as primary phase.
-                    final ShardRouting primary = primaryShardReference.routingEntry();
                     assert primary.relocating() : "indexShard is marked as relocated but routing isn't" + primary;
                     DiscoveryNode relocatingNode = clusterService.state().nodes().get(primary.relocatingNodeId());
                     transportService.sendRequest(relocatingNode, transportPrimaryAction, request, transportOptions,
@@ -264,29 +297,12 @@ public abstract class TransportReplicationAction<
                                 super.handleException(exp);
                             }
                         });
-                } else {
-                    setPhase(replicationTask, "primary");
-                    final IndexMetaData indexMetaData = clusterService.state().getMetaData().index(request.shardId().getIndex());
-                    final boolean executeOnReplicas = (indexMetaData == null) || shouldExecuteReplication(indexMetaData.getSettings());
-                    final ActionListener<Response> listener = createResponseListener(channel, replicationTask, primaryShardReference);
-                    createReplicatedOperation(request, new ActionListener<PrimaryResult>() {
-                        @Override
-                        public void onResponse(PrimaryResult result) {
-                            result.respond(listener);
-                        }
+                } catch (Throwable t) {
+                    onFailure.handle(t);
+                }
+            };
 
-                        @Override
-                        public void onFailure(Throwable e) {
-                            listener.onFailure(e);
-                        }
-                    }, primaryShardReference, executeOnReplicas).execute();
-                    success = true;
-                }
-            } finally {
-                if (success == false) {
-                    primaryShardReference.close();
-                }
-            }
+            acquirePrimaryShardReference(request.shardId(), onReferenceAcquired, onRelocated, onFailure);
         }
 
         protected ReplicationOperation<Request, ReplicaRequest, PrimaryResult> createReplicatedOperation(
@@ -451,11 +467,18 @@ public abstract class TransportReplicationAction<
         protected void doRun() throws Exception {
             setPhase(task, "replica");
             assert request.shardId() != null : "request shardId must be set";
-            ReplicaResult result;
-            try (Releasable ignored = acquireReplicaOperationLock(request.shardId(), request.primaryTerm())) {
-                result = shardOperationOnReplica(request);
-            }
-            result.respond(new ResponseListener());
+
+            Callback<Releasable> onLockAcquired = releasable -> {
+                try {
+                    shardOperationOnReplica(request).respond(new ResponseListener());
+                } catch (Throwable t) {
+                    onFailure(t);
+                } finally {
+                    Releasables.closeWhileHandlingException(releasable);
+                }
+            };
+
+            acquireReplicaOperationLock(request.shardId(), request.primaryTerm(), onLockAcquired, this::onFailure);
         }
 
         /**
@@ -733,10 +756,11 @@ public abstract class TransportReplicationAction<
     }
 
     /**
-     * returns a new reference to {@link IndexShard} to perform a primary operation. Released after performing primary operation locally
+     * tries to acquire reference to {@link IndexShard} to perform a primary operation. Released after performing primary operation locally
      * and replication of the operation to all replica shards is completed / failed (see {@link ReplicationOperation}).
      */
-    protected PrimaryShardReference getPrimaryShardReference(ShardId shardId) {
+    protected void acquirePrimaryShardReference(ShardId shardId, Callback<PrimaryShardReference> onReferenceAcquired,
+                                                Callback<ShardRouting> onRelocated, Callback<Throwable> onFailure) {
         IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());
         IndexShard indexShard = indexService.getShard(shardId.id());
         // we may end up here if the cluster state used to route the primary is so stale that the underlying
@@ -746,17 +770,48 @@ public abstract class TransportReplicationAction<
             throw new ReplicationOperation.RetryOnPrimaryException(indexShard.shardId(),
                 "actual shard is not a primary " + indexShard.routingEntry());
         }
-        return new PrimaryShardReference(indexShard, indexShard.acquirePrimaryOperationLock());
+
+        ActionListener<Releasable> onAcquired = new ActionListener<Releasable>() {
+            @Override
+            public void onResponse(Releasable releasable) {
+                if (indexShard.state() == IndexShardState.RELOCATED) {
+                    Releasables.closeWhileHandlingException(releasable);
+                    onRelocated.handle(indexShard.routingEntry());
+                } else {
+                    onReferenceAcquired.handle(new PrimaryShardReference(indexShard, releasable));
+                }
+            }
+
+            @Override
+            public void onFailure(Throwable e) {
+                onFailure.handle(e);
+            }
+        };
+
+        indexShard.acquirePrimaryOperationLock(onAcquired, ThreadPool.Names.INDEX);
     }
 
     /**
-     * Acquire an operation on replicas. The lock is closed as soon as
-     * replication is completed on the node.
+     * tries to acquire an operation on replicas. The lock is closed as soon as replication is completed on the node.
      */
-    protected Releasable acquireReplicaOperationLock(ShardId shardId, long primaryTerm) {
+    protected void acquireReplicaOperationLock(ShardId shardId, long primaryTerm, Callback<Releasable> onLockAcquired,
+                                               Callback<Throwable> onFailure) {
         IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());
         IndexShard indexShard = indexService.getShard(shardId.id());
-        return indexShard.acquireReplicaOperationLock(primaryTerm);
+
+        ActionListener<Releasable> onAcquired = new ActionListener<Releasable>() {
+            @Override
+            public void onResponse(Releasable releasable) {
+                onLockAcquired.handle(releasable);
+            }
+
+            @Override
+            public void onFailure(Throwable e) {
+                onFailure.handle(e);
+            }
+        };
+
+        indexShard.acquireReplicaOperationLock(primaryTerm, onAcquired, ThreadPool.Names.INDEX);
     }
 
     /**
@@ -779,11 +834,7 @@ public abstract class TransportReplicationAction<
 
         @Override
         public void close() {
-            operationLock.close();
-        }
-
-        public boolean isRelocated() {
-            return indexShard.state() == IndexShardState.RELOCATED;
+            Releasables.close(operationLock);
         }
 
         @Override

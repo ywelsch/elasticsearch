@@ -20,11 +20,10 @@
 package org.elasticsearch.common.util.concurrent;
 
 import org.elasticsearch.common.lease.Releasable;
-import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.test.ESTestCase;
 
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -48,11 +47,11 @@ public class SuspendableRefContainerTests extends ESTestCase {
         assertThat(refContainer.activeRefs(), equalTo(0));
     }
 
-    public void testAcquisitionBlockingBlocksNewAcquisitions() throws InterruptedException {
+    public void testAcquisitionBlockingBlocksNewAcquisitions() throws InterruptedException, TimeoutException {
         SuspendableRefContainer refContainer = new SuspendableRefContainer();
         assertThat(refContainer.activeRefs(), equalTo(0));
 
-        try (Releasable block = refContainer.blockAcquisition()) {
+        try (Releasable block = randomBlockingMethod(refContainer)) {
             assertThat(refContainer.activeRefs(), equalTo(0));
             assertThat(refContainer.tryAcquire(), nullValue());
             assertThat(refContainer.activeRefs(), equalTo(0));
@@ -71,7 +70,7 @@ public class SuspendableRefContainerTests extends ESTestCase {
                 fail("Interrupted");
             }
         });
-        try (Releasable block = refContainer.blockAcquisition()) {
+        try (Releasable block = randomBlockingMethod(refContainer)) {
             assertThat(refContainer.activeRefs(), equalTo(0));
             t.start();
             // check that blocking acquire really blocks
@@ -88,9 +87,11 @@ public class SuspendableRefContainerTests extends ESTestCase {
 
         AtomicBoolean acquired = new AtomicBoolean();
         Thread t = new Thread(() -> {
-            try (Releasable block = refContainer.blockAcquisition()) {
+            try (Releasable block = randomBlockingMethod(refContainer)) {
                 acquired.set(true);
                 assertThat(refContainer.activeRefs(), equalTo(0));
+            } catch (InterruptedException | TimeoutException e) {
+                throw new IllegalStateException(e);
             }
         });
         try (Releasable lock = randomLockingMethod(refContainer)) {
@@ -111,5 +112,17 @@ public class SuspendableRefContainerTests extends ESTestCase {
             case 2: return refContainer.acquireUninterruptibly();
         }
         throw new IllegalArgumentException("randomLockingMethod inconsistent");
+    }
+
+    private Releasable randomBlockingMethod(SuspendableRefContainer refContainer) throws InterruptedException, TimeoutException {
+        switch (randomInt(1)) {
+            case 0: return refContainer.blockAcquisition();
+            case 1: Releasable block = refContainer.tryBlockAcquisition(1, TimeUnit.MINUTES);
+                if (block == null) {
+                    throw new IllegalStateException("Timed out waiting for block");
+                }
+                return block;
+        }
+        throw new IllegalArgumentException("randomBlockingMethod inconsistent");
     }
 }

@@ -23,6 +23,7 @@ import org.elasticsearch.common.lease.Releasable;
 
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -86,6 +87,21 @@ public final class SuspendableRefContainer {
     public Releasable blockAcquisition() {
         semaphore.acquireUninterruptibly(TOTAL_PERMITS);
         return idempotentRelease(TOTAL_PERMITS);
+    }
+
+    /**
+     * Disables reference acquisition and waits until all existing references are released (within given timeout).
+     * When released, reference acquisition is enabled again.
+     * This guarantees that between successful acquisition and release, no one is holding a reference.
+     *
+     * @return references holder to all references, or null if timed out
+     */
+    public Releasable tryBlockAcquisition(long timeout, TimeUnit unit) throws InterruptedException, TimeoutException {
+        if (semaphore.tryAcquire(TOTAL_PERMITS, timeout, unit)) {
+            return idempotentRelease(TOTAL_PERMITS);
+        } else {
+            throw new TimeoutException("timed out during block acquisition");
+        }
     }
 
     /**
