@@ -21,7 +21,7 @@ public class ClusterTaskExecutor implements Releasable {
 
     public static final String UPDATE_THREAD_NAME = "clusterService#updateTask";
 
-    private volatile PrioritizedEsThreadPoolExecutor updateTasksExecutor;
+    private final PrioritizedEsThreadPoolExecutor updateTasksExecutor;
 
     public ClusterTaskExecutor(Settings settings, ThreadPool threadPool) {
         this.updateTasksExecutor = EsExecutors.newSinglePrioritizing(UPDATE_THREAD_NAME, daemonThreadFactory(settings, UPDATE_THREAD_NAME),
