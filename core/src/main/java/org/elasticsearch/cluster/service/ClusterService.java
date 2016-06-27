@@ -458,12 +458,12 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
             return;
         }
         long startTimeNS = currentTimeInNanos();
-        final List<UpdateTask<T>> proccessedListeners = new ArrayList<>();
-        BatchResult<T> batchResult = executeBatch(executor, batch, previousClusterState, startTimeNS, proccessedListeners);
+        final List<UpdateTask<T>> processedListeners = new ArrayList<>();
+        BatchResult<T> batchResult = executeBatch(executor, batch, previousClusterState, startTimeNS, processedListeners);
 
         ClusterState newClusterState = batchResult.resultingState;
         if (previousClusterState == newClusterState) {
-            for (UpdateTask<T> task : proccessedListeners) {
+            for (UpdateTask<T> task : processedListeners) {
                 if (task.listener instanceof AckedClusterStateTaskListener) {
                     //no need to wait for ack if nothing changed, the update can be counted as acknowledged
                     ((AckedClusterStateTaskListener) task.listener).onAllNodesAcked(null);
@@ -477,39 +477,15 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
         }
 
         try {
-            ArrayList<Discovery.AckListener> ackListeners = new ArrayList<>();
             if (newClusterState.nodes().isLocalNodeElectedMaster()) {
                 // only the master controls the version numbers
-                Builder builder = ClusterState.builder(newClusterState).incrementVersion();
-                if (previousClusterState.routingTable() != newClusterState.routingTable()) {
-                    builder.routingTable(RoutingTable.builder(newClusterState.routingTable())
-                            .version(newClusterState.routingTable().version() + 1).build());
-                }
-                if (previousClusterState.metaData() != newClusterState.metaData()) {
-                    builder.metaData(MetaData.builder(newClusterState.metaData()).version(newClusterState.metaData().version() + 1));
-                }
-                newClusterState = builder.build();
-                for (UpdateTask<T> task : proccessedListeners) {
-                    if (task.listener instanceof AckedClusterStateTaskListener) {
-                        final AckedClusterStateTaskListener ackedListener = (AckedClusterStateTaskListener) task.listener;
-                        if (ackedListener.ackTimeout() == null || ackedListener.ackTimeout().millis() == 0) {
-                            ackedListener.onAckTimeout();
-                        } else {
-                            try {
-                                ackListeners.add(new AckCountDownListener(ackedListener, newClusterState.version(), newClusterState.nodes(),
-                                        threadPool));
-                            } catch (EsRejectedExecutionException ex) {
-                                if (logger.isDebugEnabled()) {
-                                    logger.debug("Couldn't schedule timeout thread - node might be shutting down", ex);
-                                }
-                                //timeout straightaway, otherwise we could wait forever as the timeout thread has not started
-                                ackedListener.onAckTimeout();
-                            }
-                        }
-                    }
-                }
+                newClusterState = updateVersionNumbers(previousClusterState, newClusterState);
             }
-            final Discovery.AckListener ackListener = new DelegetingAckListener(ackListeners);
+
+            Discovery.AckListener ackListener = null;
+            if (newClusterState.nodes().isLocalNodeElectedMaster()) {
+                ackListener = setupAckListeners(processedListeners, newClusterState);
+            }
 
             newClusterState.status(ClusterState.ClusterStateStatus.BEING_APPLIED);
 
@@ -540,34 +516,17 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
                     clusterStatePublisher.accept(clusterChangedEvent, ackListener);
                 } catch (Discovery.FailedToCommitClusterStateException t) {
                     logger.warn("failing [{}]: failed to commit cluster state version [{}]", t, source, newClusterState.version());
-                    proccessedListeners.forEach(task -> task.listener.onFailure(task.source, t));
+                    processedListeners.forEach(task -> task.listener.onFailure(task.source, t));
                     return;
                 }
             }
 
             // update the current cluster state
             clusterState = newClusterState;
-            logger.debug("set local cluster state to version {}", newClusterState.version());
-            try {
-                // nothing to do until we actually recover from the gateway or any other block indicates we need to disable persistency
-                if (clusterChangedEvent.state().blocks().disableStatePersistence() == false && clusterChangedEvent.metaDataChanged()) {
-                    final Settings incomingSettings = clusterChangedEvent.state().metaData().settings();
-                    clusterSettings.applySettings(incomingSettings);
-                }
-            } catch (Exception ex) {
-                logger.warn("failed to apply cluster settings", ex);
-            }
-            for (ClusterStateListener listener : preAppliedListeners) {
-                try {
-                    listener.clusterChanged(clusterChangedEvent);
-                } catch (Exception ex) {
-                    logger.warn("failed to notify ClusterStateListener", ex);
-                }
-            }
+            applyClusterState(clusterChangedEvent);
+            newClusterState.status(ClusterState.ClusterStateStatus.APPLIED);
 
             nodeConnectionsService.disconnectFromRemovedNodes(clusterChangedEvent);
-
-            newClusterState.status(ClusterState.ClusterStateStatus.APPLIED);
 
             for (ClusterStateListener listener : postAppliedListeners) {
                 try {
@@ -586,14 +545,16 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
                 }
             }
 
-            for (UpdateTask<T> task : proccessedListeners) {
+            for (UpdateTask<T> task : processedListeners) {
                 task.listener.clusterStateProcessed(task.source, previousClusterState, newClusterState);
             }
 
-            try {
-                executor.clusterStatePublished(clusterChangedEvent);
-            } catch (Exception e) {
-                logger.error("exception thrown while notifying executor of new cluster state publication [{}]", e, source);
+            if (newClusterState.nodes().isLocalNodeElectedMaster()) {
+                try {
+                    executor.clusterStatePublished(clusterChangedEvent);
+                } catch (Exception e) {
+                    logger.error("exception thrown while notifying executor of new cluster state publication [{}]", e, source);
+                }
             }
 
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
@@ -609,10 +570,67 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
 
     }
 
+    private void applyClusterState(ClusterChangedEvent clusterChangedEvent) {
+        logger.debug("set local cluster state to version {}", clusterChangedEvent.state().version());
+        try {
+            // nothing to do until we actually recover from the gateway or any other block indicates we need to disable persistency
+            if (clusterChangedEvent.state().blocks().disableStatePersistence() == false && clusterChangedEvent.metaDataChanged()) {
+                final Settings incomingSettings = clusterChangedEvent.state().metaData().settings();
+                clusterSettings.applySettings(incomingSettings);
+            }
+        } catch (Exception ex) {
+            logger.warn("failed to apply cluster settings", ex);
+        }
+        for (ClusterStateListener listener : preAppliedListeners) {
+            try {
+                listener.clusterChanged(clusterChangedEvent);
+            } catch (Exception ex) {
+                logger.warn("failed to notify ClusterStateListener", ex);
+            }
+        }
+    }
+
+    private <T> Discovery.AckListener setupAckListeners(List<UpdateTask<T>> processedListeners, ClusterState newClusterState) {
+        ArrayList<Discovery.AckListener> ackListeners = new ArrayList<>();
+        for (UpdateTask<T> task : processedListeners) {
+            if (task.listener instanceof AckedClusterStateTaskListener) {
+                final AckedClusterStateTaskListener ackedListener = (AckedClusterStateTaskListener) task.listener;
+                if (ackedListener.ackTimeout() == null || ackedListener.ackTimeout().millis() == 0) {
+                    ackedListener.onAckTimeout();
+                } else {
+                    try {
+                        ackListeners.add(new AckCountDownListener(ackedListener, newClusterState.version(), newClusterState.nodes(),
+                            threadPool));
+                    } catch (EsRejectedExecutionException ex) {
+                        if (logger.isDebugEnabled()) {
+                            logger.debug("Couldn't schedule timeout thread - node might be shutting down", ex);
+                        }
+                        //timeout straightaway, otherwise we could wait forever as the timeout thread has not started
+                        ackedListener.onAckTimeout();
+                    }
+                }
+            }
+        }
+        return new DelegetingAckListener(ackListeners);
+    }
+
+    private ClusterState updateVersionNumbers(ClusterState previousClusterState, ClusterState newClusterState) {
+        Builder builder = ClusterState.builder(newClusterState).incrementVersion();
+        if (previousClusterState.routingTable() != newClusterState.routingTable()) {
+            builder.routingTable(RoutingTable.builder(newClusterState.routingTable())
+                    .version(newClusterState.routingTable().version() + 1).build());
+        }
+        if (previousClusterState.metaData() != newClusterState.metaData()) {
+            builder.metaData(MetaData.builder(newClusterState.metaData()).version(newClusterState.metaData().version() + 1));
+        }
+        newClusterState = builder.build();
+        return newClusterState;
+    }
+
     private <T> BatchResult<T> executeBatch(ClusterStateTaskExecutor<T> executor,
                                                                      BatchedExecution<UpdateTask<T>> batch,
                                                                      ClusterState previousClusterState, long startTimeNS,
-                                                                     List<UpdateTask<T>> proccessedListeners) {
+                                                                     List<UpdateTask<T>> processedListeners) {
         ArrayList<UpdateTask<T>> toExecute = batch.toExecute;
         String source = batch.combinedSource;
             BatchResult<T> batchResult;
@@ -650,7 +668,7 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
             final ClusterStateTaskExecutor.TaskResult executionResult =
                 batchResult.executionResults.get(updateTask.task);
             executionResult.handle(
-                () -> proccessedListeners.add(updateTask),
+                () -> processedListeners.add(updateTask),
                 ex -> {
                     logger.debug("cluster state update task [{}] failed", ex, updateTask.source);
                     updateTask.listener.onFailure(updateTask.source, ex);
