@@ -92,6 +92,7 @@ public abstract class TransportReplicationAction<
     final private ShardStateAction shardStateAction;
     final private WriteConsistencyLevel defaultWriteConsistencyLevel;
     final private TransportRequestOptions transportOptions;
+    private final String executor;
 
     // package private for testing
     final String transportReplicaAction;
@@ -109,6 +110,7 @@ public abstract class TransportReplicationAction<
         this.clusterService = clusterService;
         this.indicesService = indicesService;
         this.shardStateAction = shardStateAction;
+        this.executor = executor;
 
         this.transportPrimaryAction = actionName + "[p]";
         this.transportReplicaAction = actionName + "[r]";
@@ -800,7 +802,7 @@ public abstract class TransportReplicationAction<
             }
         };
 
-        indexShard.acquirePrimaryOperationLock(onAcquired, ThreadPool.Names.INDEX);
+        indexShard.acquirePrimaryOperationLock(onAcquired, executor);
     }
 
     /**
@@ -809,7 +811,7 @@ public abstract class TransportReplicationAction<
     protected void acquireReplicaOperationLock(ShardId shardId, long primaryTerm, ActionListener<Releasable> onLockAcquired) {
         IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());
         IndexShard indexShard = indexService.getShard(shardId.id());
-        indexShard.acquireReplicaOperationLock(primaryTerm, onLockAcquired, ThreadPool.Names.INDEX);
+        indexShard.acquireReplicaOperationLock(primaryTerm, onLockAcquired, executor);
     }
 
     /**
