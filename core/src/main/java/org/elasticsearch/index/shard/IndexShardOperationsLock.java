@@ -103,44 +103,56 @@ public class IndexShardOperationsLock {
      * @param forceExecution whether the runnable should force its execution in case it gets rejected
      */
     public void acquire(ActionListener<Releasable> onAcquired, String executor, boolean forceExecution) {
-        while (true) {
-            Releasable releasable = null;
-            try {
-                if (semaphore.tryAcquire(1, 0, TimeUnit.SECONDS)) { // the untimed tryAcquire methods do not honor the fairness setting
-                    AtomicBoolean closed = new AtomicBoolean();
-                    releasable = () -> {
-                        if (closed.compareAndSet(false, true)) {
-                            semaphore.release(1);
-                        }
-                    };
-                }
-            } catch (InterruptedException e) {
-                onAcquired.onFailure(e);
-                return;
-            }
-            if (releasable != null) {
-                onAcquired.onResponse(releasable);
-                return;
-            } else {
-                // relocation hand-off in progress, store onRelocated callback to trigger after hand-off finished
-                synchronized (mutex) {
-                    if (blockOperationsInProgress) {
-                        // we know this will be released by call to releaseDelayedOperations
-                        if (delayedOperations == null) {
-                            delayedOperations = new ArrayList<>();
-                        }
-                        if (executor != null) {
-                            delayedOperations.add(new ThreadedActionListener(logger, threadPool, executor, onAcquired, forceExecution));
-                        } else {
-                            delayedOperations.add(onAcquired);
-                        }
+        Releasable releasable;
+        try {
+            releasable = tryAcquire();
+        } catch (InterruptedException e) {
+            onAcquired.onFailure(e);
+            return;
+        }
+        if (releasable != null) {
+            onAcquired.onResponse(releasable);
+        } else {
+            synchronized (mutex) {
+                if (blockOperationsInProgress) {
+                    // blockOperations is executing, this operation will be retried by blockOperations once it finishes
+                    if (delayedOperations == null) {
+                        delayedOperations = new ArrayList<>();
+                    }
+                    if (executor != null) {
+                        delayedOperations.add(new ThreadedActionListener(logger, threadPool, executor, onAcquired, forceExecution));
+                    } else {
+                        delayedOperations.add(onAcquired);
+                    }
+                } else {
+                    // blockOperations was executing when we called tryAcquire(). Now it is not executing anymore, so try acquiring the lock
+                    // under the mutex. This guarantees that there are no blockOperations in progress and the lock will always be acquired.
+                    try {
+                        releasable = tryAcquire();
+                    } catch (InterruptedException e) {
+                        onAcquired.onFailure(e);
                         return;
                     }
+                    if (releasable != null) {
+                        onAcquired.onResponse(releasable);
+                    } else {
+                        onAcquired.onFailure(new IllegalStateException("failed to acquire operation lock"));
+                    }
                 }
-                // blockOperations was finished just after we tried to acquire operation lock and before we acquired mutex
-                // give it another try
             }
         }
+    }
+
+    protected @Nullable Releasable tryAcquire() throws InterruptedException {
+        if (semaphore.tryAcquire(1, 0, TimeUnit.SECONDS)) { // the untimed tryAcquire methods do not honor the fairness setting
+            AtomicBoolean closed = new AtomicBoolean();
+            return () -> {
+                if (closed.compareAndSet(false, true)) {
+                    semaphore.release(1);
+                }
+            };
+        }
+        return null;
     }
 
     public int getActiveOperationsCount() {

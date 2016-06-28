@@ -24,6 +24,7 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.junit.AfterClass;
+import org.junit.Before;
 import org.junit.BeforeClass;
 
 import java.util.ArrayList;
@@ -34,9 +35,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.hamcrest.Matchers.equalTo;
+
 public class IndexShardOperationsLockTests extends ESTestCase {
 
     private static ThreadPool threadPool;
+
+    private IndexShardOperationsLock block;
 
     @BeforeClass
     public static void setupThreadPool() {
@@ -47,6 +52,11 @@ public class IndexShardOperationsLockTests extends ESTestCase {
     public static void shutdownThreadPool() {
         ThreadPool.terminate(threadPool, 30, TimeUnit.SECONDS);
         threadPool = null;
+    }
+
+    @Before
+    public void createIndexShardOperationsLock() {
+         block = new IndexShardOperationsLock(logger, threadPool);
     }
 
     public void testAllOperationsInvoked() throws InterruptedException, TimeoutException, ExecutionException {
@@ -71,13 +81,22 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         AtomicBoolean successFullyBlocked = new AtomicBoolean();
 
 
+        boolean blockingThreadThrowsException = randomBoolean();
         Thread blockingThread = new Thread() {
             public void run() {
+                final IndexShardClosedException exception = new IndexShardClosedException(new ShardId("blubb", "id", 0));
                 try {
                     latch.await();
-                    block.blockOperations(1, TimeUnit.MINUTES, () -> successFullyBlocked.set(true));
+                    block.blockOperations(1, TimeUnit.MINUTES, () -> {
+                        successFullyBlocked.set(true);
+                        if (blockingThreadThrowsException) {
+                            throw exception;
+                        }
+                    });
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    if (e != exception) {
+                        throw new RuntimeException(e);
+                    }
                 }
             }
         };
@@ -104,29 +123,8 @@ public class IndexShardOperationsLockTests extends ESTestCase {
     }
 
     public void testFailureToBlockTwice() throws InterruptedException {
-        IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
-        CountDownLatch blockAcquired = new CountDownLatch(1);
         CountDownLatch releaseBlock = new CountDownLatch(1);
-
-        Thread blockingThread = new Thread() {
-            public void run() {
-                try {
-                    block.blockOperations(1, TimeUnit.MINUTES, () -> {
-                        try {
-                            blockAcquired.countDown();
-                            releaseBlock.await();
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException();
-                        }
-                    });
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        };
-
-        blockingThread.start();
-        blockAcquired.await();
+        Thread blockingThread = blockAndWait(releaseBlock);
 
         expectThrows(IllegalStateException.class, () -> block.blockOperations(1, TimeUnit.MINUTES, () -> {}));
 
@@ -135,8 +133,6 @@ public class IndexShardOperationsLockTests extends ESTestCase {
     }
 
     public void testOperationsInvokedImmediatelyIfNoBlock() throws ExecutionException, InterruptedException {
-        IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
-
         PlainActionFuture<Releasable> future = new PlainActionFuture<>();
         block.acquire(future, ThreadPool.Names.GENERIC, true);
         assertTrue(future.isDone());
@@ -144,29 +140,8 @@ public class IndexShardOperationsLockTests extends ESTestCase {
     }
 
     public void testOperationsDelayedIfBlock() throws ExecutionException, InterruptedException, TimeoutException {
-        IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
-        CountDownLatch blockAcquired = new CountDownLatch(1);
         CountDownLatch releaseBlock = new CountDownLatch(1);
-
-        Thread blockingThread = new Thread() {
-            public void run() {
-                try {
-                    block.blockOperations(1, TimeUnit.MINUTES, () -> {
-                        try {
-                            blockAcquired.countDown();
-                            releaseBlock.await();
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException();
-                        }
-                    });
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        };
-
-        blockingThread.start();
-        blockAcquired.await();
+        Thread blockingThread = blockAndWait(releaseBlock);
 
         PlainActionFuture<Releasable> future = new PlainActionFuture<>();
         block.acquire(future, ThreadPool.Names.GENERIC, true);
@@ -179,8 +154,31 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         blockingThread.join();
     }
 
+    protected Thread blockAndWait(final CountDownLatch releaseBlock) throws InterruptedException {
+        CountDownLatch blockAcquired = new CountDownLatch(1);
+        Thread blockingThread = new Thread() {
+            public void run() {
+                try {
+                    block.blockOperations(1, TimeUnit.MINUTES, () -> {
+                        try {
+                            blockAcquired.countDown();
+                            releaseBlock.await();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException();
+                        }
+                    });
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        };
+
+        blockingThread.start();
+        blockAcquired.await();
+        return blockingThread;
+    }
+
     public void testOperationsDelayedIfBlockFailure() throws ExecutionException, InterruptedException, TimeoutException {
-        IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
         CountDownLatch blockAcquired = new CountDownLatch(1);
         CountDownLatch releaseBlock = new CountDownLatch(1);
 
@@ -217,5 +215,37 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         future.get(1, TimeUnit.MINUTES).close();
 
         blockingThread.join();
+    }
+
+    public void testActiveOperationsCount() throws ExecutionException, InterruptedException {
+        PlainActionFuture<Releasable> future1 = new PlainActionFuture<>();
+        block.acquire(future1, ThreadPool.Names.GENERIC, true);
+        assertTrue(future1.isDone());
+        assertThat(block.getActiveOperationsCount(), equalTo(1));
+
+        PlainActionFuture<Releasable> future2 = new PlainActionFuture<>();
+        block.acquire(future2, ThreadPool.Names.GENERIC, true);
+        assertTrue(future2.isDone());
+        assertThat(block.getActiveOperationsCount(), equalTo(2));
+
+        future1.get().close();
+        assertThat(block.getActiveOperationsCount(), equalTo(1));
+        future1.get().close(); // check idempotence
+        assertThat(block.getActiveOperationsCount(), equalTo(1));
+        future2.get().close();
+        assertThat(block.getActiveOperationsCount(), equalTo(0));
+
+        CountDownLatch releaseBlock = new CountDownLatch(1);
+        Thread blockingThread = blockAndWait(releaseBlock);
+        assertThat(block.getActiveOperationsCount(), equalTo(0));
+        releaseBlock.countDown();
+        blockingThread.join();
+
+        PlainActionFuture<Releasable> future3 = new PlainActionFuture<>();
+        block.acquire(future3, ThreadPool.Names.GENERIC, true);
+        assertTrue(future3.isDone());
+        assertThat(block.getActiveOperationsCount(), equalTo(1));
+        future3.get().close();
+        assertThat(block.getActiveOperationsCount(), equalTo(0));
     }
 }
