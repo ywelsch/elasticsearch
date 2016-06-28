@@ -1551,7 +1551,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         verifyNotClosed();
         verifyPrimary();
 
-        indexShardOperationsLock.acquire(onLockAcquired, executor);
+        indexShardOperationsLock.acquire(onLockAcquired, executor, false);
     }
 
     /**
@@ -1567,7 +1567,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 shardId, opPrimaryTerm, primaryTerm));
         }
 
-        indexShardOperationsLock.acquire(onLockAcquired, executor);
+        indexShardOperationsLock.acquire(onLockAcquired, executor, true);
     }
 
     public int getActiveOperationsCount() {

@@ -367,7 +367,7 @@ public class RecoverySourceHandler {
             try {
                 cancellableThreads.execute(() -> shard.relocated("to " + request.targetNode()));
             } catch (Throwable e) {
-                logger.debug("[{}][{}] completing relocation hand-off to {} failed", indexName, shardId, request.targetNode(), e);
+                logger.debug("[{}][{}] completing relocation hand-off to {} failed", e, indexName, shardId, request.targetNode());
                 throw e;
             }
             /**

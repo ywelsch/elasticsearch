@@ -77,7 +77,7 @@ public class IndexShardOperationsLock {
             }
             if (queuedActions != null) {
                 for (ActionListener<Releasable> queuedAction : queuedActions) {
-                    acquire(queuedAction, null);
+                    acquire(queuedAction, null, false);
                 }
             }
         }
@@ -91,8 +91,9 @@ public class IndexShardOperationsLock {
      *
      * @param onAcquired ActionListener that is invoked once acquisition is successful or failed
      * @param executor executor to use for delayed call
+     * @param forceExecution whether the runnable should force its execution in case it gets rejected
      */
-    public void acquire(ActionListener<Releasable> onAcquired, String executor) {
+    public void acquire(ActionListener<Releasable> onAcquired, String executor, boolean forceExecution) {
         while (true) {
             final Releasable releasable;
             try {
@@ -113,7 +114,7 @@ public class IndexShardOperationsLock {
                             delayedOperations = new ArrayList<>();
                         }
                         if (executor != null) {
-                            delayedOperations.add(new ThreadedActionListener(logger, threadPool, executor, onAcquired, true));
+                            delayedOperations.add(new ThreadedActionListener(logger, threadPool, executor, onAcquired, forceExecution));
                         } else {
                             delayedOperations.add(onAcquired);
                         }

@@ -61,7 +61,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
             Thread thread = new Thread() {
                 public void run() {
                     latch.countDown();
-                    block.acquire(future, ThreadPool.Names.GENERIC);
+                    block.acquire(future, ThreadPool.Names.GENERIC, true);
                 }
             };
             futures.add(future);
@@ -138,7 +138,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
 
         PlainActionFuture<Releasable> future = new PlainActionFuture<>();
-        block.acquire(future, ThreadPool.Names.GENERIC);
+        block.acquire(future, ThreadPool.Names.GENERIC, true);
         assertTrue(future.isDone());
         future.get().close();
     }
@@ -169,7 +169,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         blockAcquired.await();
 
         PlainActionFuture<Releasable> future = new PlainActionFuture<>();
-        block.acquire(future, ThreadPool.Names.GENERIC);
+        block.acquire(future, ThreadPool.Names.GENERIC, true);
         assertFalse(future.isDone());
 
         releaseBlock.countDown();
@@ -209,7 +209,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
         blockAcquired.await();
 
         PlainActionFuture<Releasable> future = new PlainActionFuture<>();
-        block.acquire(future, ThreadPool.Names.GENERIC);
+        block.acquire(future, ThreadPool.Names.GENERIC, true);
         assertFalse(future.isDone());
 
         releaseBlock.countDown();
