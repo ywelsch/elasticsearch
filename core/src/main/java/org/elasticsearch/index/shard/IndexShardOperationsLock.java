@@ -23,19 +23,22 @@ import org.elasticsearch.action.support.ThreadedActionListener;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.logging.ESLogger;
-import org.elasticsearch.common.util.concurrent.SuspendableRefContainer;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class IndexShardOperationsLock {
     private final ESLogger logger;
     private final ThreadPool threadPool;
 
-    private final SuspendableRefContainer suspendableRefContainer = new SuspendableRefContainer();
+    private static final int TOTAL_PERMITS = Integer.MAX_VALUE;
+    // fair semaphore to ensure that blockOperations() does not starve under thread contention
+    private final Semaphore semaphore = new Semaphore(TOTAL_PERMITS, true);
     private final Object mutex = new Object(); // mutex used to protect the following two fields
     private @Nullable List<ActionListener<Releasable>> delayedOperations; // operations that are delayed due to relocation hand-off
     private boolean blockOperationsInProgress; // only allow one thread to try blocking operations at a time
@@ -64,8 +67,14 @@ public class IndexShardOperationsLock {
             blockOperationsInProgress = true;
         }
         try {
-            try (Releasable block = suspendableRefContainer.tryBlockAcquisition(timeout, timeUnit)) {
-                onBlocked.run();
+            if (semaphore.tryAcquire(TOTAL_PERMITS, timeout, timeUnit)) {
+                try {
+                    onBlocked.run();
+                } finally {
+                    semaphore.release(TOTAL_PERMITS);
+                }
+            } else {
+                throw new TimeoutException("timed out during blockOperations");
             }
         } finally {
             final List<ActionListener<Releasable>> queuedActions;
@@ -95,9 +104,16 @@ public class IndexShardOperationsLock {
      */
     public void acquire(ActionListener<Releasable> onAcquired, String executor, boolean forceExecution) {
         while (true) {
-            final Releasable releasable;
+            Releasable releasable = null;
             try {
-                releasable = suspendableRefContainer.tryAcquire();
+                if (semaphore.tryAcquire(1, 0, TimeUnit.SECONDS)) { // the untimed tryAcquire methods do not honor the fairness setting
+                    AtomicBoolean closed = new AtomicBoolean();
+                    releasable = () -> {
+                        if (closed.compareAndSet(false, true)) {
+                            semaphore.release(1);
+                        }
+                    };
+                }
             } catch (InterruptedException e) {
                 onAcquired.onFailure(e);
                 return;
@@ -128,6 +144,12 @@ public class IndexShardOperationsLock {
     }
 
     public int getActiveOperationsCount() {
-        return suspendableRefContainer.activeRefs();
+        int availablePermits = semaphore.availablePermits();
+        if (availablePermits == 0) {
+            // when blockOperations is holding all permits
+            return 0;
+        } else {
+            return TOTAL_PERMITS - availablePermits;
+        }
     }
 }
