@@ -19,12 +19,10 @@ import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadF
 
 public class ClusterTaskExecutor implements Releasable {
 
-    public static final String UPDATE_THREAD_NAME = "clusterService#updateTask";
-
     private final PrioritizedEsThreadPoolExecutor updateTasksExecutor;
 
-    public ClusterTaskExecutor(Settings settings, ThreadPool threadPool) {
-        this.updateTasksExecutor = EsExecutors.newSinglePrioritizing(UPDATE_THREAD_NAME, daemonThreadFactory(settings, UPDATE_THREAD_NAME),
+    public ClusterTaskExecutor(String threadName, Settings settings, ThreadPool threadPool) {
+        this.updateTasksExecutor = EsExecutors.newSinglePrioritizing(threadName, daemonThreadFactory(settings, threadName),
             threadPool.getThreadContext());
     }
 
@@ -76,13 +74,6 @@ public class ClusterTaskExecutor implements Releasable {
     @Override
     public void close() {
         ThreadPool.terminate(updateTasksExecutor, 10, TimeUnit.SECONDS);
-    }
-
-    /** asserts that the current thread is the cluster state update thread */
-    public static boolean assertClusterStateThread() {
-        assert Thread.currentThread().getName().contains(UPDATE_THREAD_NAME) :
-            "not called from the cluster state update thread";
-        return true;
     }
 
     public void execute(SourcePrioritizedRunnable runnable) {

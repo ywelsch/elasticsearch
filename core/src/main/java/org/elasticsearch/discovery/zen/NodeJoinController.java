@@ -32,7 +32,6 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RoutingService;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
 import org.elasticsearch.cluster.service.ClusterService;
-import org.elasticsearch.cluster.service.ClusterTaskExecutor;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.logging.ESLogger;
@@ -310,7 +309,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onElectedAsMaster(ClusterState state) {
-            ClusterTaskExecutor.assertClusterStateThread();
+            ClusterService.assertClusterStateThread();
             assert state.nodes().isLocalNodeElectedMaster() : "onElectedAsMaster called but local node is not master";
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
@@ -319,7 +318,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onFailure(Throwable t) {
-            ClusterTaskExecutor.assertClusterStateThread();
+            ClusterService.assertClusterStateThread();
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
                 callback.onFailure(t);
