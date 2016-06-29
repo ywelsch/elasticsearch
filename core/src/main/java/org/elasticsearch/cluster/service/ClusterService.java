@@ -154,8 +154,8 @@ public class ClusterService extends AbstractLifecycleComponent<ClusterService> {
 
     /** asserts that the current thread is the cluster state update thread */
     public static boolean assertClusterStateThread() {
-        assert Thread.currentThread().getName().contains(UPDATE_THREAD_NAME) :
-            "not called from the cluster state update thread";
+//        assert Thread.currentThread().getName().contains(UPDATE_THREAD_NAME) :
+//            "not called from the cluster state update thread";
         return true;
     }
 
