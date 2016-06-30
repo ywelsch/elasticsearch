@@ -933,10 +933,8 @@ public class IndexShardTests extends ESSingleNodeTestCase {
         IndexService test = indicesService.indexService(resolveIndex("test"));
         final IndexShard shard = test.getShardOrNull(0);
         assertBusy(() -> assertThat(shard.state(), equalTo(IndexShardState.STARTED)));
-        CountDownLatch latch = new CountDownLatch(1);
         Thread recoveryThread = new Thread(() -> {
             try {
-                latch.await();
                 shard.relocated("simulated recovery");
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
@@ -944,16 +942,21 @@ public class IndexShardTests extends ESSingleNodeTestCase {
         });
 
         recoveryThread.start();
-        latch.countDown();
         List<PlainActionFuture<Releasable>> onLockAcquiredActions = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
-            PlainActionFuture<Releasable> onLockAcquired = new PlainActionFuture<>();
+            PlainActionFuture<Releasable> onLockAcquired = new PlainActionFuture<Releasable>() {
+                @Override
+                public void onResponse(Releasable releasable) {
+                    releasable.close();
+                    super.onResponse(releasable);
+                }
+            };
             shard.acquirePrimaryOperationLock(onLockAcquired, ThreadPool.Names.INDEX);
             onLockAcquiredActions.add(onLockAcquired);
         }
 
         for (PlainActionFuture<Releasable> onLockAcquired : onLockAcquiredActions) {
-            onLockAcquired.get(30, TimeUnit.SECONDS).close();
+            assertNotNull(onLockAcquired.get(30, TimeUnit.SECONDS));
         }
 
         recoveryThread.join();

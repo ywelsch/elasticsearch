@@ -441,6 +441,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         try {
             indexShardOperationsLock.blockOperations(30, TimeUnit.MINUTES, () -> {
                 // no shard operation locks are being held here, move state from started to relocated
+                assert indexShardOperationsLock.getActiveOperationsCount() == 0 :
+                    "in-flight operations in progress while moving shard state to relocated";
                 synchronized (mutex) {
                     if (state != IndexShardState.STARTED) {
                         throw new IndexShardNotStartedException(shardId, state);
@@ -1547,18 +1549,18 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
      * ActionListener will be called on the calling thread. During relocation hand-off, lock acquisition can be delayed. The provided
      * ActionListener will then be called using the provided executor.
      */
-    public void acquirePrimaryOperationLock(ActionListener<Releasable> onLockAcquired, String executor) {
+    public void acquirePrimaryOperationLock(ActionListener<Releasable> onLockAcquired, String executorOnDelay) {
         verifyNotClosed();
         verifyPrimary();
 
-        indexShardOperationsLock.acquire(onLockAcquired, executor, false);
+        indexShardOperationsLock.acquire(onLockAcquired, executorOnDelay, false);
     }
 
     /**
      * Acquire a replica operation lock whenever the shard is ready for indexing (see acquirePrimaryOperationLock). If the given primary
      * term is lower then the one in {@link #shardRouting} an {@link IllegalArgumentException} is thrown.
      */
-    public void acquireReplicaOperationLock(long opPrimaryTerm, ActionListener<Releasable> onLockAcquired, String executor) {
+    public void acquireReplicaOperationLock(long opPrimaryTerm, ActionListener<Releasable> onLockAcquired, String executorOnDelay) {
         verifyNotClosed();
         verifyReplicationTarget();
         if (primaryTerm > opPrimaryTerm) {
@@ -1567,7 +1569,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 shardId, opPrimaryTerm, primaryTerm));
         }
 
-        indexShardOperationsLock.acquire(onLockAcquired, executor, true);
+        indexShardOperationsLock.acquire(onLockAcquired, executorOnDelay, true);
     }
 
     public int getActiveOperationsCount() {

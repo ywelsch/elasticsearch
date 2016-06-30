@@ -362,7 +362,6 @@ public class RecoverySourceHandler {
         cancellableThreads.execute(recoveryTarget::finalizeRecovery);
 
         if (isPrimaryRelocation()) {
-            cancellableThreads.checkForCancel();
             logger.trace("[{}][{}] performing relocation hand-off to {}", indexName, shardId, request.targetNode());
             try {
                 cancellableThreads.execute(() -> shard.relocated("to " + request.targetNode()));

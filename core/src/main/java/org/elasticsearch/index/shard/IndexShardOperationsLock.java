@@ -38,10 +38,8 @@ public class IndexShardOperationsLock {
 
     private static final int TOTAL_PERMITS = Integer.MAX_VALUE;
     // fair semaphore to ensure that blockOperations() does not starve under thread contention
-    private final Semaphore semaphore = new Semaphore(TOTAL_PERMITS, true);
-    private final Object mutex = new Object(); // mutex used to protect the following two fields
+    final Semaphore semaphore = new Semaphore(TOTAL_PERMITS, true);
     private @Nullable List<ActionListener<Releasable>> delayedOperations; // operations that are delayed due to relocation hand-off
-    private boolean blockOperationsInProgress; // only allow one thread to try blocking operations at a time
 
     public IndexShardOperationsLock(ESLogger logger, ThreadPool threadPool) {
         this.logger = logger;
@@ -60,12 +58,6 @@ public class IndexShardOperationsLock {
      * @throws TimeoutException if timed out waiting for in-flight operations to finish
      */
     public void blockOperations(long timeout, TimeUnit timeUnit, Runnable onBlocked) throws InterruptedException, TimeoutException {
-        synchronized (mutex) {
-            if (blockOperationsInProgress) {
-                throw new IllegalStateException("cannot invoke blockOperations while it's running already");
-            }
-            blockOperationsInProgress = true;
-        }
         try {
             if (semaphore.tryAcquire(TOTAL_PERMITS, timeout, timeUnit)) {
                 try {
@@ -78,16 +70,22 @@ public class IndexShardOperationsLock {
             }
         } finally {
             final List<ActionListener<Releasable>> queuedActions;
-            synchronized (mutex) {
-                assert blockOperationsInProgress;
-                blockOperationsInProgress = false;
+            synchronized (this) {
                 queuedActions = delayedOperations;
                 delayedOperations = null;
             }
             if (queuedActions != null) {
-                for (ActionListener<Releasable> queuedAction : queuedActions) {
-                    acquire(queuedAction, null, false);
-                }
+                // Try acquiring permits on fresh thread (for two reasons):
+                // - blockOperations is called on recovery thread which can be expected to be interrupted when recovery is cancelled.
+                //   Interruptions are bad here as permit acquisition will throw an InterruptedException which will be swallowed by
+                //   ThreadedActionListener if the queue of the thread pool on which it submits is full.
+                // - if permit is acquired and queue of the thread pool which the ThreadedActionListener uses is full, the onFailure
+                //   handler is executed on the calling thread. This should not be the recovery thread as it would delay the recovery.
+                threadPool.executor(ThreadPool.Names.GENERIC).execute(() -> {
+                    for (ActionListener<Releasable> queuedAction : queuedActions) {
+                        acquire(queuedAction, null, false);
+                    }
+                });
             }
         }
     }
@@ -99,10 +97,10 @@ public class IndexShardOperationsLock {
      * terminates.
      *
      * @param onAcquired ActionListener that is invoked once acquisition is successful or failed
-     * @param executor executor to use for delayed call
+     * @param executorOnDelay executor to use for delayed call
      * @param forceExecution whether the runnable should force its execution in case it gets rejected
      */
-    public void acquire(ActionListener<Releasable> onAcquired, String executor, boolean forceExecution) {
+    public synchronized void acquire(ActionListener<Releasable> onAcquired, String executorOnDelay, boolean forceExecution) {
         Releasable releasable;
         try {
             releasable = tryAcquire();
@@ -113,37 +111,19 @@ public class IndexShardOperationsLock {
         if (releasable != null) {
             onAcquired.onResponse(releasable);
         } else {
-            synchronized (mutex) {
-                if (blockOperationsInProgress) {
-                    // blockOperations is executing, this operation will be retried by blockOperations once it finishes
-                    if (delayedOperations == null) {
-                        delayedOperations = new ArrayList<>();
-                    }
-                    if (executor != null) {
-                        delayedOperations.add(new ThreadedActionListener(logger, threadPool, executor, onAcquired, forceExecution));
-                    } else {
-                        delayedOperations.add(onAcquired);
-                    }
-                } else {
-                    // blockOperations was executing when we called tryAcquire(). Now it is not executing anymore, so try acquiring the lock
-                    // under the mutex. This guarantees that there are no blockOperations in progress and the lock will always be acquired.
-                    try {
-                        releasable = tryAcquire();
-                    } catch (InterruptedException e) {
-                        onAcquired.onFailure(e);
-                        return;
-                    }
-                    if (releasable != null) {
-                        onAcquired.onResponse(releasable);
-                    } else {
-                        onAcquired.onFailure(new IllegalStateException("failed to acquire operation lock"));
-                    }
-                }
+            // blockOperations is executing, this operation will be retried by blockOperations once it finishes
+            if (delayedOperations == null) {
+                delayedOperations = new ArrayList<>();
+            }
+            if (executorOnDelay != null) {
+                delayedOperations.add(new ThreadedActionListener<>(logger, threadPool, executorOnDelay, onAcquired, forceExecution));
+            } else {
+                delayedOperations.add(onAcquired);
             }
         }
     }
 
-    protected @Nullable Releasable tryAcquire() throws InterruptedException {
+    private  @Nullable Releasable tryAcquire() throws InterruptedException {
         if (semaphore.tryAcquire(1, 0, TimeUnit.SECONDS)) { // the untimed tryAcquire methods do not honor the fairness setting
             AtomicBoolean closed = new AtomicBoolean();
             return () -> {

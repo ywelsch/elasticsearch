@@ -448,7 +448,7 @@ public class RelocationIT extends ESIntegTestCase {
         assertAcked(prepareCreate("test").setSettings(Settings.builder()
             .put("index.routing.allocation.exclude.color", "blue")
             .put(indexSettings())
-            .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 0) // TODO: set this to randomInt(halfNodes - 1) once replica data loss is fixed
+            .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 0) // NORELEASE: set to randomInt(halfNodes - 1) once replica data loss is fixed
         ));
         ensureYellow();
         assertAllShardsOnNodes("test", redFuture.get().toArray(new String[2]));

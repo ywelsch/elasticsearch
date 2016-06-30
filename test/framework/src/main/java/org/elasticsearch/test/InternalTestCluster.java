@@ -1080,11 +1080,12 @@ public final class InternalTestCluster extends TestCluster {
             IndicesService indexServices = getInstance(IndicesService.class, nodeAndClient.name);
             for (IndexService indexService : indexServices) {
                 for (IndexShard indexShard : indexService) {
-                    try {
-                        assertBusy(() -> assertThat("index shard counter on shard " + indexShard.shardId() + " on node " + nodeAndClient.name + " not 0", indexShard.getActiveOperationsCount(), equalTo(0)));
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
+                    assertThat("index shard counter on shard " + indexShard.shardId() + " on node " + nodeAndClient.name + " not 0", indexShard.getActiveOperationsCount(), equalTo(0));
+//                    try {
+//                        assertBusy(() -> assertThat("index shard counter on shard " + indexShard.shardId() + " on node " + nodeAndClient.name + " not 0", indexShard.getActiveOperationsCount(), equalTo(0)));
+//                    } catch (Exception e) {
+//                        throw new RuntimeException(e);
+//                    }
                 }
             }
         }
