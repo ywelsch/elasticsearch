@@ -58,7 +58,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
 
     @Before
     public void createIndexShardOperationsLock() {
-         block = new IndexShardOperationsLock(logger, threadPool);
+         block = new IndexShardOperationsLock(new ShardId("blubb", "id", 0), logger, threadPool);
     }
 
     @After
@@ -68,7 +68,6 @@ public class IndexShardOperationsLockTests extends ESTestCase {
     }
 
     public void testAllOperationsInvoked() throws InterruptedException, TimeoutException, ExecutionException {
-        IndexShardOperationsLock block = new IndexShardOperationsLock(logger, threadPool);
         int numThreads = 10;
 
         List<PlainActionFuture<Releasable>> futures = new ArrayList<>();

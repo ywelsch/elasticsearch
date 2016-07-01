@@ -261,7 +261,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         } else {
             cachingPolicy = new UsageTrackingQueryCachingPolicy();
         }
-        indexShardOperationsLock = new IndexShardOperationsLock(logger, threadPool);
+        indexShardOperationsLock = new IndexShardOperationsLock(shardId, logger, threadPool);
         searcherWrapper = indexSearcherWrapper;
         primaryTerm = indexSettings.getIndexMetaData().primaryTerm(shardId.id());
         refreshListeners = buildRefreshListeners();
@@ -852,6 +852,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                     }
                 } finally { // playing safe here and close the engine even if the above succeeds - close can be called multiple times
                     IOUtils.close(engine);
+                    indexShardOperationsLock.close();
                 }
             }
         }

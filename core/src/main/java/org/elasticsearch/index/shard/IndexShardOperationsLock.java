@@ -25,6 +25,7 @@ import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import java.io.Closeable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Semaphore;
@@ -32,7 +33,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class IndexShardOperationsLock {
+public class IndexShardOperationsLock implements Closeable {
+    private final ShardId shardId;
     private final ESLogger logger;
     private final ThreadPool threadPool;
 
@@ -40,10 +42,17 @@ public class IndexShardOperationsLock {
     // fair semaphore to ensure that blockOperations() does not starve under thread contention
     final Semaphore semaphore = new Semaphore(TOTAL_PERMITS, true);
     private @Nullable List<ActionListener<Releasable>> delayedOperations; // operations that are delayed due to relocation hand-off
+    private volatile boolean closed;
 
-    public IndexShardOperationsLock(ESLogger logger, ThreadPool threadPool) {
+    public IndexShardOperationsLock(ShardId shardId, ESLogger logger, ThreadPool threadPool) {
+        this.shardId = shardId;
         this.logger = logger;
         this.threadPool = threadPool;
+    }
+
+    @Override
+    public void close() {
+        closed = true;
     }
 
     /**
@@ -53,11 +62,14 @@ public class IndexShardOperationsLock {
      * @param timeout the maximum time to wait for the in-flight operations block
      * @param timeUnit the time unit of the {@code timeout} argument
      * @param onBlocked the action to run once the block has been acquired
-     * @throws IllegalStateException if operation is called while running
      * @throws InterruptedException if calling thread is interrupted
      * @throws TimeoutException if timed out waiting for in-flight operations to finish
+     * @throws IndexShardClosedException if operation lock has been closed
      */
     public void blockOperations(long timeout, TimeUnit timeUnit, Runnable onBlocked) throws InterruptedException, TimeoutException {
+        if (closed) {
+            throw new IndexShardClosedException(shardId);
+        }
         try {
             if (semaphore.tryAcquire(TOTAL_PERMITS, timeout, timeUnit)) {
                 try {
@@ -100,27 +112,33 @@ public class IndexShardOperationsLock {
      * @param executorOnDelay executor to use for delayed call
      * @param forceExecution whether the runnable should force its execution in case it gets rejected
      */
-    public synchronized void acquire(ActionListener<Releasable> onAcquired, String executorOnDelay, boolean forceExecution) {
+    public void acquire(ActionListener<Releasable> onAcquired, String executorOnDelay, boolean forceExecution) {
+        if (closed) {
+            onAcquired.onFailure(new IndexShardClosedException(shardId));
+            return;
+        }
         Releasable releasable;
         try {
-            releasable = tryAcquire();
+            synchronized (this) {
+                releasable = tryAcquire();
+                if (releasable == null) {
+                    // blockOperations is executing, this operation will be retried by blockOperations once it finishes
+                    if (delayedOperations == null) {
+                        delayedOperations = new ArrayList<>();
+                    }
+                    if (executorOnDelay != null) {
+                        delayedOperations.add(new ThreadedActionListener<>(logger, threadPool, executorOnDelay, onAcquired, forceExecution));
+                    } else {
+                        delayedOperations.add(onAcquired);
+                    }
+                    return;
+                }
+            }
         } catch (InterruptedException e) {
             onAcquired.onFailure(e);
             return;
         }
-        if (releasable != null) {
-            onAcquired.onResponse(releasable);
-        } else {
-            // blockOperations is executing, this operation will be retried by blockOperations once it finishes
-            if (delayedOperations == null) {
-                delayedOperations = new ArrayList<>();
-            }
-            if (executorOnDelay != null) {
-                delayedOperations.add(new ThreadedActionListener<>(logger, threadPool, executorOnDelay, onAcquired, forceExecution));
-            } else {
-                delayedOperations.add(onAcquired);
-            }
-        }
+        onAcquired.onResponse(releasable);
     }
 
     private  @Nullable Releasable tryAcquire() throws InterruptedException {

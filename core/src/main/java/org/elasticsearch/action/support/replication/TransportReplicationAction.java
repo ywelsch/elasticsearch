@@ -262,9 +262,9 @@ public abstract class TransportReplicationAction<
 
         @Override
         public void onResponse(PrimaryShardReference primaryShardReference) {
-            boolean success = false;
             try {
                 if (primaryShardReference.isRelocated()) {
+                    primaryShardReference.close(); // release shard operation lock as soon as possible
                     setPhase(replicationTask, "primary_delegation");
                     // delegate primary phase to relocation target
                     // it is safe to execute primary phase on relocation target as there are no more in-flight operations where primary
@@ -304,14 +304,10 @@ public abstract class TransportReplicationAction<
                             listener.onFailure(e);
                         }
                     }, primaryShardReference, executeOnReplicas).execute();
-                    success = true;
                 }
             } catch (Throwable t) {
+                Releasables.closeWhileHandlingException(primaryShardReference); // release shard operation lock before responding to caller
                 onFailure(t);
-            } finally {
-                if (success == false) {
-                    primaryShardReference.close();
-                }
             }
         }
 
@@ -330,7 +326,8 @@ public abstract class TransportReplicationAction<
             return new ActionListener<Response>() {
                 @Override
                 public void onResponse(Response response) {
-                    finish();
+                    primaryShardReference.close(); // release shard operation lock before responding to caller
+                    setPhase(replicationTask, "finished");
                     try {
                         channel.sendResponse(response);
                     } catch (IOException e) {
@@ -338,15 +335,10 @@ public abstract class TransportReplicationAction<
                     }
                 }
 
-                private void finish() {
-                    primaryShardReference.close();
-                    setPhase(replicationTask, "finished");
-                }
-
                 @Override
                 public void onFailure(Throwable e) {
+                    primaryShardReference.close(); // release shard operation lock before responding to caller
                     setPhase(replicationTask, "finished");
-                    primaryShardReference.close();
                     try {
                         channel.sendResponse(e);
                     } catch (IOException e1) {
@@ -444,11 +436,12 @@ public abstract class TransportReplicationAction<
         @Override
         public void onResponse(Releasable releasable) {
             try {
-                shardOperationOnReplica(request).respond(new ResponseListener());
+                ReplicaResult replicaResult = shardOperationOnReplica(request);
+                releasable.close(); // release shard operation lock before responding to caller
+                replicaResult.respond(new ResponseListener());
             } catch (Throwable t) {
+                Releasables.closeWhileHandlingException(releasable); // release shard operation lock before responding to caller
                 AsyncReplicaAction.this.onFailure(t);
-            } finally {
-                Releasables.closeWhileHandlingException(releasable);
             }
         }
 
