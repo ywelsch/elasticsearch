@@ -22,6 +22,7 @@ import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.IndicesRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
+import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.action.support.master.AcknowledgedRequest;
 import org.elasticsearch.common.ParseField;
@@ -36,7 +37,6 @@ import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentType;
 
 import java.io.IOException;
-import java.util.Map;
 import java.util.Objects;
 
 import static org.elasticsearch.action.ValidateActions.addValidationError;
@@ -124,6 +124,21 @@ public class ShrinkRequest extends AcknowledgedRequest<ShrinkRequest> implements
      */
     public String getSourceIndex() {
         return sourceIndex;
+    }
+
+    /**
+     * Sets the number of shard copies that must be active for index creation to return.
+     * Defaults to {@link ActiveShardCount#DEFAULT}, which will wait for one shard copy
+     * (the primary) to become active. Set this value to {@link ActiveShardCount#ALL} to
+     * ensure all shards (primary and all replicas) are active before proceeding with the
+     * write. Otherwise, use {@link ActiveShardCount#from(int)} to set this value to any
+     * non-negative integer, up to the number of copies per shard (number of replicas + 1),
+     * to wait for the desired amount of shard copies to become active before returning.
+     *
+     * @param waitForActiveShards number of active shard copies to wait on
+     */
+    public void setWaitForActiveShards(ActiveShardCount waitForActiveShards) {
+        this.getShrinkIndexRequest().waitForActiveShards(waitForActiveShards);
     }
 
     public void source(BytesReference source) {

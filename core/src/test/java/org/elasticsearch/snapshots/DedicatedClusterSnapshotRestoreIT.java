@@ -29,7 +29,9 @@ import org.elasticsearch.action.admin.cluster.snapshots.get.GetSnapshotsResponse
 import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.status.SnapshotStatus;
 import org.elasticsearch.action.admin.cluster.snapshots.status.SnapshotsStatusResponse;
+import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
 import org.elasticsearch.action.index.IndexRequestBuilder;
+import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
@@ -44,6 +46,7 @@ import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.discovery.zen.elect.ElectMasterService;
+import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.store.IndexStore;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.indices.ttl.IndicesTTLService;
@@ -437,11 +440,12 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
         assertAcked(client().admin().indices().prepareClose("test-idx-closed"));
 
         logger.info("--> create an index that will have no allocated shards");
-        assertAcked(prepareCreate("test-idx-none", 1, Settings.builder().put("number_of_shards", 6)
+        CreateIndexResponse createIndexResponse = prepareCreate("test-idx-none", 1, Settings.builder().put("number_of_shards", 6)
                 .put("index.routing.allocation.include.tag", "nowhere")
-                .put("number_of_replicas", 0)));
+                .put("number_of_replicas", 0)).setWaitForActiveShards(ActiveShardCount.NONE).get();
+        assertTrue(createIndexResponse.isAcknowledged());
+        assertTrue(client().admin().indices().prepareExists("test-idx-none").get().isExists());
 
-        logger.info("--> create repository");
         logger.info("--> creating repository");
         PutRepositoryResponse putRepositoryResponse = client().admin().cluster().preparePutRepository("test-repo")
                 .setType("fs").setSettings(Settings.builder().put("location", randomRepoPath())).execute().actionGet();
@@ -683,7 +687,7 @@ public class DedicatedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTest
     @AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/12621")
     public void testChaosSnapshot() throws Exception {
         final List<String> indices = new CopyOnWriteArrayList<>();
-        Settings settings = Settings.builder().put("action.write_consistency", "one").build();
+        Settings settings = Settings.builder().put(IndexSettings.WAIT_FOR_ACTIVE_SHARDS_SETTING.getKey(), "1").build();
         int initialNodes = between(1, 3);
         logger.info("--> start {} nodes", initialNodes);
         for (int i = 0; i < initialNodes; i++) {

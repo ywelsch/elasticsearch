@@ -26,6 +26,8 @@ import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.stats.IndexShardStats;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.elasticsearch.action.support.ActionFilters;
+import org.elasticsearch.action.support.ActiveShardCount;
+import org.elasticsearch.action.support.WaitForActiveShardsMonitor;
 import org.elasticsearch.action.support.master.TransportMasterNodeAction;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
@@ -54,6 +56,7 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
 
     private final MetaDataCreateIndexService createIndexService;
     private final Client client;
+    private final WaitForActiveShardsMonitor shardsMonitor;
 
     @Inject
     public TransportShrinkAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -63,6 +66,7 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
             ShrinkRequest::new);
         this.createIndexService = createIndexService;
         this.client = client;
+        this.shardsMonitor = new WaitForActiveShardsMonitor(settings, clusterService, threadPool);
     }
 
     @Override
@@ -96,7 +100,30 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
                 createIndexService.createIndex(updateRequest, new ActionListener<ClusterStateUpdateResponse>() {
                     @Override
                     public void onResponse(ClusterStateUpdateResponse response) {
-                        listener.onResponse(new ShrinkResponse(response.isAcknowledged()));
+                        if (response.isAcknowledged()) {
+                            // wait for the configured number of active shards to be allocated before returning,
+                            // as that is when indexing operations can take place on the newly created index
+                            final CreateIndexRequest createIndexRequest = shrinkRequest.getShrinkIndexRequest();
+                            try {
+                                shardsMonitor.waitOnShards(createIndexRequest.index(),
+                                    createIndexRequest.waitForActiveShards(),
+                                    createIndexRequest.masterNodeTimeout(),
+                                    listener,
+                                    (timedOut) -> {
+                                        if (timedOut) {
+                                            logger.debug("[{}] shrink index created, but the operation timed out while waiting " +
+                                                         "for enough shards to be started.", createIndexRequest.index());
+                                        }
+                                        listener.onResponse(new ShrinkResponse(true, timedOut));
+                                    });
+
+                            } catch (Exception ex) {
+                                logger.debug("[{}] shrink index failed on waiting for shards", createIndexRequest.index());
+                                listener.onFailure(ex);
+                            }
+                        } else {
+                            listener.onResponse(new ShrinkResponse(response.isAcknowledged(), true));
+                        }
                     }
 
                     @Override
@@ -162,6 +189,7 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
             .settings(targetIndex.settings())
             .aliases(targetIndex.aliases())
             .customs(targetIndex.customs())
+            .waitForActiveShards(targetIndex.waitForActiveShards())
             .shrinkFrom(metaData.getIndex());
     }
 

@@ -20,6 +20,7 @@
 package org.elasticsearch.action.admin.indices.create;
 
 import org.elasticsearch.action.admin.indices.alias.Alias;
+import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.master.AcknowledgedRequestBuilder;
 import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -247,6 +248,22 @@ public class CreateIndexRequestBuilder extends AcknowledgedRequestBuilder<Create
     /** True if all fields that span multiple types should be updated, false otherwise */
     public CreateIndexRequestBuilder setUpdateAllTypes(boolean updateAllTypes) {
         request.updateAllTypes(updateAllTypes);
+        return this;
+    }
+
+    /**
+     * Sets the number of shard copies that must be active for index creation to return.
+     * Defaults to {@link ActiveShardCount#DEFAULT}, which will wait for one shard copy
+     * (the primary) to become active. Set this value to {@link ActiveShardCount#ALL} to
+     * ensure all shards (primary and all replicas) are active before proceeding with the
+     * write. Otherwise, use {@link ActiveShardCount#from(int)} to set this value to any
+     * non-negative integer, up to the number of copies per shard (number of replicas + 1),
+     * to wait for the desired amount of shard copies to become active before returning.
+     *
+     * @param waitForActiveShards number of active shard copies to wait on
+     */
+    public CreateIndexRequestBuilder setWaitForActiveShards(ActiveShardCount waitForActiveShards) {
+        request.waitForActiveShards(waitForActiveShards);
         return this;
     }
 }

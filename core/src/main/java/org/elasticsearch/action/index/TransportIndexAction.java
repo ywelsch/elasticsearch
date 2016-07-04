@@ -196,7 +196,7 @@ public class TransportIndexAction extends TransportWriteAction<IndexRequest, Ind
 
         assert request.versionType().validateVersionForWrites(request.version());
 
-        IndexResponse response = new IndexResponse(shardId, request.type(), request.id(), request.version(), created); 
+        IndexResponse response = new IndexResponse(shardId, request.type(), request.id(), request.version(), created);
         return new WriteResult<>(response, operation.getTranslogLocation());
     }
 }

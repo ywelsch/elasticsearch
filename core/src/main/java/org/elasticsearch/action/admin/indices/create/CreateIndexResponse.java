@@ -22,6 +22,7 @@ package org.elasticsearch.action.admin.indices.create;
 import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.xcontent.XContentBuilder;
 
 import java.io.IOException;
 
@@ -30,22 +31,43 @@ import java.io.IOException;
  */
 public class CreateIndexResponse extends AcknowledgedResponse {
 
+    private boolean timedOutWaitingForShards;
+
     protected CreateIndexResponse() {
     }
 
-    protected CreateIndexResponse(boolean acknowledged) {
+    protected CreateIndexResponse(boolean acknowledged, boolean timedOutWaitingForShards) {
         super(acknowledged);
+        this.timedOutWaitingForShards = timedOutWaitingForShards;
     }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
         readAcknowledged(in);
+        timedOutWaitingForShards = in.readBoolean();
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
         writeAcknowledged(out);
+        out.writeBoolean(timedOutWaitingForShards);
+    }
+
+    /**
+     * Returns true if the request timed out waiting for the required number
+     * of active shards to be started.  If the index was not successfully
+     * created in the first place, then this value is meaningless.
+     */
+    public boolean isTimedOutWaitingForShards() {
+        return timedOutWaitingForShards;
+    }
+
+    /**
+     * Adds custom fields to the AcknowledgedResponse's x-content.
+     */
+    public void addCustomFields(XContentBuilder builder, CreateIndexResponse response) throws IOException {
+        builder.field("timed_out_waiting_for_shards", response.isTimedOutWaitingForShards());
     }
 }

@@ -109,7 +109,6 @@ public class MetaDataCreateIndexService extends AbstractComponent {
     private final NodeServicesProvider nodeServicesProvider;
     private final IndexScopedSettings indexScopedSettings;
 
-
     @Inject
     public MetaDataCreateIndexService(Settings settings, ClusterService clusterService,
                                       IndicesService indicesService, AllocationService allocationService,
@@ -308,6 +307,11 @@ public class MetaDataCreateIndexService extends AbstractComponent {
                                 .setRoutingNumShards(routingNumShards);
                             // Set up everything, now locally create the index to see that things are ok, and apply
                             final IndexMetaData tmpImd = tmpImdBuilder.settings(actualIndexSettings).build();
+                            if (request.waitForActiveShards().resolve(tmpImd) > tmpImd.getNumberOfReplicas() + 1) {
+                                throw new IllegalArgumentException("invalid wait_for_active_shards[" + request.waitForActiveShards() +
+                                                                   "]: cannot be greater than number of shard copies [" +
+                                                                   (tmpImd.getNumberOfReplicas() + 1) + "]");
+                            }
                             // create the index here (on the master) to validate it can be created, as well as adding the mapping
                             final IndexService indexService = indicesService.createIndex(nodeServicesProvider, tmpImd, Collections.emptyList());
                             createdIndex = indexService.index();

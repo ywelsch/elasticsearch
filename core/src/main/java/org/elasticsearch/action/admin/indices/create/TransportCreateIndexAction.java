@@ -21,6 +21,7 @@ package org.elasticsearch.action.admin.indices.create;
 
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ActionFilters;
+import org.elasticsearch.action.support.WaitForActiveShardsMonitor;
 import org.elasticsearch.action.support.master.TransportMasterNodeAction;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ack.ClusterStateUpdateResponse;
@@ -41,6 +42,7 @@ import org.elasticsearch.transport.TransportService;
 public class TransportCreateIndexAction extends TransportMasterNodeAction<CreateIndexRequest, CreateIndexResponse> {
 
     private final MetaDataCreateIndexService createIndexService;
+    private final WaitForActiveShardsMonitor shardsMonitor;
 
     @Inject
     public TransportCreateIndexAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -48,6 +50,7 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
                                       ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
         super(settings, CreateIndexAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, CreateIndexRequest::new);
         this.createIndexService = createIndexService;
+        this.shardsMonitor = new WaitForActiveShardsMonitor(settings, clusterService, threadPool);
     }
 
     @Override
@@ -77,24 +80,47 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
         final CreateIndexClusterStateUpdateRequest updateRequest = new CreateIndexClusterStateUpdateRequest(request, cause, indexName, request.updateAllTypes())
                 .ackTimeout(request.timeout()).masterNodeTimeout(request.masterNodeTimeout())
                 .settings(request.settings()).mappings(request.mappings())
-                .aliases(request.aliases()).customs(request.customs());
+                .aliases(request.aliases()).customs(request.customs())
+                .waitForActiveShards(request.waitForActiveShards());
 
         createIndexService.createIndex(updateRequest, new ActionListener<ClusterStateUpdateResponse>() {
 
             @Override
             public void onResponse(ClusterStateUpdateResponse response) {
-                listener.onResponse(new CreateIndexResponse(response.isAcknowledged()));
+                if (response.isAcknowledged()) {
+                    // the cluster state that includes the newly created index has been acknowledged,
+                    // now wait for the configured number of active shards to be allocated before returning,
+                    // as that is when indexing operations can take place on the newly created index
+                    try {
+                        shardsMonitor.waitOnShards(indexName, request.waitForActiveShards(), request.masterNodeTimeout(), listener,
+                            (timedOut) -> {
+                                if (timedOut) {
+                                    logger.debug("[{}] index created, but the operation timed out while waiting for " +
+                                                 "enough shards to be started.", indexName);
+                                }
+                                listener.onResponse(new CreateIndexResponse(true, timedOut));
+                            });
+
+                    } catch (Exception ex) {
+                        logger.debug("[{}] index creation failed on waiting for shards", indexName);
+                        listener.onFailure(ex);
+                    }
+                } else {
+                    listener.onResponse(new CreateIndexResponse(response.isAcknowledged(), true));
+                }
             }
 
             @Override
             public void onFailure(Throwable t) {
                 if (t instanceof IndexAlreadyExistsException) {
-                    logger.trace("[{}] failed to create", t, request.index());
+                    logger.trace("[{}] failed to create", t, indexName);
                 } else {
-                    logger.debug("[{}] failed to create", t, request.index());
+                    logger.debug("[{}] failed to create", t, indexName);
                 }
                 listener.onFailure(t);
             }
         });
     }
+
+
 }

@@ -22,6 +22,7 @@ package org.elasticsearch.action.admin.indices.rollover;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesClusterStateUpdateRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexClusterStateUpdateRequest;
+import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.cluster.metadata.AliasAction;
 import org.elasticsearch.cluster.metadata.AliasMetaData;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -166,6 +167,8 @@ public class TransportRolloverActionTests extends ESTestCase {
         String alias = randomAsciiOfLength(10);
         String rolloverIndex = randomAsciiOfLength(10);
         final RolloverRequest rolloverRequest = new RolloverRequest(alias, randomAsciiOfLength(10));
+        final ActiveShardCount activeShardCount = randomBoolean() ? ActiveShardCount.ALL : ActiveShardCount.ONE;
+        rolloverRequest.setWaitForActiveShards(activeShardCount);
         final Settings settings = Settings.builder()
             .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetaData.SETTING_INDEX_UUID, UUIDs.randomBase64UUID())
@@ -178,5 +181,6 @@ public class TransportRolloverActionTests extends ESTestCase {
         assertThat(createIndexRequest.settings(), equalTo(settings));
         assertThat(createIndexRequest.index(), equalTo(rolloverIndex));
         assertThat(createIndexRequest.cause(), equalTo("rollover_index"));
+        assertThat(createIndexRequest.waitForActiveShards(), equalTo(activeShardCount));
     }
 }
