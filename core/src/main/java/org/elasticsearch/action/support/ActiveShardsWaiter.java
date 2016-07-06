@@ -33,6 +33,7 @@ import org.elasticsearch.indices.IndexAlreadyExistsException;
 import org.elasticsearch.node.NodeClosedException;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
 /**
@@ -57,17 +58,13 @@ public class ActiveShardsWaiter extends AbstractComponent {
      *
      * @param request the index creation request
      * @param actionListener the main listener that is listening for responses from the index creation event
-     * @param onAcked the function to execute if the index creation cluster state update was acknowledged;
-     *                the input boolean indicates whether the operation timed out
-     * @param onUnacked the function to execute if the index creation cluster state update was not acknowledged;
-     *                  the input boolean indicates whether the operation timed out
+     * @param onResult blablalblaal
      * @return ActionListener for responding to index creation cluster state events and sending the action response
      *         over the main listener, after waiting for the requested number of shards to be active
      */
-    public ActionListener<ClusterStateUpdateResponse> wrapUpdateListenerWithWaiting(final CreateIndexClusterStateUpdateRequest request,
-                                                                                    final ActionListener<?> actionListener,
-                                                                                    final Consumer<Boolean> onAcked,
-                                                                                    final Consumer<Boolean> onUnacked) {
+    public <T> ActionListener<ClusterStateUpdateResponse> wrapUpdateListenerWithWaiting(final CreateIndexClusterStateUpdateRequest request,
+                                                                                    final ActionListener<T> actionListener,
+                                                                                    final BiFunction<Boolean, Boolean, T> onResult) {
         return new ActionListener<ClusterStateUpdateResponse>() {
             @Override
             public void onResponse(ClusterStateUpdateResponse response) {
@@ -81,7 +78,7 @@ public class ActiveShardsWaiter extends AbstractComponent {
                         // operations can take place on the newly created index
                         if (waitForActiveShards == ActiveShardCount.NONE) {
                             // not waiting, so just run whatever we were to run when the waiting is
-                            onAcked.accept(false);
+                            actionListener.onResponse(onResult.apply(true, false));
                             return;
                         }
 
@@ -104,7 +101,7 @@ public class ActiveShardsWaiter extends AbstractComponent {
                         final ClusterStateObserver.Listener observerListener = new ClusterStateObserver.Listener() {
                             @Override
                             public void onNewClusterState(ClusterState state) {
-                                onAcked.accept(false);
+                                actionListener.onResponse(onResult.apply(true, false));
                             }
 
                             @Override
@@ -115,7 +112,7 @@ public class ActiveShardsWaiter extends AbstractComponent {
 
                             @Override
                             public void onTimeout(TimeValue timeout) {
-                                onAcked.accept(true);
+                                actionListener.onResponse(onResult.apply(true, true));
                             }
                         };
 
@@ -126,7 +123,7 @@ public class ActiveShardsWaiter extends AbstractComponent {
                         actionListener.onFailure(ex);
                     }
                 } else {
-                    onUnacked.accept(true);
+                    actionListener.onResponse(onResult.apply(false, false));
                 }
             }
 

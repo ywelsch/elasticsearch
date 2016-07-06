@@ -27,6 +27,7 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.indices.alias.Alias;
 import org.elasticsearch.action.admin.indices.create.CreateIndexClusterStateUpdateRequest;
+import org.elasticsearch.action.support.ActiveShardsWaiter;
 import org.elasticsearch.cluster.AckedClusterStateUpdateTask;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ack.ClusterStateUpdateResponse;
@@ -68,6 +69,7 @@ import org.elasticsearch.indices.IndexAlreadyExistsException;
 import org.elasticsearch.indices.IndexCreationException;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.InvalidIndexNameException;
+import org.elasticsearch.threadpool.ThreadPool;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 
@@ -83,6 +85,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_AUTO_EXPAND_REPLICAS;
@@ -108,12 +113,15 @@ public class MetaDataCreateIndexService extends AbstractComponent {
     private final Environment env;
     private final NodeServicesProvider nodeServicesProvider;
     private final IndexScopedSettings indexScopedSettings;
+    private final ActiveShardsWaiter activeShardsWaiter;
 
     @Inject
     public MetaDataCreateIndexService(Settings settings, ClusterService clusterService,
                                       IndicesService indicesService, AllocationService allocationService,
                                       AliasValidator aliasValidator,
-                                      Set<IndexTemplateFilter> indexTemplateFilters, Environment env, NodeServicesProvider nodeServicesProvider, IndexScopedSettings indexScopedSettings) {
+                                      Set<IndexTemplateFilter> indexTemplateFilters, Environment env,
+                                      NodeServicesProvider nodeServicesProvider, IndexScopedSettings indexScopedSettings,
+                                      ThreadPool threadPool) {
         super(settings);
         this.clusterService = clusterService;
         this.indicesService = indicesService;
@@ -134,6 +142,7 @@ public class MetaDataCreateIndexService extends AbstractComponent {
             }
             this.indexTemplateFilter = new IndexTemplateFilter.Compound(templateFilters);
         }
+        this.activeShardsWaiter = new ActiveShardsWaiter(settings, clusterService, threadPool);
     }
 
     public void validateIndexName(String index, ClusterState state) {
@@ -173,6 +182,18 @@ public class MetaDataCreateIndexService extends AbstractComponent {
         if (index.equals(".") || index.equals("..")) {
             throw new InvalidIndexNameException(index, "must not be '.' or '..'");
         }
+    }
+
+    public <T> void createIndexAndWaitForActiveShards(final CreateIndexClusterStateUpdateRequest request,
+                                                  final ActionListener<T> listener,
+                                                  final BiFunction<Boolean, Boolean, T> onResult) {
+        createIndex(request, activeShardsWaiter.wrapUpdateListenerWithWaiting(request, listener, (acked, timedOut) -> {
+            if (acked && timedOut) {
+                logger.debug("[{}] index created, but the operation timed out while waiting for " +
+                    "enough shards to be started.", request.index());
+            }
+            return onResult.apply(acked, timedOut);
+        }));
     }
 
     public void createIndex(final CreateIndexClusterStateUpdateRequest request, final ActionListener<ClusterStateUpdateResponse> listener) {

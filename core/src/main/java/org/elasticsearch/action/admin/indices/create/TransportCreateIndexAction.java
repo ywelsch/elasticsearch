@@ -40,7 +40,6 @@ import org.elasticsearch.transport.TransportService;
 public class TransportCreateIndexAction extends TransportMasterNodeAction<CreateIndexRequest, CreateIndexResponse> {
 
     private final MetaDataCreateIndexService createIndexService;
-    private final ActiveShardsWaiter shardsWaiter;
 
     @Inject
     public TransportCreateIndexAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -48,7 +47,6 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
                                       ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
         super(settings, CreateIndexAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, CreateIndexRequest::new);
         this.createIndexService = createIndexService;
-        this.shardsWaiter = new ActiveShardsWaiter(settings, clusterService, threadPool);
     }
 
     @Override
@@ -81,20 +79,7 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
                 .aliases(request.aliases()).customs(request.customs())
                 .waitForActiveShards(request.waitForActiveShards());
 
-        createIndexService.createIndex(updateRequest,
-            shardsWaiter.wrapUpdateListenerWithWaiting(
-                updateRequest,
-                listener,
-                (timedOut) -> {
-                    if (timedOut) {
-                        logger.debug("[{}] index created, but the operation timed out while waiting for " +
-                                     "enough shards to be started.", indexName);
-                    }
-                    listener.onResponse(new CreateIndexResponse(true, timedOut));
-                },
-                (timedOut) -> listener.onResponse(new CreateIndexResponse(false, timedOut))
-            )
-        );
+        createIndexService.createIndexAndWaitForActiveShards(updateRequest, listener, CreateIndexResponse::new);
     }
 
 

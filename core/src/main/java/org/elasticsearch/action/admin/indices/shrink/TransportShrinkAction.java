@@ -23,6 +23,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.indices.create.CreateIndexClusterStateUpdateRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
+import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
 import org.elasticsearch.action.admin.indices.stats.IndexShardStats;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.elasticsearch.action.support.ActionFilters;
@@ -53,7 +54,6 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
 
     private final MetaDataCreateIndexService createIndexService;
     private final Client client;
-    private final ActiveShardsWaiter shardsWaiter;
 
     @Inject
     public TransportShrinkAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -63,7 +63,6 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
             ShrinkRequest::new);
         this.createIndexService = createIndexService;
         this.client = client;
-        this.shardsWaiter = new ActiveShardsWaiter(settings, clusterService, threadPool);
     }
 
     @Override
@@ -94,21 +93,7 @@ public class TransportShrinkAction extends TransportMasterNodeAction<ShrinkReque
                         IndexShardStats shard = indicesStatsResponse.getIndex(sourceIndex).getIndexShards().get(i);
                         return shard == null ? null : shard.getPrimary().getDocs();
                     }, indexNameExpressionResolver);
-                final CreateIndexRequest createIndexRequest = shrinkRequest.getShrinkIndexRequest();
-                createIndexService.createIndex(updateRequest,
-                    shardsWaiter.wrapUpdateListenerWithWaiting(
-                        updateRequest,
-                        listener,
-                        (timedOut) -> {
-                            if (timedOut) {
-                                logger.debug("[{}] index created, but the operation timed out while waiting for " +
-                                             "enough shards to be started.", createIndexRequest.index());
-                            }
-                            listener.onResponse(new ShrinkResponse(true, timedOut));
-                        },
-                        (timedOut) -> listener.onResponse(new ShrinkResponse(false, timedOut))
-                    )
-                );
+                createIndexService.createIndexAndWaitForActiveShards(updateRequest, listener, ShrinkResponse::new);
             }
 
             @Override

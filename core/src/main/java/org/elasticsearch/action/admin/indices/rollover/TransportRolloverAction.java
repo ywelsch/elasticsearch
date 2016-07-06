@@ -23,6 +23,8 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesClusterStateUpdateRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexClusterStateUpdateRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
+import org.elasticsearch.action.admin.indices.create.CreateIndexResponse;
+import org.elasticsearch.action.admin.indices.shrink.ShrinkResponse;
 import org.elasticsearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.IndicesOptions;
@@ -61,7 +63,6 @@ public class TransportRolloverAction extends TransportMasterNodeAction<RolloverR
     private final MetaDataCreateIndexService createIndexService;
     private final MetaDataIndexAliasesService indexAliasesService;
     private final Client client;
-    private final ActiveShardsWaiter shardsWaiter;
 
     @Inject
     public TransportRolloverAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -73,7 +74,6 @@ public class TransportRolloverAction extends TransportMasterNodeAction<RolloverR
         this.createIndexService = createIndexService;
         this.indexAliasesService = indexAliasesService;
         this.client = client;
-        this.shardsWaiter = new ActiveShardsWaiter(settings, clusterService, threadPool);
     }
 
     @Override
@@ -118,34 +118,36 @@ public class TransportRolloverAction extends TransportMasterNodeAction<RolloverR
                         return;
                     }
                     if (conditionResults.size() == 0 || conditionResults.stream().anyMatch(result -> result.matched)) {
-                        Consumer<Boolean> onAckedOrUnacked = (timedOut) -> {
-                            // switch the alias to point to the newly created index
-                            indexAliasesService.indicesAliases(
-                                prepareRolloverAliasesUpdateRequest(sourceIndexName, rolloverIndexName,
-                                    rolloverRequest),
-                                new ActionListener<ClusterStateUpdateResponse>() {
-                                    @Override
-                                    public void onResponse(ClusterStateUpdateResponse clusterStateUpdateResponse) {
-                                        listener.onResponse(
-                                            new RolloverResponse(sourceIndexName, rolloverIndexName,
-                                                                    conditionResults, false, true, timedOut));
-                                    }
-
-                                    @Override
-                                    public void onFailure(Throwable e) {
-                                        listener.onFailure(e);
-                                    }
-                                });
-                        };
                         CreateIndexClusterStateUpdateRequest updateRequest = prepareCreateIndexRequest(rolloverIndexName, rolloverRequest);
-                        createIndexService.createIndex(updateRequest,
-                            shardsWaiter.wrapUpdateListenerWithWaiting(
-                                updateRequest,
-                                listener,
-                                onAckedOrUnacked,
-                                onAckedOrUnacked
-                            )
-                        );
+                        ActionListener<RolloverResponse> wrappedListener = new ActionListener<RolloverResponse>() {
+
+                            @Override
+                            public void onResponse(RolloverResponse rolloverResponse) {
+                                // switch the alias to point to the newly created index
+                                indexAliasesService.indicesAliases(
+                                    prepareRolloverAliasesUpdateRequest(sourceIndexName, rolloverIndexName,
+                                        rolloverRequest),
+                                    new ActionListener<ClusterStateUpdateResponse>() {
+                                        @Override
+                                        public void onResponse(ClusterStateUpdateResponse clusterStateUpdateResponse) {
+                                            listener.onResponse(rolloverResponse); // TODO: what happens if this ClusterStateUpdateResponse is not acknowledged?
+                                        }
+
+                                        @Override
+                                        public void onFailure(Throwable e) {
+                                            listener.onFailure(e);
+                                        }
+                                    });
+                            }
+
+                            @Override
+                            public void onFailure(Throwable e) {
+                                listener.onFailure(e);
+                            }
+
+                        };
+                        createIndexService.createIndexAndWaitForActiveShards(updateRequest, wrappedListener, (acked, timedOut) ->
+                            new RolloverResponse(sourceIndexName, sourceIndexName, conditionResults, false, true, timedOut));
                     } else {
                         // conditions not met
                         listener.onResponse(
