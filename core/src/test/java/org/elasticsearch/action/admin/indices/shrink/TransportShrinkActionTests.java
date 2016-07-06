@@ -132,7 +132,7 @@ public class TransportShrinkActionTests extends ESTestCase {
         DocsStats stats = new DocsStats(randomIntBetween(0, (IndexWriter.MAX_DOCS) / numSourceShards), randomIntBetween(1, 1000));
         ShrinkRequest target = new ShrinkRequest("target", indexName);
         final ActiveShardCount activeShardCount = randomBoolean() ? ActiveShardCount.ALL : ActiveShardCount.ONE;
-        target.setWaitForActiveShards(ActiveShardCount.ONE);
+        target.setWaitForActiveShards(activeShardCount);
         CreateIndexClusterStateUpdateRequest request = TransportShrinkAction.prepareCreateIndexRequest(
             target, clusterState, (i) -> stats,
             new IndexNameExpressionResolver(Settings.EMPTY));

@@ -21,10 +21,9 @@ package org.elasticsearch.action.admin.indices.create;
 
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ActionFilters;
-import org.elasticsearch.action.support.WaitForActiveShardsMonitor;
+import org.elasticsearch.action.support.ActiveShardsWaiter;
 import org.elasticsearch.action.support.master.TransportMasterNodeAction;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ack.ClusterStateUpdateResponse;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
@@ -32,7 +31,6 @@ import org.elasticsearch.cluster.metadata.MetaDataCreateIndexService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.indices.IndexAlreadyExistsException;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
@@ -42,7 +40,7 @@ import org.elasticsearch.transport.TransportService;
 public class TransportCreateIndexAction extends TransportMasterNodeAction<CreateIndexRequest, CreateIndexResponse> {
 
     private final MetaDataCreateIndexService createIndexService;
-    private final WaitForActiveShardsMonitor shardsMonitor;
+    private final ActiveShardsWaiter shardsWaiter;
 
     @Inject
     public TransportCreateIndexAction(Settings settings, TransportService transportService, ClusterService clusterService,
@@ -50,7 +48,7 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
                                       ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver) {
         super(settings, CreateIndexAction.NAME, transportService, clusterService, threadPool, actionFilters, indexNameExpressionResolver, CreateIndexRequest::new);
         this.createIndexService = createIndexService;
-        this.shardsMonitor = new WaitForActiveShardsMonitor(settings, clusterService, threadPool);
+        this.shardsWaiter = new ActiveShardsWaiter(settings, clusterService, threadPool);
     }
 
     @Override
@@ -83,43 +81,20 @@ public class TransportCreateIndexAction extends TransportMasterNodeAction<Create
                 .aliases(request.aliases()).customs(request.customs())
                 .waitForActiveShards(request.waitForActiveShards());
 
-        createIndexService.createIndex(updateRequest, new ActionListener<ClusterStateUpdateResponse>() {
-
-            @Override
-            public void onResponse(ClusterStateUpdateResponse response) {
-                if (response.isAcknowledged()) {
-                    // the cluster state that includes the newly created index has been acknowledged,
-                    // now wait for the configured number of active shards to be allocated before returning,
-                    // as that is when indexing operations can take place on the newly created index
-                    try {
-                        shardsMonitor.waitOnShards(indexName, request.waitForActiveShards(), request.masterNodeTimeout(), listener,
-                            (timedOut) -> {
-                                if (timedOut) {
-                                    logger.debug("[{}] index created, but the operation timed out while waiting for " +
-                                                 "enough shards to be started.", indexName);
-                                }
-                                listener.onResponse(new CreateIndexResponse(true, timedOut));
-                            });
-
-                    } catch (Exception ex) {
-                        logger.debug("[{}] index creation failed on waiting for shards", indexName);
-                        listener.onFailure(ex);
+        createIndexService.createIndex(updateRequest,
+            shardsWaiter.wrapUpdateListenerWithWaiting(
+                updateRequest,
+                listener,
+                (timedOut) -> {
+                    if (timedOut) {
+                        logger.debug("[{}] index created, but the operation timed out while waiting for " +
+                                     "enough shards to be started.", indexName);
                     }
-                } else {
-                    listener.onResponse(new CreateIndexResponse(response.isAcknowledged(), true));
-                }
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                if (t instanceof IndexAlreadyExistsException) {
-                    logger.trace("[{}] failed to create", t, indexName);
-                } else {
-                    logger.debug("[{}] failed to create", t, indexName);
-                }
-                listener.onFailure(t);
-            }
-        });
+                    listener.onResponse(new CreateIndexResponse(true, timedOut));
+                },
+                (timedOut) -> listener.onResponse(new CreateIndexResponse(false, timedOut))
+            )
+        );
     }
 
 
