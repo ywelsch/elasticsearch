@@ -29,6 +29,7 @@ import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
+import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.FailedRerouteAllocation;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
@@ -243,8 +244,7 @@ public abstract class ESAllocationTestCase extends ESTestCase {
             final RoutingNodes.UnassignedShards.UnassignedIterator unassignedIterator = allocation.routingNodes().unassigned().iterator();
             while (unassignedIterator.hasNext()) {
                 ShardRouting shard = unassignedIterator.next();
-                IndexMetaData indexMetaData = allocation.metaData().index(shard.getIndexName());
-                if (shard.primary() || shard.allocatedPostIndexCreate(indexMetaData) == false) {
+                if (shard.primary() || shard.unassignedInfo().getReason() == UnassignedInfo.Reason.INDEX_CREATED) {
                     continue;
                 }
                 replicaShardAllocator.ignoreUnassignedIfDelayed(unassignedIterator, shard);

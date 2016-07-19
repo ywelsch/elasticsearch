@@ -20,6 +20,7 @@ package org.elasticsearch.recovery;
 
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.replication.ESIndexLevelReplicationTestCase;
 import org.elasticsearch.index.shard.IndexShard;
@@ -156,7 +157,7 @@ public class RecoveriesCollectionTests extends ESIndexLevelReplicationTestCase {
     long startRecovery(RecoveriesCollection collection, DiscoveryNode sourceNode, IndexShard indexShard,
                        RecoveryTargetService.RecoveryListener listener, TimeValue timeValue) {
         final DiscoveryNode rNode = getDiscoveryNode(indexShard.routingEntry().currentNodeId());
-        indexShard.markAsRecovering("remote", new RecoveryState(indexShard.shardId(), false, RecoveryState.Type.REPLICA, sourceNode,
+        indexShard.markAsRecovering("remote", new RecoveryState(indexShard.shardId(), false, RecoverySource.PRIMARY, sourceNode,
             rNode));
         indexShard.prepareForIndexRecovery();
         return collection.startRecovery(indexShard, sourceNode, listener, timeValue);

@@ -19,12 +19,10 @@
 
 package org.elasticsearch.cluster.health;
 
-import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.routing.UnassignedInfo.AllocationStatus;
-import org.elasticsearch.cluster.routing.UnassignedInfo.Reason;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
@@ -41,7 +39,7 @@ public final class ClusterShardHealth implements Writeable {
     private final int unassignedShards;
     private final boolean primaryActive;
 
-    public ClusterShardHealth(final int shardId, final IndexShardRoutingTable shardRoutingTable, final IndexMetaData indexMetaData) {
+    public ClusterShardHealth(final int shardId, final IndexShardRoutingTable shardRoutingTable) {
         this.shardId = shardId;
         int computeActiveShards = 0;
         int computeRelocatingShards = 0;
@@ -69,7 +67,7 @@ public final class ClusterShardHealth implements Writeable {
                 computeStatus = ClusterHealthStatus.YELLOW;
             }
         } else {
-            computeStatus = getInactivePrimaryHealth(primaryRouting, indexMetaData);
+            computeStatus = getInactivePrimaryHealth(primaryRouting);
         }
         this.status = computeStatus;
         this.activeShards = computeActiveShards;
@@ -140,19 +138,20 @@ public final class ClusterShardHealth implements Writeable {
      *   2. When a cluster is in the recovery state, and the shard never had any allocation ids assigned to it,
      *      which indicates the index was created and before allocation of the primary occurred for this shard,
      *      a cluster restart happened.
+     *   3. When index is restored from a snapshot.
+     *   4. When index is shrunk using the shrink API.
      *
      * Here, we check for these scenarios and set the cluster health to YELLOW if any are applicable.
      *
      * NB: this method should *not* be called on active shards nor on non-primary shards.
      */
-    public static ClusterHealthStatus getInactivePrimaryHealth(final ShardRouting shardRouting, final IndexMetaData indexMetaData) {
+    public static ClusterHealthStatus getInactivePrimaryHealth(final ShardRouting shardRouting) {
         assert shardRouting.primary() : "cannot invoke on a replica shard: " + shardRouting;
         assert shardRouting.active() == false : "cannot invoke on an active shard: " + shardRouting;
         assert shardRouting.unassignedInfo() != null : "cannot invoke on a shard with no UnassignedInfo: " + shardRouting;
         final UnassignedInfo unassignedInfo = shardRouting.unassignedInfo();
-        if (unassignedInfo.getLastAllocationStatus() != AllocationStatus.DECIDERS_NO
-                && shardRouting.allocatedPostIndexCreate(indexMetaData) == false
-                && (unassignedInfo.getReason() == Reason.INDEX_CREATED || unassignedInfo.getReason() == Reason.CLUSTER_RECOVERED)) {
+        if (unassignedInfo.getLastAllocationStatus() != AllocationStatus.DECIDERS_NO && unassignedInfo.getNumFailedAllocations() == 0
+                && shardRouting.recoverySource().initialRecovery()) {
             return ClusterHealthStatus.YELLOW;
         } else {
             return ClusterHealthStatus.RED;

@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.common.Table;
@@ -135,7 +136,8 @@ public class RestIndicesActionTests extends ESTestCase {
                 ShardId shardId = new ShardId(index, i);
                 Path path = createTempDir().resolve("indices").resolve(index.getUUID()).resolve(String.valueOf(i));
                 ShardRouting shardRouting = ShardRouting.newUnassigned(shardId, null, i == 0,
-                    new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, null));
+                    new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, null),
+                    i == 0 ? RecoverySource.NEW_STORE : RecoverySource.PRIMARY);
                 shardRouting = shardRouting.initialize("node-0", null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                 shardRouting = shardRouting.moveToStarted();
                 CommonStats stats = new CommonStats();

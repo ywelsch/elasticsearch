@@ -29,6 +29,7 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
@@ -299,7 +300,8 @@ public class ReplicaShardAllocatorTests extends ESAllocationTestCase {
                                         .addShard(primaryShard)
                                         .addShard(ShardRouting.newUnassigned(shardId, null, false,
                                             new UnassignedInfo(reason, null, null, failedAllocations, System.nanoTime(),
-                                                System.currentTimeMillis(), delayed, UnassignedInfo.AllocationStatus.NO_ATTEMPT)))
+                                                System.currentTimeMillis(), delayed, UnassignedInfo.AllocationStatus.NO_ATTEMPT),
+                                            RecoverySource.PRIMARY))
                                         .build())
                 )
                 .build();

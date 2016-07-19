@@ -32,6 +32,7 @@ import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.allocation.command.MoveAllocationCommand;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
@@ -42,7 +43,6 @@ import org.elasticsearch.index.recovery.RecoveryStats;
 import org.elasticsearch.index.store.Store;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.recovery.RecoveryState.Stage;
-import org.elasticsearch.indices.recovery.RecoveryState.Type;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.snapshots.SnapshotState;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -98,10 +98,11 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         return pluginList(MockTransportService.TestPlugin.class, MockFSIndexStore.TestPlugin.class);
     }
 
-    private void assertRecoveryStateWithoutStage(RecoveryState state, int shardId, Type type,
+    private void assertRecoveryStateWithoutStage(RecoveryState state, int shardId, RecoverySource type, boolean primary,
                                                  String sourceNode, String targetNode, boolean hasRestoreSource) {
         assertThat(state.getShardId().getId(), equalTo(shardId));
         assertThat(state.getType(), equalTo(type));
+        assertThat(state.getPrimary(), equalTo(primary));
         if (sourceNode == null) {
             assertNull(state.getSourceNode());
         } else {
@@ -122,15 +123,15 @@ public class IndexRecoveryIT extends ESIntegTestCase {
 
     }
 
-    private void assertRecoveryState(RecoveryState state, int shardId, Type type, Stage stage,
+    private void assertRecoveryState(RecoveryState state, int shardId, RecoverySource type, boolean primary, Stage stage,
                                      String sourceNode, String targetNode, boolean hasRestoreSource) {
-        assertRecoveryStateWithoutStage(state, shardId, type, sourceNode, targetNode, hasRestoreSource);
+        assertRecoveryStateWithoutStage(state, shardId, type, primary, sourceNode, targetNode, hasRestoreSource);
         assertThat(state.getStage(), equalTo(stage));
     }
 
-    private void assertOnGoingRecoveryState(RecoveryState state, int shardId, Type type,
+    private void assertOnGoingRecoveryState(RecoveryState state, int shardId, RecoverySource type, boolean primary,
                                             String sourceNode, String targetNode, boolean hasRestoreSource) {
-        assertRecoveryStateWithoutStage(state, shardId, type, sourceNode, targetNode, hasRestoreSource);
+        assertRecoveryStateWithoutStage(state, shardId, type, primary, sourceNode, targetNode, hasRestoreSource);
         assertThat(state.getStage(), not(equalTo(Stage.DONE)));
     }
 
@@ -178,7 +179,7 @@ public class IndexRecoveryIT extends ESIntegTestCase {
 
         RecoveryState recoveryState = recoveryStates.get(0);
 
-        assertRecoveryState(recoveryState, 0, Type.STORE, Stage.DONE, node, node, false);
+        assertRecoveryState(recoveryState, 0, RecoverySource.EXISTING_STORE, true, Stage.DONE, node, node, false);
 
         validateIndexRecoveryState(recoveryState.getIndex());
     }
@@ -231,12 +232,12 @@ public class IndexRecoveryIT extends ESIntegTestCase {
 
         // validate node A recovery
         RecoveryState nodeARecoveryState = nodeAResponses.get(0);
-        assertRecoveryState(nodeARecoveryState, 0, Type.STORE, Stage.DONE, nodeA, nodeA, false);
+        assertRecoveryState(nodeARecoveryState, 0, RecoverySource.NEW_STORE, true, Stage.DONE, nodeA, nodeA, false);
         validateIndexRecoveryState(nodeARecoveryState.getIndex());
 
         // validate node B recovery
         RecoveryState nodeBRecoveryState = nodeBResponses.get(0);
-        assertRecoveryState(nodeBRecoveryState, 0, Type.REPLICA, Stage.DONE, nodeA, nodeB, false);
+        assertRecoveryState(nodeBRecoveryState, 0, RecoverySource.PRIMARY, false, Stage.DONE, nodeA, nodeB, false);
         validateIndexRecoveryState(nodeBRecoveryState.getIndex());
     }
 
@@ -284,10 +285,10 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         List<RecoveryState> nodeBRecoveryStates = findRecoveriesForTargetNode(nodeB, recoveryStates);
         assertThat(nodeBRecoveryStates.size(), equalTo(1));
 
-        assertRecoveryState(nodeARecoveryStates.get(0), 0, Type.STORE, Stage.DONE, nodeA, nodeA, false);
+        assertRecoveryState(nodeARecoveryStates.get(0), 0, RecoverySource.NEW_STORE, true, Stage.DONE, nodeA, nodeA, false);
         validateIndexRecoveryState(nodeARecoveryStates.get(0).getIndex());
 
-        assertOnGoingRecoveryState(nodeBRecoveryStates.get(0), 0, Type.PRIMARY_RELOCATION, nodeA, nodeB, false);
+        assertOnGoingRecoveryState(nodeBRecoveryStates.get(0), 0, RecoverySource.PRIMARY, true, nodeA, nodeB, false);
         validateIndexRecoveryState(nodeBRecoveryStates.get(0).getIndex());
 
         logger.info("--> request node recovery stats");
@@ -340,7 +341,7 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         recoveryStates = response.shardRecoveryStates().get(INDEX_NAME);
         assertThat(recoveryStates.size(), equalTo(1));
 
-        assertRecoveryState(recoveryStates.get(0), 0, Type.PRIMARY_RELOCATION, Stage.DONE, nodeA, nodeB, false);
+        assertRecoveryState(recoveryStates.get(0), 0, RecoverySource.PRIMARY, true, Stage.DONE, nodeA, nodeB, false);
         validateIndexRecoveryState(recoveryStates.get(0).getIndex());
 
         statsResponse = client().admin().cluster().prepareNodesStats().clear().setIndices(new CommonStatsFlags(CommonStatsFlags.Flag.Recovery)).get();
@@ -398,14 +399,14 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         List<RecoveryState> nodeCRecoveryStates = findRecoveriesForTargetNode(nodeC, recoveryStates);
         assertThat(nodeCRecoveryStates.size(), equalTo(1));
 
-        assertRecoveryState(nodeARecoveryStates.get(0), 0, Type.REPLICA, Stage.DONE, nodeB, nodeA, false);
+        assertRecoveryState(nodeARecoveryStates.get(0), 0, RecoverySource.PRIMARY, false, Stage.DONE, nodeB, nodeA, false);
         validateIndexRecoveryState(nodeARecoveryStates.get(0).getIndex());
 
-        assertRecoveryState(nodeBRecoveryStates.get(0), 0, Type.PRIMARY_RELOCATION, Stage.DONE, nodeA, nodeB, false);
+        assertRecoveryState(nodeBRecoveryStates.get(0), 0, RecoverySource.PRIMARY, true, Stage.DONE, nodeA, nodeB, false);
         validateIndexRecoveryState(nodeBRecoveryStates.get(0).getIndex());
 
         // relocations of replicas are marked as REPLICA and the source node is the node holding the primary (B)
-        assertOnGoingRecoveryState(nodeCRecoveryStates.get(0), 0, Type.REPLICA, nodeB, nodeC, false);
+        assertOnGoingRecoveryState(nodeCRecoveryStates.get(0), 0, RecoverySource.PRIMARY, false, nodeB, nodeC, false);
         validateIndexRecoveryState(nodeCRecoveryStates.get(0).getIndex());
 
         if (randomBoolean()) {
@@ -423,10 +424,10 @@ public class IndexRecoveryIT extends ESIntegTestCase {
             nodeCRecoveryStates = findRecoveriesForTargetNode(nodeC, recoveryStates);
             assertThat(nodeCRecoveryStates.size(), equalTo(1));
 
-            assertRecoveryState(nodeBRecoveryStates.get(0), 0, Type.PRIMARY_RELOCATION, Stage.DONE, nodeA, nodeB, false);
+            assertRecoveryState(nodeBRecoveryStates.get(0), 0, RecoverySource.PRIMARY, true, Stage.DONE, nodeA, nodeB, false);
             validateIndexRecoveryState(nodeBRecoveryStates.get(0).getIndex());
 
-            assertOnGoingRecoveryState(nodeCRecoveryStates.get(0), 0, Type.REPLICA, nodeB, nodeC, false);
+            assertOnGoingRecoveryState(nodeCRecoveryStates.get(0), 0, RecoverySource.PRIMARY, false, nodeB, nodeC, false);
             validateIndexRecoveryState(nodeCRecoveryStates.get(0).getIndex());
         }
 
@@ -444,11 +445,11 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         nodeCRecoveryStates = findRecoveriesForTargetNode(nodeC, recoveryStates);
         assertThat(nodeCRecoveryStates.size(), equalTo(1));
 
-        assertRecoveryState(nodeBRecoveryStates.get(0), 0, Type.PRIMARY_RELOCATION, Stage.DONE, nodeA, nodeB, false);
+        assertRecoveryState(nodeBRecoveryStates.get(0), 0, RecoverySource.PRIMARY, true, Stage.DONE, nodeA, nodeB, false);
         validateIndexRecoveryState(nodeBRecoveryStates.get(0).getIndex());
 
         // relocations of replicas are marked as REPLICA and the source node is the node holding the primary (B)
-        assertRecoveryState(nodeCRecoveryStates.get(0), 0, Type.REPLICA, Stage.DONE, nodeB, nodeC, false);
+        assertRecoveryState(nodeCRecoveryStates.get(0), 0, RecoverySource.PRIMARY, false, Stage.DONE, nodeB, nodeC, false);
         validateIndexRecoveryState(nodeCRecoveryStates.get(0).getIndex());
     }
 
@@ -497,7 +498,7 @@ public class IndexRecoveryIT extends ESIntegTestCase {
             assertThat(recoveryStates.size(), equalTo(totalShards));
 
             for (RecoveryState recoveryState : recoveryStates) {
-                assertRecoveryState(recoveryState, 0, Type.SNAPSHOT, Stage.DONE, null, nodeA, true);
+                assertRecoveryState(recoveryState, 0, RecoverySource.SNAPSHOT, true, Stage.DONE, null, nodeA, true);
                 validateIndexRecoveryState(recoveryState.getIndex());
             }
         }
@@ -590,7 +591,7 @@ public class IndexRecoveryIT extends ESIntegTestCase {
         assertHitCount(searchResponse, numDocs);
 
         String[] recoveryActions = new String[]{
-                RecoverySource.Actions.START_RECOVERY,
+                org.elasticsearch.indices.recovery.RecoverySource.Actions.START_RECOVERY,
                 RecoveryTargetService.Actions.FILES_INFO,
                 RecoveryTargetService.Actions.FILE_CHUNK,
                 RecoveryTargetService.Actions.CLEAN_FILES,

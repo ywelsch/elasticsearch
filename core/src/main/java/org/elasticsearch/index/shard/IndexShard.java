@@ -38,6 +38,7 @@ import org.elasticsearch.action.admin.indices.forcemerge.ForceMergeRequest;
 import org.elasticsearch.action.admin.indices.upgrade.post.UpgradeRequest;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.common.Booleans;
@@ -1135,6 +1136,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     }
 
     public boolean recoverFromLocalShards(BiConsumer<String, MappingMetaData> mappingUpdateConsumer, List<IndexShard> localShards) throws IOException {
+        assert shardRouting.primary() : "recover from local shards only makes sense if the shard is a primary shard";
+        assert shardRouting.recoverySource() == RecoverySource.LOCAL_SHARDS;
         final List<LocalShardSnapshot> snapshots = new ArrayList<>();
         try {
             for (IndexShard shard : localShards) {
@@ -1155,7 +1158,9 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         // we are the first primary, recover from the gateway
         // if its post api allocation, the index should exists
         assert shardRouting.primary() : "recover from store only makes sense if the shard is a primary shard";
-        boolean shouldExist = shardRouting.allocatedPostIndexCreate(indexSettings.getIndexMetaData());
+        assert shardRouting.initializing() : "can only start recovery on initializing shard";
+        assert recoveryState.getType() == RecoverySource.NEW_STORE || recoveryState.getType() == RecoverySource.EXISTING_STORE;
+        boolean shouldExist = recoveryState.getType() == RecoverySource.EXISTING_STORE;
 
         StoreRecovery storeRecovery = new StoreRecovery(shardId, logger);
         return storeRecovery.recoverFromStore(this, shouldExist);
@@ -1163,6 +1168,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
 
     public boolean restoreFromRepository(Repository repository) {
         assert shardRouting.primary() : "recover from store only makes sense if the shard is a primary shard";
+        assert recoveryState.getType() == RecoverySource.SNAPSHOT;
         StoreRecovery storeRecovery = new StoreRecovery(shardId, logger);
         return storeRecovery.recoverFromRepository(this, repository);
     }
@@ -1383,17 +1389,17 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                               BiConsumer<String, MappingMetaData> mappingUpdateConsumer,
                               IndicesService indicesService) {
         switch (recoveryState.getType()) {
-            case PRIMARY_RELOCATION:
-            case REPLICA:
+            case PRIMARY:
                 try {
                     markAsRecovering("from " + recoveryState.getSourceNode(), recoveryState);
-                    recoveryTargetService.startRecovery(this, recoveryState.getType(), recoveryState.getSourceNode(), recoveryListener);
+                    recoveryTargetService.startRecovery(this, recoveryState.getSourceNode(), recoveryListener);
                 } catch (Exception e) {
                     failShard("corrupted preexisting index", e);
                     recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
                 }
                 break;
-            case STORE:
+            case NEW_STORE:
+            case EXISTING_STORE:
                 markAsRecovering("from store", recoveryState); // mark the shard as recovering on the cluster state thread
                 threadPool.generic().execute(() -> {
                     try {

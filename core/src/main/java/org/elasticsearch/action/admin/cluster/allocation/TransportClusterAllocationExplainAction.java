@@ -59,6 +59,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.elasticsearch.cluster.routing.RecoverySource.EXISTING_STORE;
+import static org.elasticsearch.cluster.routing.RecoverySource.SNAPSHOT;
 import static org.elasticsearch.cluster.routing.UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING;
 
 /**
@@ -168,31 +170,33 @@ public class TransportClusterAllocationExplainAction
         if (node.getId().equals(assignedNodeId)) {
             finalDecision = ClusterAllocationExplanation.FinalDecision.ALREADY_ASSIGNED;
             finalExplanation = "the shard is already assigned to this node";
-        } else if (hasPendingAsyncFetch &&
-                shard.primary() == false &&
-                shard.unassigned() &&
-                shard.allocatedPostIndexCreate(indexMetaData) &&
-                nodeDecision.type() != Decision.Type.YES) {
+        } else if (shard.unassigned() && shard.primary() == false &&
+                shard.unassignedInfo().getReason() != UnassignedInfo.Reason.INDEX_CREATED && nodeDecision.type() != Decision.Type.YES) {
             finalExplanation = "the shard cannot be assigned because allocation deciders return a " + nodeDecision.type().name() +
-                    " decision and the shard's state is still being fetched";
+                    " decision";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (hasPendingAsyncFetch &&
-                shard.unassigned() &&
-                shard.allocatedPostIndexCreate(indexMetaData)) {
+        } else if (shard.unassigned() && shard.primary() == false &&
+                shard.unassignedInfo().getReason() != UnassignedInfo.Reason.INDEX_CREATED && hasPendingAsyncFetch) {
             finalExplanation = "the shard's state is still being fetched so it cannot be allocated";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.allocatedPostIndexCreate(indexMetaData) &&
+        } else if (shard.primary() && shard.unassigned() &&
+                (shard.recoverySource() == EXISTING_STORE || shard.recoverySource() == SNAPSHOT) && hasPendingAsyncFetch) {
+            finalExplanation = "the shard's state is still being fetched so it cannot be allocated";
+            finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.STALE) {
             finalExplanation = "the copy of the shard is stale, allocation ids do not match";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.allocatedPostIndexCreate(indexMetaData) &&
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.NONE) {
             finalExplanation = "there is no copy of the shard available";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && storeCopy == ClusterAllocationExplanation.StoreCopy.CORRUPT) {
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+                storeCopy == ClusterAllocationExplanation.StoreCopy.CORRUPT) {
             finalExplanation = "the copy of the shard is corrupt";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && storeCopy == ClusterAllocationExplanation.StoreCopy.IO_ERROR) {
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+                storeCopy == ClusterAllocationExplanation.StoreCopy.IO_ERROR) {
             finalExplanation = "the copy of the shard cannot be read";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
         } else {

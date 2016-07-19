@@ -259,9 +259,9 @@ public class AllocationService extends AbstractComponent {
                     metaData.getIndexSafe(shardRouting.index()).getSettings());
                 if (newComputedLeftDelayNanos == 0) {
                     changed = true;
-                    unassignedIterator.updateUnassignedInfo(new UnassignedInfo(unassignedInfo.getReason(), unassignedInfo.getMessage(), unassignedInfo.getFailure(),
+                    unassignedIterator.updateUnassigned(new UnassignedInfo(unassignedInfo.getReason(), unassignedInfo.getMessage(), unassignedInfo.getFailure(),
                         unassignedInfo.getNumFailedAllocations(), unassignedInfo.getUnassignedTimeInNanos(), unassignedInfo.getUnassignedTimeInMillis(), false,
-                        unassignedInfo.getLastAllocationStatus()));
+                        unassignedInfo.getLastAllocationStatus()), shardRouting.recoverySource());
                 }
             }
         }

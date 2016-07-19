@@ -21,6 +21,8 @@ package org.elasticsearch.indices.recovery;
 
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.RestoreSource;
+import org.elasticsearch.cluster.routing.RecoverySource;
+import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -38,6 +40,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+
+import static org.elasticsearch.cluster.routing.RecoverySource.PRIMARY;
 
 /**
  * Keeps track of state related to shard recovery.
@@ -96,40 +100,6 @@ public class RecoveryState implements ToXContent, Streamable {
         }
     }
 
-    public enum Type {
-        STORE((byte) 0),
-        SNAPSHOT((byte) 1),
-        REPLICA((byte) 2),
-        PRIMARY_RELOCATION((byte) 3),
-        LOCAL_SHARDS((byte) 4);
-
-        private static final Type[] TYPES = new Type[Type.values().length];
-
-        static {
-            for (Type type : Type.values()) {
-                assert type.id() < TYPES.length && type.id() >= 0;
-                TYPES[type.id] = type;
-            }
-        }
-
-        private final byte id;
-
-        Type(byte id) {
-            this.id = id;
-        }
-
-        public byte id() {
-            return id;
-        }
-
-        public static Type fromId(byte id) {
-            if (id < 0 || id >= TYPES.length) {
-                throw new IllegalArgumentException("No mapping for id [" + id + "]");
-            }
-            return TYPES[id];
-        }
-    }
-
     private Stage stage;
 
     private final Index index = new Index();
@@ -137,7 +107,7 @@ public class RecoveryState implements ToXContent, Streamable {
     private final VerifyIndex verifyIndex = new VerifyIndex();
     private final Timer timer = new Timer();
 
-    private Type type;
+    private RecoverySource type;
     private ShardId shardId;
     private RestoreSource restoreSource;
     private DiscoveryNode sourceNode;
@@ -147,15 +117,15 @@ public class RecoveryState implements ToXContent, Streamable {
     private RecoveryState() {
     }
 
-    public RecoveryState(ShardId shardId, boolean primary, Type type, DiscoveryNode sourceNode, DiscoveryNode targetNode) {
+    public RecoveryState(ShardId shardId, boolean primary, RecoverySource type, DiscoveryNode sourceNode, DiscoveryNode targetNode) {
         this(shardId, primary, type, sourceNode, null, targetNode);
     }
 
-    public RecoveryState(ShardId shardId, boolean primary, Type type, RestoreSource restoreSource, DiscoveryNode targetNode) {
+    public RecoveryState(ShardId shardId, boolean primary, RecoverySource type, RestoreSource restoreSource, DiscoveryNode targetNode) {
         this(shardId, primary, type, null, restoreSource, targetNode);
     }
 
-    private RecoveryState(ShardId shardId, boolean primary, Type type, @Nullable DiscoveryNode sourceNode, @Nullable RestoreSource restoreSource, DiscoveryNode targetNode) {
+    private RecoveryState(ShardId shardId, boolean primary, RecoverySource type, @Nullable DiscoveryNode sourceNode, @Nullable RestoreSource restoreSource, DiscoveryNode targetNode) {
         this.shardId = shardId;
         this.primary = primary;
         this.type = type;
@@ -164,6 +134,23 @@ public class RecoveryState implements ToXContent, Streamable {
         this.targetNode = targetNode;
         stage = Stage.INIT;
         timer.start();
+    }
+
+    public static RecoveryState newInstance(DiscoveryNode localNode, @Nullable DiscoveryNode sourceNode, ShardRouting shardRouting) {
+        assert shardRouting.initializing() : "only allow initializing shard routing to be recovered: " + shardRouting;
+        if (shardRouting.recoverySource() == RecoverySource.PRIMARY) {
+            assert sourceNode != null : "peer recovery started but sourceNode is null for " + shardRouting;
+            return new RecoveryState(shardRouting.shardId(), shardRouting.primary(), shardRouting.recoverySource(), sourceNode, localNode);
+        } else if (shardRouting.recoverySource() == RecoverySource.EXISTING_STORE ||
+            shardRouting.recoverySource() == RecoverySource.NEW_STORE ||
+            shardRouting.recoverySource() == RecoverySource.LOCAL_SHARDS) {
+            return new RecoveryState(shardRouting.shardId(), shardRouting.primary(), shardRouting.recoverySource(), localNode, localNode);
+        } else {
+            assert shardRouting.recoverySource() == RecoverySource.SNAPSHOT;
+            // recover from a snapshot
+            return new RecoveryState(shardRouting.shardId(), shardRouting.primary(), shardRouting.recoverySource(),
+                shardRouting.restoreSource(), localNode);
+        }
     }
 
     public ShardId getShardId() {
@@ -237,7 +224,7 @@ public class RecoveryState implements ToXContent, Streamable {
         return timer;
     }
 
-    public Type getType() {
+    public RecoverySource getType() {
         return type;
     }
 
@@ -266,7 +253,7 @@ public class RecoveryState implements ToXContent, Streamable {
     @Override
     public synchronized void readFrom(StreamInput in) throws IOException {
         timer.readFrom(in);
-        type = Type.fromId(in.readByte());
+        type = RecoverySource.fromId(in.readByte());
         stage = Stage.fromId(in.readByte());
         shardId = ShardId.readShardId(in);
         restoreSource = RestoreSource.readOptionalRestoreSource(in);

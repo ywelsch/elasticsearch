@@ -21,6 +21,7 @@ package org.elasticsearch.indices;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingHelper;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
@@ -105,7 +106,8 @@ public class IndicesLifecycleListenerSingleNodeTests extends ESSingleNodeTestCas
             shard.updateRoutingEntry(newRouting);
             final DiscoveryNode localNode = new DiscoveryNode("foo", LocalTransportAddress.buildUnique(),
                     emptyMap(), emptySet(), Version.CURRENT);
-            shard.markAsRecovering("store", new RecoveryState(shard.shardId(), newRouting.primary(), RecoveryState.Type.SNAPSHOT, newRouting.restoreSource(), localNode));
+            shard.markAsRecovering("store", new RecoveryState(shard.shardId(), newRouting.primary(), RecoverySource.NEW_STORE,
+                newRouting.restoreSource(), localNode));
             shard.recoverFromStore();
             newRouting = ShardRoutingHelper.moveToStarted(newRouting);
             shard.updateRoutingEntry(newRouting);

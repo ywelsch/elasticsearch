@@ -538,7 +538,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         if (candidate.relocating()) {
             cancelRelocation(candidate);
         }
-        ShardRouting reinitializedShard = candidate.reinitializeShard();
+        ShardRouting reinitializedShard = candidate.reinitializePrimaryShard();
         updateAssigned(candidate, reinitializedShard);
         inactivePrimaryCount++;
         inactiveShardCount++;
@@ -657,7 +657,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                                                                 currInfo.getNumFailedAllocations(), currInfo.getUnassignedTimeInNanos(),
                                                                 currInfo.getUnassignedTimeInMillis(), currInfo.isDelayed(),
                                                                 allocationStatus);
-                    shard = shard.updateUnassignedInfo(newInfo);
+                    shard = shard.updateUnassigned(newInfo, shard.recoverySource());
                     changed = true;
                 }
             }
@@ -714,13 +714,14 @@ public class RoutingNodes implements Iterable<RoutingNode> {
             }
 
             /**
-             * updates the unassigned info on the current unassigned shard
+             * updates the unassigned info and recovery source on the current unassigned shard
              *
              * @param  unassignedInfo the new unassigned info to use
+             * @param  recoverySource the new recovery source to use
              * @return the shard with unassigned info updated
              */
-            public ShardRouting updateUnassignedInfo(UnassignedInfo unassignedInfo) {
-                ShardRouting updatedShardRouting = current.updateUnassignedInfo(unassignedInfo);
+            public ShardRouting updateUnassigned(UnassignedInfo unassignedInfo, RecoverySource recoverySource) {
+                ShardRouting updatedShardRouting = current.updateUnassigned(unassignedInfo, recoverySource);
                 updateShardRouting(updatedShardRouting);
                 return updatedShardRouting;
             }

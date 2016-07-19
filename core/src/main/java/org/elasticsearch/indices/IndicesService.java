@@ -36,6 +36,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
@@ -448,7 +449,7 @@ public class IndicesService extends AbstractLifecycleComponent
         indexShard.addShardFailureCallback(onShardFailure);
         indexShard.startRecovery(recoveryState, recoveryTargetService, recoveryListener, repositoriesService,
             (type, mapping) -> {
-                assert recoveryState.getType() == RecoveryState.Type.LOCAL_SHARDS :
+                assert recoveryState.getType() == RecoverySource.LOCAL_SHARDS :
                     "mapping update consumer only required by local shards recovery";
                 try {
                     nodeServicesProvider.getClient().admin().indices().preparePutMapping()

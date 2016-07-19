@@ -21,6 +21,7 @@ package org.elasticsearch.rest.action.cat;
 
 import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.action.admin.indices.recovery.RecoveryResponse;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.snapshots.SnapshotId;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -66,7 +67,7 @@ public class RestRecoveryActionTests extends ESTestCase {
             final RecoveryState.Timer timer = mock(RecoveryState.Timer.class);
             when(timer.time()).thenReturn((long)randomIntBetween(1000000, 10 * 1000000));
             when(state.getTimer()).thenReturn(timer);
-            when(state.getType()).thenReturn(randomFrom(RecoveryState.Type.values()));
+            when(state.getType()).thenReturn(randomFrom(RecoverySource.values()));
             when(state.getStage()).thenReturn(randomFrom(RecoveryState.Stage.values()));
             final DiscoveryNode sourceNode = randomBoolean() ? mock(DiscoveryNode.class) : null;
             if (sourceNode != null) {

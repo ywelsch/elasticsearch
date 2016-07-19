@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.DiskUsage;
 import org.elasticsearch.cluster.EmptyClusterInfoService;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
@@ -347,8 +348,8 @@ public class DiskThresholdDecider extends AllocationDecider {
         }
 
         // a flag for whether the primary shard has been previously allocated
-        IndexMetaData indexMetaData = allocation.metaData().getIndexSafe(shardRouting.index());
-        boolean primaryHasBeenAllocated = shardRouting.primary() && shardRouting.allocatedPostIndexCreate(indexMetaData);
+        boolean primaryHasBeenAllocated = shardRouting.primary() &&
+            (shardRouting.active() || shardRouting.recoverySource().initialRecovery() == false);
 
         // checks for exact byte comparisons
         if (freeBytes < freeBytesThresholdLow.bytes()) {
@@ -650,12 +651,13 @@ public class DiskThresholdDecider extends AllocationDecider {
     public static final long getExpectedShardSize(ShardRouting shard, RoutingAllocation allocation, long defaultValue) {
         final IndexMetaData metaData = allocation.metaData().getIndexSafe(shard.index());
         final ClusterInfo info = allocation.clusterInfo();
-        if (metaData.getMergeSourceIndex() != null && shard.allocatedPostIndexCreate(metaData) == false) {
+        if (metaData.getMergeSourceIndex() != null && shard.active() == false &&
+            shard.recoverySource() == RecoverySource.LOCAL_SHARDS) {
             // in the shrink index case we sum up the source index shards since we basically make a copy of the shard in
             // the worst case
             long targetShardSize = 0;
             final Index mergeSourceIndex = metaData.getMergeSourceIndex();
-            final IndexMetaData sourceIndexMeta = allocation.metaData().getIndexSafe(metaData.getMergeSourceIndex());
+            final IndexMetaData sourceIndexMeta = allocation.metaData().getIndexSafe(mergeSourceIndex);
             final Set<ShardId> shardIds = IndexMetaData.selectShrinkShards(shard.id(), sourceIndexMeta, metaData.getNumberOfShards());
             for (IndexShardRoutingTable shardRoutingTable : allocation.routingTable().index(mergeSourceIndex.getName())) {
                 if (shardIds.contains(shardRoutingTable.shardId())) {

@@ -46,7 +46,8 @@ public class StartRecoveryRequestTests extends ESTestCase {
                 new DiscoveryNode("a", new LocalTransportAddress("1"), emptyMap(), emptySet(), targetNodeVersion),
                 new DiscoveryNode("b", new LocalTransportAddress("1"), emptyMap(), emptySet(), targetNodeVersion),
                 Store.MetadataSnapshot.EMPTY,
-                RecoveryState.Type.PRIMARY_RELOCATION,
+                org.elasticsearch.cluster.routing.RecoverySource.PRIMARY,
+                true,
                 1L
         );
         ByteArrayOutputStream outBuffer = new ByteArrayOutputStream();

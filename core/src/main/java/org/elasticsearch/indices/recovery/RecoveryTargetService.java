@@ -133,8 +133,7 @@ public class RecoveryTargetService extends AbstractComponent implements IndexEve
         return onGoingRecoveries.cancelRecoveriesForShard(shardId, reason);
     }
 
-    public void startRecovery(final IndexShard indexShard, final RecoveryState.Type recoveryType, final DiscoveryNode sourceNode, final
-    RecoveryListener listener) {
+    public void startRecovery(final IndexShard indexShard, final DiscoveryNode sourceNode, final RecoveryListener listener) {
         // create a new recovery status, and process...
         final long recoveryId = onGoingRecoveries.startRecovery(indexShard, sourceNode, listener, recoverySettings.activityTimeout());
         threadPool.generic().execute(new RecoveryRunner(recoveryId));
@@ -180,7 +179,7 @@ public class RecoveryTargetService extends AbstractComponent implements IndexEve
         }
         final StartRecoveryRequest request = new StartRecoveryRequest(recoveryTarget.shardId(), recoveryTarget.sourceNode(),
                 clusterService.localNode(),
-                metadataSnapshot, recoveryTarget.state().getType(), recoveryTarget.recoveryId());
+                metadataSnapshot, recoveryTarget.state().getType(), recoveryTarget.state().getPrimary(), recoveryTarget.recoveryId());
 
         final AtomicReference<RecoveryResponse> responseHolder = new AtomicReference<>();
         try {

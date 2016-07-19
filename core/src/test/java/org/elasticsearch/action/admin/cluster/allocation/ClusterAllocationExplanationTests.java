@@ -25,6 +25,7 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.indices.shards.IndicesShardStoresResponse;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.routing.allocation.decider.Decision;
@@ -56,7 +57,7 @@ public final class ClusterAllocationExplanationTests extends ESTestCase {
 
     private Index i = new Index("foo", "uuid");
     private ShardRouting primaryShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, true,
-            new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "foo"));
+            new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "foo"), RecoverySource.NEW_STORE);
     private IndexMetaData indexMetaData = IndexMetaData.builder("foo")
             .settings(Settings.builder()
                     .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
@@ -88,15 +89,13 @@ public final class ClusterAllocationExplanationTests extends ESTestCase {
         Set<String> activeAllocationIds = new HashSet<>();
         activeAllocationIds.add("eggplant");
         ShardRouting primaryStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, true,
-                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"));
-        assertTrue(primaryStartedShard.allocatedPostIndexCreate(indexMetaData));
+                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"), RecoverySource.EXISTING_STORE);
         ShardRouting replicaStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, false,
-                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"));
-        assertTrue(replicaStartedShard.allocatedPostIndexCreate(indexMetaData));
+                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"), RecoverySource.PRIMARY);
 
         IndicesShardStoresResponse.StoreStatus storeStatus = new IndicesShardStoresResponse.StoreStatus(node, 42, "eggplant",
                 IndicesShardStoresResponse.StoreStatus.AllocationStatus.PRIMARY, e);
-        NodeExplanation ne = TransportClusterAllocationExplainAction.calculateNodeExplanation(primaryShard, indexMetaData, node,
+        NodeExplanation ne = TransportClusterAllocationExplainAction.calculateNodeExplanation(primaryStartedShard, indexMetaData, node,
                 yesDecision, nodeWeight, storeStatus, "", activeAllocationIds, false);
         assertExplanations(ne, "the copy of the shard cannot be read",
                 ClusterAllocationExplanation.FinalDecision.NO, ClusterAllocationExplanation.StoreCopy.IO_ERROR);
@@ -125,8 +124,8 @@ public final class ClusterAllocationExplanationTests extends ESTestCase {
 
         storeStatus = new IndicesShardStoresResponse.StoreStatus(node, 42, "eggplant",
                 IndicesShardStoresResponse.StoreStatus.AllocationStatus.PRIMARY, corruptE);
-        ne = TransportClusterAllocationExplainAction.calculateNodeExplanation(primaryShard, indexMetaData, node, yesDecision, nodeWeight,
-                storeStatus, "", activeAllocationIds, false);
+        ne = TransportClusterAllocationExplainAction.calculateNodeExplanation(primaryStartedShard, indexMetaData, node, yesDecision,
+                nodeWeight, storeStatus, "", activeAllocationIds, false);
         assertExplanations(ne, "the copy of the shard is corrupt",
                 ClusterAllocationExplanation.FinalDecision.NO, ClusterAllocationExplanation.StoreCopy.CORRUPT);
 
@@ -169,8 +168,7 @@ public final class ClusterAllocationExplanationTests extends ESTestCase {
                 IndicesShardStoresResponse.StoreStatus.AllocationStatus.REPLICA, null);
         ne = TransportClusterAllocationExplainAction.calculateNodeExplanation(replicaStartedShard, indexMetaData, node, noDecision,
                 nodeWeight, storeStatus, "", activeAllocationIds, true);
-        assertExplanations(ne, "the shard cannot be assigned because allocation deciders return a NO " +
-                        "decision and the shard's state is still being fetched",
+        assertExplanations(ne, "the shard cannot be assigned because allocation deciders return a NO decision",
                 ClusterAllocationExplanation.FinalDecision.NO, ClusterAllocationExplanation.StoreCopy.AVAILABLE);
     }
 

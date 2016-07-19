@@ -33,6 +33,7 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.cluster.routing.RestoreSource;
 import org.elasticsearch.cluster.routing.ShardRouting;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -94,7 +95,7 @@ final class StoreRecovery {
 
     boolean recoverFromLocalShards(BiConsumer<String, MappingMetaData> mappingUpdateConsumer, final IndexShard indexShard, final List<LocalShardSnapshot> shards) throws IOException {
         if (canRecover(indexShard)) {
-            assert indexShard.recoveryState().getType() == RecoveryState.Type.LOCAL_SHARDS : "invalid recovery type: " + indexShard.recoveryState().getType();
+            assert indexShard.recoveryState().getType() == RecoverySource.LOCAL_SHARDS : "invalid recovery type: " + indexShard.recoveryState().getType();
             if (indexShard.routingEntry().restoreSource() != null) {
                 throw new IllegalStateException("can't recover - restore source is not null");
             }
@@ -348,13 +349,13 @@ final class StoreRecovery {
             // since we recover from local, just fill the files and size
             try {
                 final RecoveryState.Index index = recoveryState.getIndex();
-                if (si != null && recoveryState.getType() == RecoveryState.Type.STORE) {
+                if (si != null && (recoveryState.getType() == RecoverySource.EXISTING_STORE || recoveryState.getType() == RecoverySource.NEW_STORE)) {
                     addRecoveredFileDetails(si, store, index);
                 }
             } catch (IOException e) {
                 logger.debug("failed to list file details", e);
             }
-            if (recoveryState.getType() == RecoveryState.Type.LOCAL_SHARDS) {
+            if (recoveryState.getType() == RecoverySource.LOCAL_SHARDS) {
                 assert indexShouldExists;
                 indexShard.skipTranslogRecovery();
             } else {

@@ -44,18 +44,18 @@ public class ShardRoutingHelper {
         return routing.initialize(nodeId, null, expectedSize);
     }
 
-    public static ShardRouting reinit(ShardRouting routing) {
-        return routing.reinitializeShard();
+    public static ShardRouting reinitPrimary(ShardRouting routing) {
+        return routing.reinitializePrimaryShard();
     }
 
-    public static ShardRouting reinit(ShardRouting routing, UnassignedInfo.Reason reason) {
-        return routing.reinitializeShard().updateUnassignedInfo(new UnassignedInfo(reason, "test_reinit"));
+    public static ShardRouting reinitPrimary(ShardRouting routing, UnassignedInfo.Reason reason, RecoverySource recoverySource) {
+        return routing.reinitializePrimaryShard().updateUnassigned(new UnassignedInfo(reason, "test_reinit"), recoverySource);
     }
 
-    public static ShardRouting initWithSameId(ShardRouting copy) {
+    public static ShardRouting initWithSameId(ShardRouting copy, RecoverySource recoverySource) {
         return new ShardRouting(copy.shardId(), copy.currentNodeId(), copy.relocatingNodeId(), copy.restoreSource(),
             copy.primary(), ShardRoutingState.INITIALIZING, new UnassignedInfo(UnassignedInfo.Reason.REINITIALIZED, null),
-            copy.allocationId(), copy.getExpectedShardSize());
+            copy.allocationId(), copy.getExpectedShardSize(), recoverySource);
     }
 
     public static ShardRouting moveToUnassigned(ShardRouting routing, UnassignedInfo info) {
@@ -64,6 +64,7 @@ public class ShardRoutingHelper {
 
     public static ShardRouting newWithRestoreSource(ShardRouting routing, RestoreSource restoreSource) {
         return new ShardRouting(routing.shardId(), routing.currentNodeId(), routing.relocatingNodeId(), restoreSource,
-            routing.primary(), routing.state(), routing.unassignedInfo(), routing.allocationId(), routing.getExpectedShardSize());
+            routing.primary(), routing.state(), routing.unassignedInfo(), routing.allocationId(), routing.getExpectedShardSize(),
+            routing.recoverySource());
     }
 }

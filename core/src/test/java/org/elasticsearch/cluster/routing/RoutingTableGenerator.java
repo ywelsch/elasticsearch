@@ -62,11 +62,11 @@ public class RoutingTableGenerator {
         final String index = indexMetaData.getIndex().getName();
         IndexShardRoutingTable.Builder builder = new IndexShardRoutingTable.Builder(new ShardId(index, "_na_", shardId));
         ShardRouting shardRouting = genShardRouting(index, shardId, true);
-        counter.update(shardRouting, indexMetaData);
+        counter.update(shardRouting);
         builder.addShard(shardRouting);
         for (int replicas = indexMetaData.getNumberOfReplicas(); replicas > 0; replicas--) {
             shardRouting = genShardRouting(index, shardId, false);
-            counter.update(shardRouting, indexMetaData);
+            counter.update(shardRouting);
             builder.addShard(shardRouting);
         }
 
@@ -104,7 +104,7 @@ public class RoutingTableGenerator {
             return ClusterHealthStatus.GREEN;
         }
 
-        public void update(ShardRouting shardRouting, IndexMetaData indexMetaData) {
+        public void update(ShardRouting shardRouting) {
             if (shardRouting.active()) {
                 active++;
                 if (shardRouting.primary()) {
@@ -119,7 +119,7 @@ public class RoutingTableGenerator {
             if (shardRouting.primary()) {
                 primaryInactive++;
                 if (inactivePrimaryCausesRed == false) {
-                    inactivePrimaryCausesRed = getInactivePrimaryHealth(shardRouting, indexMetaData) == ClusterHealthStatus.RED;
+                    inactivePrimaryCausesRed = getInactivePrimaryHealth(shardRouting) == ClusterHealthStatus.RED;
                 }
             }
             if (shardRouting.initializing()) {

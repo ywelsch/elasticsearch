@@ -61,7 +61,6 @@ public abstract class ReplicaShardAllocator extends AbstractComponent {
      */
     public boolean processExistingRecoveries(RoutingAllocation allocation) {
         boolean changed = false;
-        MetaData metaData = allocation.metaData();
         RoutingNodes routingNodes = allocation.routingNodes();
         List<Tuple<ShardRouting, UnassignedInfo>> recoveriesToCancel = new ArrayList<>();
         for (RoutingNode routingNode : routingNodes) {
@@ -77,8 +76,7 @@ public abstract class ReplicaShardAllocator extends AbstractComponent {
                 }
 
                 // if we are allocating a replica because of index creation, no need to go and find a copy, there isn't one...
-                IndexMetaData indexMetaData = metaData.getIndexSafe(shard.index());
-                if (shard.allocatedPostIndexCreate(indexMetaData) == false) {
+                if (shard.unassignedInfo() != null && shard.unassignedInfo().getReason() == UnassignedInfo.Reason.INDEX_CREATED) {
                     continue;
                 }
 
@@ -136,7 +134,6 @@ public abstract class ReplicaShardAllocator extends AbstractComponent {
         boolean changed = false;
         final RoutingNodes routingNodes = allocation.routingNodes();
         final RoutingNodes.UnassignedShards.UnassignedIterator unassignedIterator = routingNodes.unassigned().iterator();
-        MetaData metaData = allocation.metaData();
         while (unassignedIterator.hasNext()) {
             ShardRouting shard = unassignedIterator.next();
             if (shard.primary()) {
@@ -144,8 +141,7 @@ public abstract class ReplicaShardAllocator extends AbstractComponent {
             }
 
             // if we are allocating a replica because of index creation, no need to go and find a copy, there isn't one...
-            IndexMetaData indexMetaData = metaData.getIndexSafe(shard.index());
-            if (shard.allocatedPostIndexCreate(indexMetaData) == false) {
+            if (shard.unassignedInfo().getReason() == UnassignedInfo.Reason.INDEX_CREATED) {
                 continue;
             }
 
