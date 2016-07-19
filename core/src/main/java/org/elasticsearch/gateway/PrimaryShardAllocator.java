@@ -24,15 +24,14 @@ import org.elasticsearch.Version;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
 import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.routing.UnassignedInfo.AllocationStatus;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
 import org.elasticsearch.cluster.routing.allocation.decider.Decision;
 import org.elasticsearch.common.component.AbstractComponent;
-import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
@@ -105,11 +104,8 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
                 continue;
             }
 
-            final IndexMetaData indexMetaData = metaData.getIndexSafe(shard.index());
-            // don't go wild here and create a new IndexSetting object for every shard this could cause a lot of garbage
-            // on cluster restart if we allocate a boat load of shards
-            if (shard.allocatedPostIndexCreate(indexMetaData) == false) {
-                // when we create a fresh index
+            if (shard.recoverySource().getType() != RecoverySource.Type.EXISTING_STORE &&
+                shard.recoverySource().getType() != RecoverySource.Type.SNAPSHOT) {
                 continue;
             }
 
@@ -121,8 +117,11 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
                 continue;
             }
 
+            // don't create a new IndexSetting object for every shard as this could cause a lot of garbage
+            // on cluster restart if we allocate a boat load of shards
+            final IndexMetaData indexMetaData = metaData.getIndexSafe(shard.index());
             final Set<String> lastActiveAllocationIds = indexMetaData.activeAllocationIds(shard.id());
-            final boolean snapshotRestore = shard.restoreSource() != null;
+            final boolean snapshotRestore = shard.recoverySource().getType() == RecoverySource.Type.SNAPSHOT;
             final boolean recoverOnAnyNode = recoverOnAnyNode(indexMetaData);
 
             final NodeShardsResult nodeShardsResult;
@@ -152,7 +151,7 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
             if (enoughAllocationsFound == false){
                 if (snapshotRestore) {
                     // let BalancedShardsAllocator take care of allocating this shard
-                    logger.debug("[{}][{}]: missing local data, will restore from [{}]", shard.index(), shard.id(), shard.restoreSource());
+                    logger.debug("[{}][{}]: missing local data, will restore from [{}]", shard.index(), shard.id(), shard.recoverySource());
                 } else if (recoverOnAnyNode) {
                     // let BalancedShardsAllocator take care of allocating this shard
                     logger.debug("[{}][{}]: missing local data, recover from any node", shard.index(), shard.id());
