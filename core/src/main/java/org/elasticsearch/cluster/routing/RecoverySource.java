@@ -19,55 +19,345 @@
 
 package org.elasticsearch.cluster.routing;
 
-public enum RecoverySource {
+import org.elasticsearch.Version;
+import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.snapshots.Snapshot;
+
+import java.io.IOException;
+import java.util.Objects;
+
+public abstract class RecoverySource implements Writeable, ToXContent {
+
+    private final Type type;
+
+    protected RecoverySource(Type type) {
+        this.type = type;
+    }
+
+    @Override
+    public final XContentBuilder toXContent(XContentBuilder builder, ToXContent.Params params) throws IOException {
+        builder.startObject();
+        builder.field("type", type);
+        addAdditionalFields(builder, params);
+        return builder.endObject();
+    }
+
+    public abstract void addAdditionalFields(XContentBuilder builder, ToXContent.Params params) throws IOException;
+
+    public static RecoverySource readFrom(StreamInput in) throws IOException {
+        Type type = Type.fromId(in.readByte());
+        switch (type) {
+            case STORE: return new StoreRecoverySource(in);
+            case PEER: return PeerRecoverySource.INSTANCE;
+            case SNAPSHOT: return new SnapshotRecoverySource(in);
+            case LOCAL_SHARDS: return LocalShardsRecoverySource.INSTANCE;
+            default: throw new IllegalArgumentException("unknown recovery type: " + type.id());
+        }
+    }
+
+    @Override
+    public final void writeTo(StreamOutput out) throws IOException {
+        out.writeByte(type.id());
+        writeAdditionalFields(out);
+    }
+
+    protected abstract void writeAdditionalFields(StreamOutput out) throws IOException;
+
+    public enum Type {
+        STORE((byte) 0),
+        PEER((byte) 1),
+        SNAPSHOT((byte) 2),
+        LOCAL_SHARDS((byte) 3);
+
+        private final byte id;
+
+        Type(byte id) {
+            this.id = id;
+        }
+
+        public byte id() {
+            return this.id;
+        }
+
+        public static Type fromId(byte id) {
+            switch (id) {
+                case 0:
+                    return STORE;
+                case 1:
+                    return PEER;
+                case 2:
+                    return SNAPSHOT;
+                case 3:
+                    return LOCAL_SHARDS;
+                default:
+                    throw new IllegalArgumentException("No mapping for id [" + id + "]");
+            }
+        }
+    }
+
+    public Type getType() {
+        return type;
+    }
+
+    public boolean isStoreRecoverySource() {
+        return false;
+    }
+
+    public final boolean isExistingStoreRecoverySource() {
+        return isStoreRecoverySource() && asStoreRecoverySource().isFreshCopy() == false;
+    }
+
+    public final boolean isFreshStoreRecoverySource() {
+        return isStoreRecoverySource() && asStoreRecoverySource().isFreshCopy();
+    }
+
+    public StoreRecoverySource asStoreRecoverySource() {
+        return (StoreRecoverySource) this;
+    }
+
+    public boolean isSnapshotRecoverySource() {
+        return false;
+    }
+
+    public SnapshotRecoverySource asSnapshotRecoverySource() {
+        return (SnapshotRecoverySource) this;
+    }
+
+    public boolean isPeerRecoverySource() {
+        return false;
+    }
+
+    public PeerRecoverySource asPeerRecoverySource() {
+        return (PeerRecoverySource) this;
+    }
+
+    public boolean isLocalShardsRecoverySource() {
+        return false;
+    }
+
+    public LocalShardsRecoverySource asLocalShardsRecoverySource() {
+        return (LocalShardsRecoverySource) this;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+
+        RecoverySource that = (RecoverySource) o;
+
+        return type == that.type;
+
+    }
+
+    @Override
+    public int hashCode() {
+        return type.hashCode();
+    }
+
     /**
-     * creates a new empty store
+     * recovery from an existing on-disk store or a fresh copy
      */
-    NEW_STORE((byte) 0),
-    /**
-     * recovery from an existing on-disk store
-     */
-    EXISTING_STORE((byte) 1),
-    /**
-     * peer recovery from a primary shard
-     */
-    PRIMARY((byte) 2),
-    /**
-     * recovery from a snapshot
-     */
-    SNAPSHOT((byte) 3),
+    public static class StoreRecoverySource extends RecoverySource {
+        public static final StoreRecoverySource FRESH_COPY_INSTANCE = new StoreRecoverySource(true);
+        public static final StoreRecoverySource EXISTING_COPY_INSTANCE = new StoreRecoverySource(false);
+
+        private final boolean freshCopy;
+
+        private StoreRecoverySource(boolean freshCopy) {
+            super(Type.STORE);
+            this.freshCopy = freshCopy;
+        }
+
+        StoreRecoverySource(StreamInput in) throws IOException {
+            super(Type.STORE);
+            freshCopy = in.readBoolean();
+        }
+
+        public boolean isFreshCopy() {
+            return freshCopy;
+        }
+
+        @Override
+        public void addAdditionalFields(XContentBuilder builder, ToXContent.Params params) throws IOException {
+            builder.field("fresh_copy", freshCopy);
+        }
+
+        @Override
+        protected void writeAdditionalFields(StreamOutput out) throws IOException {
+            out.writeBoolean(freshCopy);
+        }
+
+        @Override
+        public String toString() {
+            return freshCopy ? "empty store recovery" : "store recovery";
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            StoreRecoverySource that = (StoreRecoverySource) o;
+
+            return freshCopy == that.freshCopy;
+
+        }
+
+        @Override
+        public int hashCode() {
+            return (freshCopy ? 1 : 0);
+        }
+
+        @Override
+        public boolean isStoreRecoverySource() {
+            return true;
+        }
+    }
+
     /**
      * recovery from other shards on same node (shrink index action)
      */
-    LOCAL_SHARDS((byte) 4);
+    public static class LocalShardsRecoverySource extends RecoverySource {
 
-    private static final RecoverySource[] TYPES = new RecoverySource[RecoverySource.values().length];
+        public static final LocalShardsRecoverySource INSTANCE = new LocalShardsRecoverySource();
 
-    static {
-        for (RecoverySource type : RecoverySource.values()) {
-            assert type.id() < TYPES.length && type.id() >= 0;
-            TYPES[type.id] = type;
+        private LocalShardsRecoverySource() {
+            super(Type.LOCAL_SHARDS);
+        }
+
+        @Override
+        public void addAdditionalFields(XContentBuilder builder, ToXContent.Params params) throws IOException {
+
+        }
+
+        @Override
+        protected void writeAdditionalFields(StreamOutput out) throws IOException {
+
+        }
+
+        @Override
+        public String toString() {
+            return "local shards recovery";
+        }
+
+        @Override
+        public boolean isLocalShardsRecoverySource() {
+            return true;
         }
     }
 
-    private final byte id;
+    /**
+     * recovery from a snapshot
+     */
+    public static class SnapshotRecoverySource extends RecoverySource {
+        private final Snapshot snapshot;
+        private final String index;
+        private final Version version;
 
-    RecoverySource(byte id) {
-        this.id = id;
-    }
-
-    public byte id() {
-        return id;
-    }
-
-    public boolean initialRecovery() {
-        return this == NEW_STORE || this == SNAPSHOT || this == LOCAL_SHARDS;
-    }
-
-    public static RecoverySource fromId(byte id) {
-        if (id < 0 || id >= TYPES.length) {
-            throw new IllegalArgumentException("No mapping for id [" + id + "]");
+        public SnapshotRecoverySource(Snapshot snapshot, Version version, String index) {
+            super(Type.SNAPSHOT);
+            this.snapshot = Objects.requireNonNull(snapshot);
+            this.version = Objects.requireNonNull(version);
+            this.index = Objects.requireNonNull(index);
         }
-        return TYPES[id];
+
+        SnapshotRecoverySource(StreamInput in) throws IOException {
+            super(Type.SNAPSHOT);
+            snapshot = new Snapshot(in);
+            version = Version.readVersion(in);
+            index = in.readString();
+        }
+
+        public Snapshot snapshot() {
+            return snapshot;
+        }
+
+        public String index() {
+            return index;
+        }
+
+        public Version version() {
+            return version;
+        }
+
+        @Override
+        protected void writeAdditionalFields(StreamOutput out) throws IOException {
+            snapshot.writeTo(out);
+            Version.writeVersion(version, out);
+            out.writeString(index);
+        }
+
+        @Override
+        public void addAdditionalFields(XContentBuilder builder, ToXContent.Params params) throws IOException {
+            builder.field("repository", snapshot.getRepository())
+                .field("snapshot", snapshot.getSnapshotId().getName())
+                .field("version", version.toString())
+                .field("index", index);
+        }
+
+        @Override
+        public String toString() {
+            return "snapshot recovery from " + snapshot.toString();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+
+            @SuppressWarnings("unchecked") SnapshotRecoverySource that = (SnapshotRecoverySource) o;
+            return snapshot.equals(that.snapshot) && index.equals(that.index) && version.equals(that.version);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(snapshot, index, version);
+        }
+
+        @Override
+        public boolean isSnapshotRecoverySource() {
+            return true;
+        }
+    }
+
+    /**
+     * peer recovery from a primary shard
+     */
+    public static class PeerRecoverySource extends RecoverySource {
+
+        public static final PeerRecoverySource INSTANCE = new PeerRecoverySource();
+
+        private PeerRecoverySource() {
+            super(Type.PEER);
+        }
+
+        @Override
+        public void addAdditionalFields(XContentBuilder builder, ToXContent.Params params) throws IOException {
+
+        }
+
+        @Override
+        protected void writeAdditionalFields(StreamOutput out) throws IOException {
+
+        }
+
+        @Override
+        public String toString() {
+            return "peer recovery";
+        }
+
+        @Override
+        public boolean isPeerRecoverySource() {
+            return true;
+        }
     }
 }

@@ -115,7 +115,8 @@ public class EnableAllocationDecider extends AllocationDecider {
             case NONE:
                 return allocation.decision(Decision.NO, NAME, "no allocations are allowed");
             case NEW_PRIMARIES:
-                if (shardRouting.primary() && shardRouting.active() == false && shardRouting.recoverySource().initialRecovery()) {
+                if (shardRouting.primary() && shardRouting.active() == false &&
+                    shardRouting.recoverySource().isExistingStoreRecoverySource() == false) {
                     return allocation.decision(Decision.YES, NAME, "new primary allocations are allowed");
                 } else {
                     return allocation.decision(Decision.NO, NAME, "non-new primary allocations are forbidden");

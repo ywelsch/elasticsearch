@@ -1137,7 +1137,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
 
     public boolean recoverFromLocalShards(BiConsumer<String, MappingMetaData> mappingUpdateConsumer, List<IndexShard> localShards) throws IOException {
         assert shardRouting.primary() : "recover from local shards only makes sense if the shard is a primary shard";
-        assert shardRouting.recoverySource() == RecoverySource.LOCAL_SHARDS;
+        assert recoveryState.getRecoverySource().isLocalShardsRecoverySource() : "invalid recovery type: " + recoveryState.getRecoverySource();
         final List<LocalShardSnapshot> snapshots = new ArrayList<>();
         try {
             for (IndexShard shard : localShards) {
@@ -1159,16 +1159,16 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         // if its post api allocation, the index should exists
         assert shardRouting.primary() : "recover from store only makes sense if the shard is a primary shard";
         assert shardRouting.initializing() : "can only start recovery on initializing shard";
-        assert recoveryState.getType() == RecoverySource.NEW_STORE || recoveryState.getType() == RecoverySource.EXISTING_STORE;
-        boolean shouldExist = recoveryState.getType() == RecoverySource.EXISTING_STORE;
+        assert recoveryState.getRecoverySource().isStoreRecoverySource() : "invalid recovery type: " + recoveryState.getRecoverySource();
 
+        boolean shouldExist = recoveryState.getRecoverySource().isExistingStoreRecoverySource();
         StoreRecovery storeRecovery = new StoreRecovery(shardId, logger);
         return storeRecovery.recoverFromStore(this, shouldExist);
     }
 
     public boolean restoreFromRepository(Repository repository) {
         assert shardRouting.primary() : "recover from store only makes sense if the shard is a primary shard";
-        assert recoveryState.getType() == RecoverySource.SNAPSHOT;
+        assert recoveryState.getRecoverySource().isSnapshotRecoverySource() : "invalid recovery type: " + recoveryState.getRecoverySource();
         StoreRecovery storeRecovery = new StoreRecovery(shardId, logger);
         return storeRecovery.recoverFromRepository(this, repository);
     }
@@ -1388,85 +1388,80 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                               RecoveryTargetService.RecoveryListener recoveryListener, RepositoriesService repositoriesService,
                               BiConsumer<String, MappingMetaData> mappingUpdateConsumer,
                               IndicesService indicesService) {
-        switch (recoveryState.getType()) {
-            case PRIMARY:
+        RecoverySource recoverySource = recoveryState.getRecoverySource();
+        if (recoverySource.isPeerRecoverySource()) {
+            try {
+                markAsRecovering("from " + recoveryState.getSourceNode(), recoveryState);
+                recoveryTargetService.startRecovery(this, recoveryState.getSourceNode(), recoveryListener);
+            } catch (Exception e) {
+                failShard("corrupted preexisting index", e);
+                recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+            }
+        } else if (recoverySource.isStoreRecoverySource()) {
+            markAsRecovering("from store", recoveryState); // mark the shard as recovering on the cluster state thread
+            threadPool.generic().execute(() -> {
                 try {
-                    markAsRecovering("from " + recoveryState.getSourceNode(), recoveryState);
-                    recoveryTargetService.startRecovery(this, recoveryState.getSourceNode(), recoveryListener);
+                    if (recoverFromStore()) {
+                        recoveryListener.onRecoveryDone(recoveryState);
+                    }
                 } catch (Exception e) {
-                    failShard("corrupted preexisting index", e);
                     recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
                 }
-                break;
-            case NEW_STORE:
-            case EXISTING_STORE:
-                markAsRecovering("from store", recoveryState); // mark the shard as recovering on the cluster state thread
+            });
+        } else if (recoverySource.isLocalShardsRecoverySource()) {
+            final IndexMetaData indexMetaData = indexSettings().getIndexMetaData();
+            final Index mergeSourceIndex = indexMetaData.getMergeSourceIndex();
+            final List<IndexShard> startedShards = new ArrayList<>();
+            final IndexService sourceIndexService = indicesService.indexService(mergeSourceIndex);
+            final int numShards = sourceIndexService != null ? sourceIndexService.getIndexSettings().getNumberOfShards() : -1;
+            if (sourceIndexService != null) {
+                for (IndexShard shard : sourceIndexService) {
+                    if (shard.state() == IndexShardState.STARTED) {
+                        startedShards.add(shard);
+                    }
+                }
+            }
+            if (numShards == startedShards.size()) {
+                markAsRecovering("from local shards", recoveryState); // mark the shard as recovering on the cluster state thread
                 threadPool.generic().execute(() -> {
                     try {
-                        if (recoverFromStore()) {
+                        final Set<ShardId> shards = IndexMetaData.selectShrinkShards(shardId().id(), sourceIndexService.getMetaData(),
+                            +indexMetaData.getNumberOfShards());
+                        if (recoverFromLocalShards(mappingUpdateConsumer, startedShards.stream()
+                            .filter((s) -> shards.contains(s.shardId())).collect(Collectors.toList()))) {
                             recoveryListener.onRecoveryDone(recoveryState);
                         }
                     } catch (Exception e) {
-                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                        recoveryListener.onRecoveryFailure(recoveryState,
+                            new RecoveryFailedException(recoveryState, null, e), true);
                     }
                 });
-                break;
-            case LOCAL_SHARDS:
-                final IndexMetaData indexMetaData = indexSettings().getIndexMetaData();
-                final Index mergeSourceIndex = indexMetaData.getMergeSourceIndex();
-                final List<IndexShard> startedShards = new ArrayList<>();
-                final IndexService sourceIndexService = indicesService.indexService(mergeSourceIndex);
-                final int numShards = sourceIndexService != null ? sourceIndexService.getIndexSettings().getNumberOfShards() : -1;
-                if (sourceIndexService != null) {
-                    for (IndexShard shard : sourceIndexService) {
-                        if (shard.state() == IndexShardState.STARTED) {
-                            startedShards.add(shard);
-                        }
-                    }
-                }
-                if (numShards == startedShards.size()) {
-                    markAsRecovering("from local shards", recoveryState); // mark the shard as recovering on the cluster state thread
-                    threadPool.generic().execute(() -> {
-                        try {
-                            final Set<ShardId> shards = IndexMetaData.selectShrinkShards(shardId().id(), sourceIndexService.getMetaData(),
-                                +                                indexMetaData.getNumberOfShards());
-                            if (recoverFromLocalShards(mappingUpdateConsumer, startedShards.stream()
-                                .filter((s) -> shards.contains(s.shardId())).collect(Collectors.toList()))) {
-                                recoveryListener.onRecoveryDone(recoveryState);
-                            }
-                        } catch (Exception e) {
-                            recoveryListener.onRecoveryFailure(recoveryState,
-                                new RecoveryFailedException(recoveryState, null, e), true);
-                        }
-                    });
+            } else {
+                final Exception e;
+                if (numShards == -1) {
+                    e = new IndexNotFoundException(mergeSourceIndex);
                 } else {
-                    final Exception e;
-                    if (numShards == -1) {
-                        e = new IndexNotFoundException(mergeSourceIndex);
-                    } else {
-                        e = new IllegalStateException("not all shards from index " + mergeSourceIndex
-                            + " are started yet, expected " + numShards + " found " + startedShards.size() + " can't recover shard "
-                            + shardId());
-                    }
-                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                    e = new IllegalStateException("not all shards from index " + mergeSourceIndex
+                        + " are started yet, expected " + numShards + " found " + startedShards.size() + " can't recover shard "
+                        + shardId());
                 }
-                break;
-            case SNAPSHOT:
-                markAsRecovering("from snapshot", recoveryState); // mark the shard as recovering on the cluster state thread
-                threadPool.generic().execute(() -> {
-                    try {
-                        final Repository repository = repositoriesService.repository(
-                            recoveryState.getRestoreSource().snapshot().getRepository());
-                        if (restoreFromRepository(repository)) {
-                            recoveryListener.onRecoveryDone(recoveryState);
-                        }
-                    } catch (Exception first) {
-                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, first), true);
+                recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+            }
+        } else if (recoverySource.isSnapshotRecoverySource()) {
+            markAsRecovering("from snapshot", recoveryState); // mark the shard as recovering on the cluster state thread
+            threadPool.generic().execute(() -> {
+                try {
+                    final Repository repository = repositoriesService.repository(
+                        recoverySource.asSnapshotRecoverySource().snapshot().getRepository());
+                    if (restoreFromRepository(repository)) {
+                        recoveryListener.onRecoveryDone(recoveryState);
                     }
-                });
-                break;
-            default:
-                throw new IllegalArgumentException("Unknown recovery type " + recoveryState.getType());
+                } catch (Exception first) {
+                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, first), true);
+                }
+            });
+        } else {
+            throw new IllegalArgumentException("Unknown recovery source " + recoveryState.getRecoverySource());
         }
     }
 

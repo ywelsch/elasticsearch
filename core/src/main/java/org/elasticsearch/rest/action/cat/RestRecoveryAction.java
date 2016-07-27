@@ -148,14 +148,16 @@ public class RestRecoveryAction extends AbstractCatAction {
                 t.addCell(index);
                 t.addCell(state.getShardId().id());
                 t.addCell(new TimeValue(state.getTimer().time()));
-                t.addCell(state.getType().toString().toLowerCase(Locale.ROOT));
+                t.addCell(state.getRecoverySource().getType().toString().toLowerCase(Locale.ROOT));
                 t.addCell(state.getStage().toString().toLowerCase(Locale.ROOT));
                 t.addCell(state.getSourceNode() == null ? "n/a" : state.getSourceNode().getHostName());
                 t.addCell(state.getSourceNode() == null ? "n/a" : state.getSourceNode().getName());
                 t.addCell(state.getTargetNode().getHostName());
                 t.addCell(state.getTargetNode().getName());
-                t.addCell(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshot().getRepository());
-                t.addCell(state.getRestoreSource() == null ? "n/a" : state.getRestoreSource().snapshot().getSnapshotId().getName());
+                t.addCell(state.getRecoverySource() != null && state.getRecoverySource().isSnapshotRecoverySource() == false ? "n/a" :
+                    state.getRecoverySource().asSnapshotRecoverySource().snapshot().getRepository());
+                t.addCell(state.getRecoverySource() != null && state.getRecoverySource().isSnapshotRecoverySource() == false ? "n/a" :
+                    state.getRecoverySource().asSnapshotRecoverySource().snapshot().getSnapshotId().getName());
                 t.addCell(state.getIndex().totalRecoverFiles());
                 t.addCell(state.getIndex().recoveredFileCount());
                 t.addCell(String.format(Locale.ROOT, "%1.1f%%", state.getIndex().recoveredFilesPercent()));

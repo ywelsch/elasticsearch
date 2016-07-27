@@ -449,7 +449,7 @@ public class IndicesService extends AbstractLifecycleComponent
         indexShard.addShardFailureCallback(onShardFailure);
         indexShard.startRecovery(recoveryState, recoveryTargetService, recoveryListener, repositoriesService,
             (type, mapping) -> {
-                assert recoveryState.getType() == RecoverySource.LOCAL_SHARDS :
+                assert recoveryState.getRecoverySource().isLocalShardsRecoverySource() :
                     "mapping update consumer only required by local shards recovery";
                 try {
                     nodeServicesProvider.getClient().admin().indices().preparePutMapping()

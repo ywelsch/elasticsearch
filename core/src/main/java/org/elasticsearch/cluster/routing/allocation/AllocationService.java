@@ -379,7 +379,7 @@ public class AllocationService extends AbstractComponent {
                 ShardRouting candidate = allocation.routingNodes().activeReplica(shardEntry.shardId());
                 if (candidate != null) {
                     shardEntry = unassignedIterator.demotePrimaryToReplicaShard();
-                    ShardRouting primarySwappedCandidate = routingNodes.promoteAssignedReplicaShardToPrimary(candidate);
+                    ShardRouting primarySwappedCandidate = routingNodes.promoteActiveReplicaShardToPrimary(candidate);
                     if (primarySwappedCandidate.relocatingNodeId() != null) {
                         changed = true;
                         // its also relocating, make sure to move the other routing to primary
@@ -387,7 +387,7 @@ public class AllocationService extends AbstractComponent {
                         if (node != null) {
                             for (ShardRouting shardRouting : node) {
                                 if (shardRouting.shardId().equals(primarySwappedCandidate.shardId()) && !shardRouting.primary()) {
-                                    routingNodes.promoteAssignedReplicaShardToPrimary(shardRouting);
+                                    routingNodes.promoteActiveReplicaShardToPrimary(shardRouting);
                                     break;
                                 }
                             }

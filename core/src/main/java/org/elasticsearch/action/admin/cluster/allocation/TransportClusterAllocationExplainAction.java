@@ -59,8 +59,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.elasticsearch.cluster.routing.RecoverySource.EXISTING_STORE;
-import static org.elasticsearch.cluster.routing.RecoverySource.SNAPSHOT;
 import static org.elasticsearch.cluster.routing.UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING;
 
 /**
@@ -180,22 +178,23 @@ public class TransportClusterAllocationExplainAction
             finalExplanation = "the shard's state is still being fetched so it cannot be allocated";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
         } else if (shard.primary() && shard.unassigned() &&
-                (shard.recoverySource() == EXISTING_STORE || shard.recoverySource() == SNAPSHOT) && hasPendingAsyncFetch) {
+                (shard.recoverySource().isExistingStoreRecoverySource() || shard.recoverySource().isSnapshotRecoverySource())
+                && hasPendingAsyncFetch) {
             finalExplanation = "the shard's state is still being fetched so it cannot be allocated";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource().isExistingStoreRecoverySource() &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.STALE) {
             finalExplanation = "the copy of the shard is stale, allocation ids do not match";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource().isExistingStoreRecoverySource() &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.NONE) {
             finalExplanation = "there is no copy of the shard available";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource().isExistingStoreRecoverySource() &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.CORRUPT) {
             finalExplanation = "the copy of the shard is corrupt";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;
-        } else if (shard.primary() && shard.unassigned() && shard.recoverySource() == EXISTING_STORE &&
+        } else if (shard.primary() && shard.unassigned() && shard.recoverySource().isExistingStoreRecoverySource() &&
                 storeCopy == ClusterAllocationExplanation.StoreCopy.IO_ERROR) {
             finalExplanation = "the copy of the shard cannot be read";
             finalDecision = ClusterAllocationExplanation.FinalDecision.NO;

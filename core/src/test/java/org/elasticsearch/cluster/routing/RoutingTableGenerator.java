@@ -45,13 +45,13 @@ public class RoutingTableGenerator {
         switch (state) {
             case STARTED:
                 return TestShardRouting.newShardRouting(index, shardId, "node_" + Integer.toString(node_id++),
-                                                        null, null, primary, ShardRoutingState.STARTED);
+                                                        null, primary, ShardRoutingState.STARTED);
             case INITIALIZING:
                 return TestShardRouting.newShardRouting(index, shardId, "node_" + Integer.toString(node_id++),
-                                                        null, null, primary, ShardRoutingState.INITIALIZING);
+                                                        null, primary, ShardRoutingState.INITIALIZING);
             case RELOCATING:
                 return TestShardRouting.newShardRouting(index, shardId, "node_" + Integer.toString(node_id++),
-                                                        "node_" + Integer.toString(node_id++), null, primary, ShardRoutingState.RELOCATING);
+                                                        "node_" + Integer.toString(node_id++), primary, ShardRoutingState.RELOCATING);
             default:
                 throw new ElasticsearchException("Unknown state: " + state.name());
         }

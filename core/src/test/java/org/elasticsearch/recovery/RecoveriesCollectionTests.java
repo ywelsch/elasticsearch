@@ -157,8 +157,7 @@ public class RecoveriesCollectionTests extends ESIndexLevelReplicationTestCase {
     long startRecovery(RecoveriesCollection collection, DiscoveryNode sourceNode, IndexShard indexShard,
                        RecoveryTargetService.RecoveryListener listener, TimeValue timeValue) {
         final DiscoveryNode rNode = getDiscoveryNode(indexShard.routingEntry().currentNodeId());
-        indexShard.markAsRecovering("remote", new RecoveryState(indexShard.shardId(), false, RecoverySource.PRIMARY, sourceNode,
-            rNode));
+        indexShard.markAsRecovering("remote", new RecoveryState(indexShard.routingEntry(), sourceNode, rNode));
         indexShard.prepareForIndexRecovery();
         return collection.startRecovery(indexShard, sourceNode, listener, timeValue);
     }

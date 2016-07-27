@@ -46,8 +46,7 @@ public class StartRecoveryRequestTests extends ESTestCase {
                 new DiscoveryNode("a", new LocalTransportAddress("1"), emptyMap(), emptySet(), targetNodeVersion),
                 new DiscoveryNode("b", new LocalTransportAddress("1"), emptyMap(), emptySet(), targetNodeVersion),
                 Store.MetadataSnapshot.EMPTY,
-                org.elasticsearch.cluster.routing.RecoverySource.PRIMARY,
-                true,
+                randomBoolean(),
                 1L
         );
         ByteArrayOutputStream outBuffer = new ByteArrayOutputStream();
@@ -66,7 +65,7 @@ public class StartRecoveryRequestTests extends ESTestCase {
         assertThat(outRequest.targetNode(), equalTo(inRequest.targetNode()));
         assertThat(outRequest.metadataSnapshot().asMap(), equalTo(inRequest.metadataSnapshot().asMap()));
         assertThat(outRequest.recoveryId(), equalTo(inRequest.recoveryId()));
-        assertThat(outRequest.recoveryType(), equalTo(inRequest.recoveryType()));
+        assertThat(outRequest.isPrimaryRelocation(), equalTo(inRequest.isPrimaryRelocation()));
     }
 
 }

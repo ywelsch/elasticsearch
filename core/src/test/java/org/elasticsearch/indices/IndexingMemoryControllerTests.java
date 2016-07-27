@@ -449,7 +449,7 @@ public class IndexingMemoryControllerTests extends ESSingleNodeTestCase {
             assertEquals(0, imc.availableShards().size());
             ShardRouting routing = newShard.routingEntry();
             DiscoveryNode localNode = new DiscoveryNode("foo", LocalTransportAddress.buildUnique(), emptyMap(), emptySet(), Version.CURRENT);
-            newShard.markAsRecovering("store", new RecoveryState(newShard.shardId(), routing.primary(), RecoverySource.EXISTING_STORE, localNode, localNode));
+            newShard.markAsRecovering("store", new RecoveryState(routing, localNode, null));
 
             assertEquals(1, imc.availableShards().size());
             assertTrue(newShard.recoverFromStore());

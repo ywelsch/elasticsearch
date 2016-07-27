@@ -25,7 +25,8 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.indices.shards.IndicesShardStoresResponse;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.routing.RecoverySource;
+import org.elasticsearch.cluster.routing.RecoverySource.PeerRecoverySource;
+import org.elasticsearch.cluster.routing.RecoverySource.StoreRecoverySource;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.routing.allocation.decider.Decision;
@@ -56,8 +57,8 @@ import static java.util.Collections.emptySet;
 public final class ClusterAllocationExplanationTests extends ESTestCase {
 
     private Index i = new Index("foo", "uuid");
-    private ShardRouting primaryShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, true,
-            new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "foo"), RecoverySource.NEW_STORE);
+    private ShardRouting primaryShard = ShardRouting.newUnassigned(new ShardId(i, 0), true, StoreRecoverySource.FRESH_COPY_INSTANCE,
+        new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "foo"));
     private IndexMetaData indexMetaData = IndexMetaData.builder("foo")
             .settings(Settings.builder()
                     .put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
@@ -88,10 +89,10 @@ public final class ClusterAllocationExplanationTests extends ESTestCase {
         Float nodeWeight = randomFloat();
         Set<String> activeAllocationIds = new HashSet<>();
         activeAllocationIds.add("eggplant");
-        ShardRouting primaryStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, true,
-                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"), RecoverySource.EXISTING_STORE);
-        ShardRouting replicaStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), null, false,
-                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"), RecoverySource.PRIMARY);
+        ShardRouting primaryStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), true, StoreRecoverySource.EXISTING_COPY_INSTANCE,
+                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"));
+        ShardRouting replicaStartedShard = ShardRouting.newUnassigned(new ShardId(i, 0), false, PeerRecoverySource.INSTANCE,
+                new UnassignedInfo(UnassignedInfo.Reason.INDEX_REOPENED, "foo"));
 
         IndicesShardStoresResponse.StoreStatus storeStatus = new IndicesShardStoresResponse.StoreStatus(node, 42, "eggplant",
                 IndicesShardStoresResponse.StoreStatus.AllocationStatus.PRIMARY, e);

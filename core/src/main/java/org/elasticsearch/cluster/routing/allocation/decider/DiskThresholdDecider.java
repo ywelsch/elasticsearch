@@ -349,7 +349,7 @@ public class DiskThresholdDecider extends AllocationDecider {
 
         // a flag for whether the primary shard has been previously allocated
         boolean primaryHasBeenAllocated = shardRouting.primary() &&
-            (shardRouting.active() || shardRouting.recoverySource().initialRecovery() == false);
+            (shardRouting.active() || shardRouting.recoverySource().isExistingStoreRecoverySource());
 
         // checks for exact byte comparisons
         if (freeBytes < freeBytesThresholdLow.bytes()) {
@@ -652,7 +652,7 @@ public class DiskThresholdDecider extends AllocationDecider {
         final IndexMetaData metaData = allocation.metaData().getIndexSafe(shard.index());
         final ClusterInfo info = allocation.clusterInfo();
         if (metaData.getMergeSourceIndex() != null && shard.active() == false &&
-            shard.recoverySource() == RecoverySource.LOCAL_SHARDS) {
+            shard.recoverySource().isLocalShardsRecoverySource()) {
             // in the shrink index case we sum up the source index shards since we basically make a copy of the shard in
             // the worst case
             long targetShardSize = 0;

@@ -178,8 +178,7 @@ public class RecoveryTargetService extends AbstractComponent implements IndexEve
             return;
         }
         final StartRecoveryRequest request = new StartRecoveryRequest(recoveryTarget.shardId(), recoveryTarget.sourceNode(),
-                clusterService.localNode(),
-                metadataSnapshot, recoveryTarget.state().getType(), recoveryTarget.state().getPrimary(), recoveryTarget.recoveryId());
+                clusterService.localNode(), metadataSnapshot, recoveryTarget.state().getPrimary(), recoveryTarget.recoveryId());
 
         final AtomicReference<RecoveryResponse> responseHolder = new AtomicReference<>();
         try {

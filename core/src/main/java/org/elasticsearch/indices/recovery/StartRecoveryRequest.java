@@ -44,9 +44,7 @@ public class StartRecoveryRequest extends TransportRequest {
 
     private Store.MetadataSnapshot metadataSnapshot;
 
-    private org.elasticsearch.cluster.routing.RecoverySource recoverySource;
-
-    private boolean primary;
+    private boolean primaryRelocation;
 
     public StartRecoveryRequest() {
     }
@@ -57,14 +55,13 @@ public class StartRecoveryRequest extends TransportRequest {
      * @param sourceNode       The node to recover from
      * @param targetNode       The node to recover to
      */
-    public StartRecoveryRequest(ShardId shardId, DiscoveryNode sourceNode, DiscoveryNode targetNode, Store.MetadataSnapshot metadataSnapshot, RecoverySource recoverySource, boolean primary, long recoveryId) {
+    public StartRecoveryRequest(ShardId shardId, DiscoveryNode sourceNode, DiscoveryNode targetNode, Store.MetadataSnapshot metadataSnapshot, boolean primaryRelocation, long recoveryId) {
         this.recoveryId = recoveryId;
         this.shardId = shardId;
         this.sourceNode = sourceNode;
         this.targetNode = targetNode;
-        this.recoverySource = recoverySource;
         this.metadataSnapshot = metadataSnapshot;
-        this.primary = primary;
+        this.primaryRelocation = primaryRelocation;
     }
 
     public long recoveryId() {
@@ -83,16 +80,8 @@ public class StartRecoveryRequest extends TransportRequest {
         return targetNode;
     }
 
-    public RecoverySource recoveryType() {
-        return recoverySource;
-    }
-
-    public boolean primary() {
-        return primary;
-    }
-
     public boolean isPrimaryRelocation() {
-        return recoveryType() == RecoverySource.PRIMARY && primary();
+        return primaryRelocation;
     }
 
     public Store.MetadataSnapshot metadataSnapshot() {
@@ -107,8 +96,7 @@ public class StartRecoveryRequest extends TransportRequest {
         sourceNode = new DiscoveryNode(in);
         targetNode = new DiscoveryNode(in);
         metadataSnapshot = new Store.MetadataSnapshot(in);
-        recoverySource = RecoverySource.fromId(in.readByte());
-        primary = in.readBoolean();
+        primaryRelocation = in.readBoolean();
     }
 
     @Override
@@ -119,8 +107,7 @@ public class StartRecoveryRequest extends TransportRequest {
         sourceNode.writeTo(out);
         targetNode.writeTo(out);
         metadataSnapshot.writeTo(out);
-        out.writeByte(recoverySource.id());
-        out.writeBoolean(primary);
+        out.writeBoolean(primaryRelocation);
     }
 
 }

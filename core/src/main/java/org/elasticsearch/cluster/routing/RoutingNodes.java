@@ -155,7 +155,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
 
         Recoveries.getOrAdd(recoveriesPerNode, routing.currentNodeId()).addIncoming(howMany);
 
-        if (routing.isPeerRecovery()) {
+        if (routing.recoverySource().isPeerRecoverySource()) {
             // add/remove corresponding outgoing recovery on node with primary shard
             if (primary == null) {
                 throw new IllegalStateException("shard is peer recovering but primary is unassigned");
@@ -166,7 +166,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                 // primary is done relocating, move non-primary recoveries from old primary to new primary
                 int numRecoveringReplicas = 0;
                 for (ShardRouting assigned : assignedShards(routing.shardId())) {
-                    if (assigned.primary() == false && assigned.isPeerRecovery()) {
+                    if (assigned.primary() == false && assigned.initializing() && assigned.recoverySource().isPeerRecoverySource()) {
                         numRecoveringReplicas++;
                     }
                 }
@@ -187,7 +187,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
     @Nullable
     private ShardRouting findAssignedPrimaryIfPeerRecovery(ShardRouting routing) {
         ShardRouting primary = null;
-        if (routing.isPeerRecovery()) {
+        if (routing.recoverySource() != null && routing.recoverySource().isPeerRecoverySource()) {
             List<ShardRouting> shardRoutings = assignedShards.get(routing.shardId());
             if (shardRoutings != null) {
                 for (ShardRouting shardRouting : shardRoutings) {
@@ -456,11 +456,11 @@ public class RoutingNodes implements Iterable<RoutingNode> {
      * @param replicaShard the replica shard to be promoted to primary
      * @return             the resulting primary shard
      */
-    public ShardRouting promoteAssignedReplicaShardToPrimary(ShardRouting replicaShard) {
+    public ShardRouting promoteActiveReplicaShardToPrimary(ShardRouting replicaShard) {
         ensureMutable();
-        assert replicaShard.unassigned() == false : "unassigned shard cannot be promoted to primary: " + replicaShard;
+        assert replicaShard.active() : "inactive shard cannot be promoted to primary: " + replicaShard;
         assert replicaShard.primary() == false : "primary shard cannot be promoted to primary: " + replicaShard;
-        ShardRouting primaryShard = replicaShard.moveToPrimary();
+        ShardRouting primaryShard = replicaShard.moveActiveReplicaToPrimary();
         updateAssigned(replicaShard, primaryShard);
         return primaryShard;
     }
@@ -733,7 +733,7 @@ public class RoutingNodes implements Iterable<RoutingNode> {
              */
             public ShardRouting demotePrimaryToReplicaShard() {
                 assert current.primary() : "non-primary shard " + current + " cannot be demoted";
-                updateShardRouting(current.moveFromPrimary());
+                updateShardRouting(current.moveUnassignedFromPrimary());
                 primaries--;
                 return current;
             }
@@ -873,9 +873,9 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                     if (routing.initializing()) {
                         incoming++;
                     }
-                    if (routing.primary() && routing.isPeerRecovery() == false) {
+                    if (routing.primary() && (routing.recoverySource() == null || routing.recoverySource().isPeerRecoverySource() == false)) {
                         for (ShardRouting assigned : routingNodes.assignedShards.get(routing.shardId())) {
-                            if (assigned.isPeerRecovery()) {
+                            if (assigned.initializing() && assigned.recoverySource().isPeerRecoverySource()) {
                                 outgoing++;
                             }
                         }

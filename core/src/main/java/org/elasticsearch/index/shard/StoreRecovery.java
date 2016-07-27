@@ -31,9 +31,7 @@ import org.apache.lucene.store.IndexInput;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
-import org.elasticsearch.cluster.routing.RestoreSource;
-import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.cluster.routing.RecoverySource;
+import org.elasticsearch.cluster.routing.RecoverySource.SnapshotRecoverySource;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -82,9 +80,7 @@ final class StoreRecovery {
      */
     boolean recoverFromStore(final IndexShard indexShard, final boolean indexShouldExists) {
         if (canRecover(indexShard)) {
-            if (indexShard.routingEntry().restoreSource() != null) {
-                throw new IllegalStateException("can't recover - restore source is not null");
-            }
+            assert indexShard.recoveryState().getRecoverySource().isStoreRecoverySource() : "invalid recovery type: " + indexShard.recoveryState().getRecoverySource();
             return executeRecovery(indexShard, () -> {
                 logger.debug("starting recovery from store ...");
                 internalRecoverFromStore(indexShard, indexShouldExists);
@@ -95,10 +91,7 @@ final class StoreRecovery {
 
     boolean recoverFromLocalShards(BiConsumer<String, MappingMetaData> mappingUpdateConsumer, final IndexShard indexShard, final List<LocalShardSnapshot> shards) throws IOException {
         if (canRecover(indexShard)) {
-            assert indexShard.recoveryState().getType() == RecoverySource.LOCAL_SHARDS : "invalid recovery type: " + indexShard.recoveryState().getType();
-            if (indexShard.routingEntry().restoreSource() != null) {
-                throw new IllegalStateException("can't recover - restore source is not null");
-            }
+            assert indexShard.recoveryState().getRecoverySource().isLocalShardsRecoverySource() : "invalid recovery type: " + indexShard.recoveryState().getRecoverySource();
             if (shards.isEmpty()) {
                 throw new IllegalArgumentException("shards must not be empty");
             }
@@ -229,12 +222,9 @@ final class StoreRecovery {
      */
     boolean recoverFromRepository(final IndexShard indexShard, Repository repository) {
         if (canRecover(indexShard)) {
-            final ShardRouting shardRouting = indexShard.routingEntry();
-            if (shardRouting.restoreSource() == null) {
-                throw new IllegalStateException("can't restore - restore source is null");
-            }
+            assert indexShard.recoveryState().getRecoverySource().isSnapshotRecoverySource() : "invalid recovery type: " + indexShard.recoveryState().getRecoverySource();
             return executeRecovery(indexShard, () -> {
-                logger.debug("restoring from {} ...", shardRouting.restoreSource());
+                logger.debug("restoring from {} ...", indexShard.recoveryState().getRecoverySource());
                 restore(indexShard, repository);
             });
         }
@@ -349,13 +339,13 @@ final class StoreRecovery {
             // since we recover from local, just fill the files and size
             try {
                 final RecoveryState.Index index = recoveryState.getIndex();
-                if (si != null && (recoveryState.getType() == RecoverySource.EXISTING_STORE || recoveryState.getType() == RecoverySource.NEW_STORE)) {
+                if (si != null && (recoveryState.getRecoverySource().isStoreRecoverySource())) {
                     addRecoveredFileDetails(si, store, index);
                 }
             } catch (IOException e) {
                 logger.debug("failed to list file details", e);
             }
-            if (recoveryState.getType() == RecoverySource.LOCAL_SHARDS) {
+            if (recoveryState.getRecoverySource().isLocalShardsRecoverySource()) {
                 assert indexShouldExists;
                 indexShard.skipTranslogRecovery();
             } else {
@@ -379,10 +369,10 @@ final class StoreRecovery {
     }
 
     /**
-     * Restores shard from {@link RestoreSource} associated with this shard in routing table
+     * Restores shard from {@link SnapshotRecoverySource} associated with this shard in routing table
      */
     private void restore(final IndexShard indexShard, final Repository repository) {
-        RestoreSource restoreSource = indexShard.routingEntry().restoreSource();
+        SnapshotRecoverySource restoreSource = indexShard.recoveryState().getRecoverySource().asSnapshotRecoverySource();
         final RecoveryState.Translog translogState = indexShard.recoveryState().getTranslog();
         if (restoreSource == null) {
             throw new IndexShardRestoreFailedException(shardId, "empty restore source");

@@ -201,7 +201,7 @@ public class ShardFailedClusterStateTaskExecutorTests extends ESAllocationTestCa
         for (ShardStateAction.ShardRoutingEntry existingShard : existingShards) {
             ShardRouting sr = existingShard.getShardRouting();
             ShardRouting nonExistentShardRouting =
-                TestShardRouting.newShardRouting(sr.shardId(), sr.currentNodeId(), sr.relocatingNodeId(), sr.restoreSource(), sr.primary(), sr.state());
+                TestShardRouting.newShardRouting(sr.shardId(), sr.currentNodeId(), sr.primary(), sr.state(), sr.recoverySource());
             shardsWithMismatchedAllocationIds.add(new ShardStateAction.ShardRoutingEntry(nonExistentShardRouting, nonExistentShardRouting, existingShard.message, existingShard.failure));
         }
 

@@ -47,9 +47,6 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static org.elasticsearch.cluster.routing.RecoverySource.EXISTING_STORE;
-import static org.elasticsearch.cluster.routing.RecoverySource.SNAPSHOT;
-
 /**
  * The primary shard allocator allocates primary shard that were not created as
  * a result of an API to a node that held them last to be recovered.
@@ -99,7 +96,7 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
                 continue;
             }
 
-            if (shard.recoverySource() != EXISTING_STORE && shard.recoverySource() != SNAPSHOT) {
+            if (shard.recoverySource().isExistingStoreRecoverySource() == false && shard.recoverySource().isSnapshotRecoverySource() == false) {
                 continue;
             }
 
@@ -115,7 +112,7 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
             // on cluster restart if we allocate a boat load of shards
             final IndexMetaData indexMetaData = metaData.getIndexSafe(shard.index());
             final Set<String> lastActiveAllocationIds = indexMetaData.activeAllocationIds(shard.id());
-            final boolean snapshotRestore = shard.recoverySource() == SNAPSHOT;
+            final boolean snapshotRestore = shard.recoverySource().isSnapshotRecoverySource();
             final boolean recoverOnAnyNode = recoverOnAnyNode(indexMetaData);
 
             final NodeShardsResult nodeShardsResult;
@@ -145,7 +142,7 @@ public abstract class PrimaryShardAllocator extends AbstractComponent {
             if (enoughAllocationsFound == false){
                 if (snapshotRestore) {
                     // let BalancedShardsAllocator take care of allocating this shard
-                    logger.debug("[{}][{}]: missing local data, will restore from [{}]", shard.index(), shard.id(), shard.restoreSource());
+                    logger.debug("[{}][{}]: missing local data, will restore from [{}]", shard.index(), shard.id(), shard.recoverySource());
                 } else if (recoverOnAnyNode) {
                     // let BalancedShardsAllocator take care of allocating this shard
                     logger.debug("[{}][{}]: missing local data, recover from any node", shard.index(), shard.id());

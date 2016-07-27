@@ -21,6 +21,7 @@ package org.elasticsearch.cluster.routing.allocation.command;
 
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.RecoverySource;
+import org.elasticsearch.cluster.routing.RecoverySource.StoreRecoverySource;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.RoutingNodes;
 import org.elasticsearch.cluster.routing.ShardRouting;
@@ -116,7 +117,7 @@ public class AllocateEmptyPrimaryAllocationCommand extends BasePrimaryAllocation
             return explainOrThrowRejectedCommand(explain, allocation, "primary [" + index + "][" + shardId + "] is already assigned");
         }
 
-        if (shardRouting.recoverySource() != RecoverySource.NEW_STORE && acceptDataLoss == false) {
+        if (shardRouting.recoverySource().isFreshStoreRecoverySource() == false && acceptDataLoss == false) {
             return explainOrThrowRejectedCommand(explain, allocation,
                 "allocating an empty primary for [" + index + "][" + shardId + "] can result in data loss. Please confirm by setting the accept_data_loss parameter to true");
         }
@@ -130,7 +131,7 @@ public class AllocateEmptyPrimaryAllocationCommand extends BasePrimaryAllocation
                 shardRouting.unassignedInfo().getLastAllocationStatus());
         }
 
-        initializeUnassignedShard(allocation, routingNodes, routingNode, shardRouting, unassignedInfoToUpdate, RecoverySource.NEW_STORE);
+        initializeUnassignedShard(allocation, routingNodes, routingNode, shardRouting, unassignedInfoToUpdate, StoreRecoverySource.FRESH_COPY_INSTANCE);
 
         return new RerouteExplanation(this, allocation.decision(Decision.YES, name() + " (allocation command)", "ignore deciders"));
     }
