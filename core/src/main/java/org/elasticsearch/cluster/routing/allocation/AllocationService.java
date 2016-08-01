@@ -47,7 +47,6 @@ import org.elasticsearch.index.shard.ShardId;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
@@ -88,11 +87,11 @@ public class AllocationService extends AbstractComponent {
      * <p>
      * If the same instance of the routing table is returned, then no change has been made.</p>
      */
-    public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<? extends ShardRouting> startedShards) {
-        return applyStartedShards(clusterState, startedShards, true);
+    public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<ShardRouting> startedShards) {
+        return applyStartedShards(clusterState, startedShards.stream().map(shr -> new ShardAllocationId(shr.shardId(), shr.allocationId().getId())).collect(Collectors.toList()), true);
     }
 
-    public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<? extends ShardRouting> startedShards, boolean withReroute) {
+    public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<ShardAllocationId> startedShards, boolean withReroute) {
         RoutingNodes routingNodes = getMutableRoutingNodes(clusterState);
         // shuffle the unassigned nodes, just so we won't have things like poison failed shards
         routingNodes.unassigned().shuffle();
@@ -225,22 +224,30 @@ public class AllocationService extends AbstractComponent {
         routingNodes.unassigned().shuffle();
         long currentNanoTime = currentNanoTime();
         FailedRerouteAllocation allocation = new FailedRerouteAllocation(allocationDeciders, routingNodes, clusterState, failedShards, clusterInfoService.getClusterInfo(), currentNanoTime);
+
+        // add nodes of failing shards (that exist) to ignore list
+        for (FailedRerouteAllocation.FailedShard failedShard : failedShards) {
+            ShardRouting shardRouting = resolveShardRouting(allocation, "shard failure", failedShard.shardId(), failedShard.allocationId());
+            if (shardRouting != null) {
+                allocation.addIgnoreShardForNode(shardRouting.shardId(), shardRouting.currentNodeId());
+            }
+        }
+
         boolean changed = false;
-        // as failing primaries also fail associated replicas, we fail replicas first here so that their nodes are added to ignore list
-        List<FailedRerouteAllocation.FailedShard> orderedFailedShards = new ArrayList<>(failedShards);
-        orderedFailedShards.sort(Comparator.comparing(failedShard -> failedShard.shard.primary()));
-        for (FailedRerouteAllocation.FailedShard failedShard : orderedFailedShards) {
-            UnassignedInfo unassignedInfo = failedShard.shard.unassignedInfo();
-            final int failedAllocations = unassignedInfo != null ? unassignedInfo.getNumFailedAllocations() : 0;
-            changed |= applyFailedShard(allocation, failedShard.shard, true, new UnassignedInfo(UnassignedInfo.Reason.ALLOCATION_FAILED, failedShard.message, failedShard.failure,
-                    failedAllocations + 1, currentNanoTime, System.currentTimeMillis(), false, AllocationStatus.NO_ATTEMPT));
+        for (FailedRerouteAllocation.FailedShard failedShard : failedShards) {
+            Function<ShardRouting, UnassignedInfo> unassignedInfoSupplier = shr -> {
+                final int failedAllocations = shr.unassignedInfo() != null ? shr.unassignedInfo().getNumFailedAllocations() : 0;
+                return new UnassignedInfo(UnassignedInfo.Reason.ALLOCATION_FAILED, failedShard.message, failedShard.failure,
+                    failedAllocations + 1, currentNanoTime, System.currentTimeMillis(), false, AllocationStatus.NO_ATTEMPT);
+            };
+            changed |= applyFailedShard(allocation, failedShard, unassignedInfoSupplier);
         }
         if (!changed) {
             return new RoutingAllocation.Result(false, clusterState.routingTable(), clusterState.metaData());
         }
         gatewayAllocator.applyFailedShards(allocation);
         reroute(allocation);
-        String failedShardsAsString = firstListElementsToCommaDelimitedString(failedShards, s -> s.shard.shardId().toString());
+        String failedShardsAsString = firstListElementsToCommaDelimitedString(failedShards, s -> s.shardId().toString());
         return buildResultAndLogHealthChange(allocation, "shards failed [" + failedShardsAsString + "] ...");
     }
 
@@ -416,11 +423,13 @@ public class AllocationService extends AbstractComponent {
             changed = true;
             // now, go over all the shards routing on the node, and fail them
             for (ShardRouting shardRouting : node.copyShards()) {
-                final IndexMetaData indexMetaData = allocation.metaData().getIndexSafe(shardRouting.index());
-                boolean delayed = INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.get(indexMetaData.getSettings()).nanos() > 0;
-                UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.NODE_LEFT, "node_left[" + node.nodeId() + "]",
-                    null, 0, allocation.getCurrentNanoTime(), System.currentTimeMillis(), delayed, AllocationStatus.NO_ATTEMPT);
-                applyFailedShard(allocation, shardRouting, false, unassignedInfo);
+                Function<ShardRouting, UnassignedInfo> unassignedInfoSupplier = shr -> {
+                    final IndexMetaData indexMetaData = allocation.metaData().getIndexSafe(shr.index());
+                    boolean delayed = INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.get(indexMetaData.getSettings()).nanos() > 0;
+                    return new UnassignedInfo(UnassignedInfo.Reason.NODE_LEFT, "node_left[" + node.nodeId() + "]",
+                        null, 0, allocation.getCurrentNanoTime(), System.currentTimeMillis(), delayed, AllocationStatus.NO_ATTEMPT);
+                };
+                applyFailedShard(allocation, new ShardAllocationId(shardRouting), unassignedInfoSupplier);
             }
             // its a dead node, remove it, note, its important to remove it *after* we apply failed shard
             // since it relies on the fact that the RoutingNode exists in the list of nodes
@@ -438,40 +447,28 @@ public class AllocationService extends AbstractComponent {
         }
         boolean changed = false;
         for (ShardRouting routing : replicas) {
-            changed |= applyFailedShard(allocation, routing, false,
-                    new UnassignedInfo(UnassignedInfo.Reason.PRIMARY_FAILED, "primary failed while replica initializing",
-                            null, 0, allocation.getCurrentNanoTime(), System.currentTimeMillis(), false,
-                            AllocationStatus.NO_ATTEMPT));
+            Function<ShardRouting, UnassignedInfo> unassignedInfoSupplier = shr ->
+                new UnassignedInfo(UnassignedInfo.Reason.PRIMARY_FAILED, "primary failed while replica initializing",
+                null, 0, allocation.getCurrentNanoTime(), System.currentTimeMillis(), false,
+                AllocationStatus.NO_ATTEMPT);
+            changed |= applyFailedShard(allocation, new ShardAllocationId(routing), unassignedInfoSupplier);
         }
         return changed;
     }
 
-    private boolean applyStartedShards(RoutingAllocation routingAllocation, Iterable<? extends ShardRouting> startedShardEntries) {
+    private boolean applyStartedShards(RoutingAllocation routingAllocation, Iterable<ShardAllocationId> startedShardEntries) {
         boolean dirty = false;
         // apply shards might be called several times with the same shard, ignore it
         RoutingNodes routingNodes = routingAllocation.routingNodes();
-        for (ShardRouting startedShard : startedShardEntries) {
-            assert startedShard.initializing();
-
+        for (ShardAllocationId startedShardEntry : startedShardEntries) {
             // validate index still exists. strictly speaking this is not needed but it gives clearer logs
-            if (routingAllocation.metaData().index(startedShard.index()) == null) {
-                logger.debug("{} ignoring shard started, unknown index (routing: {})", startedShard.shardId(), startedShard);
+            if (routingAllocation.metaData().index(startedShardEntry.shardId().getIndex()) == null) {
+                logger.debug("{} ignoring shard started, unknown index (shard entry: {})", startedShardEntry.shardId(), startedShardEntry);
                 continue;
             }
 
-            RoutingNode currentRoutingNode = routingNodes.node(startedShard.currentNodeId());
-            if (currentRoutingNode == null) {
-                logger.debug("{} failed to find shard in order to start it [failed to find node], ignoring (routing: {})", startedShard.shardId(), startedShard);
-                continue;
-            }
-
-            ShardRouting matchingShard = currentRoutingNode.getByShardId(startedShard.shardId());
-            if (matchingShard == null) {
-                logger.debug("{} failed to find shard in order to start it [failed to find shard], ignoring (routing: {})", startedShard.shardId(), startedShard);
-            } else if (matchingShard.isSameAllocation(startedShard) == false) {
-                logger.debug("{} failed to find shard with matching allocation id in order to start it [failed to find matching shard], ignoring (routing: {}, matched shard routing: {})", startedShard.shardId(), startedShard, matchingShard);
-            } else {
-                startedShard = matchingShard;
+            ShardRouting startedShard = resolveShardRouting(routingAllocation, "shard started", startedShardEntry.shardId(), startedShardEntry.allocationId());
+            if (startedShard != null) {
                 if (startedShard.active()) {
                     logger.trace("{} shard is already started, ignoring (routing: {})", startedShard.shardId(), startedShard);
                 } else {
@@ -493,47 +490,42 @@ public class AllocationService extends AbstractComponent {
         return dirty;
     }
 
+    private ShardRouting resolveShardRouting(RoutingAllocation allocation, String action, ShardId shardId, String allocationId) {
+        // validate index still exists. strictly speaking this is not needed but it gives clearer logs
+        if (allocation.metaData().index(shardId.getIndex()) == null) {
+            logger.debug("{} ignoring {}, unknown index (allocation id: {})", shardId, action, allocationId);
+            return null;
+        }
+        ShardRouting shardRouting = allocation.routingNodes().getByAllocationId(shardId, allocationId);
+        if (shardRouting == null) {
+            logger.debug("{} ignoring {}, unknown allocation id: {}", shardId, action, allocationId);
+        }
+        return shardRouting;
+    }
+
     /**
      * Applies the relevant logic to handle a failed shard. Returns <tt>true</tt> if changes happened that
      * require relocation.
      */
-    private boolean applyFailedShard(RoutingAllocation allocation, ShardRouting failedShard, boolean addToIgnoreList, UnassignedInfo unassignedInfo) {
-        IndexRoutingTable indexRoutingTable = allocation.routingTable().index(failedShard.index());
-        if (indexRoutingTable == null) {
-            logger.debug("{} ignoring shard failure, unknown index in {} ({})", failedShard.shardId(), failedShard, unassignedInfo.shortSummary());
-            return false;
-        }
+    private boolean applyFailedShard(RoutingAllocation allocation, ShardAllocationId failedShardEntry, Function<ShardRouting, UnassignedInfo> unassignedInfoSupplier) {
         RoutingNodes routingNodes = allocation.routingNodes();
-
-        RoutingNode matchedNode = routingNodes.node(failedShard.currentNodeId());
-        if (matchedNode == null) {
-            logger.debug("{} ignoring shard failure, unknown node in {} ({})", failedShard.shardId(), failedShard, unassignedInfo.shortSummary());
-            return false;
-        }
-
-        ShardRouting matchedShard = matchedNode.getByShardId(failedShard.shardId());
-        if (matchedShard != null && matchedShard.isSameAllocation(failedShard)) {
+        // resolve shard routing again, as an earlier shard failure might have failed this shard already
+        ShardRouting failedShard = resolveShardRouting(allocation, "shard failure", failedShardEntry.shardId(), failedShardEntry.allocationId());
+        final UnassignedInfo unassignedInfo;
+        if (failedShard != null) {
+            unassignedInfo = unassignedInfoSupplier.apply(failedShard);
             logger.debug("{} failed shard {} found in routingNodes, failing it ({})", failedShard.shardId(), failedShard, unassignedInfo.shortSummary());
-            // replace incoming instance to make sure we work on the latest one
-            failedShard = matchedShard;
-        } else {
-            logger.debug("{} ignoring shard failure, unknown allocation id in {} ({})", failedShard.shardId(), failedShard, unassignedInfo.shortSummary());
-            return false;
-        }
 
-        if (failedShard.primary()) {
-            // fail replicas first otherwise we move RoutingNodes into an inconsistent state
-            failReplicasForUnassignedPrimary(allocation, failedShard);
-        }
+            if (failedShard.primary()) {
+                // fail replicas first otherwise we move RoutingNodes into an inconsistent state
+                failReplicasForUnassignedPrimary(allocation, failedShard);
+            }
 
-        if (addToIgnoreList) {
-            // make sure we ignore this shard on the relevant node
-            allocation.addIgnoreShardForNode(failedShard.shardId(), failedShard.currentNodeId());
+            cancelShard(logger, failedShard, unassignedInfo, routingNodes);
+            assert routingNodes.node(failedShard.currentNodeId()).getByShardId(failedShard.shardId()) == null : "failedShard " + failedShard + " was matched but wasn't removed";
+            return true;
         }
-
-        cancelShard(logger, failedShard, unassignedInfo, routingNodes);
-        assert matchedNode.getByShardId(failedShard.shardId()) == null : "failedShard " + failedShard + " was matched but wasn't removed";
-        return true;
+        return false;
     }
 
     public static void cancelShard(ESLogger logger, ShardRouting cancelledShard, UnassignedInfo unassignedInfo, RoutingNodes routingNodes) {
@@ -583,4 +575,6 @@ public class AllocationService extends AbstractComponent {
     protected long currentNanoTime() {
         return System.nanoTime();
     }
+
+
 }

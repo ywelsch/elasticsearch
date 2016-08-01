@@ -37,6 +37,8 @@ import org.elasticsearch.test.ESAllocationTestCase;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.elasticsearch.cluster.routing.ShardRoutingState.INITIALIZING;
 import static org.elasticsearch.cluster.routing.ShardRoutingState.RELOCATING;
@@ -317,11 +319,13 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         int shardsToFail = randomIntBetween(1, numberOfReplicas);
         ArrayList<FailedRerouteAllocation.FailedShard> failedShards = new ArrayList<>();
         RoutingNodes routingNodes = clusterState.getRoutingNodes();
+        Set<String> failedNodes = new HashSet<>();
         for (int i = 0; i < shardsToFail; i++) {
-            String n = "node" + Integer.toString(randomInt(numberOfReplicas));
-            logger.info("failing shard on node [{}]", n);
-            ShardRouting shardToFail = routingNodes.node(n).iterator().next();
+            String failedNode = "node" + Integer.toString(randomInt(numberOfReplicas));
+            logger.info("failing shard on node [{}]", failedNode);
+            ShardRouting shardToFail = routingNodes.node(failedNode).iterator().next();
             failedShards.add(new FailedRerouteAllocation.FailedShard(shardToFail, null, null));
+            failedNodes.add(failedNode);
         }
 
         routingTable = strategy.applyFailedShards(clusterState, failedShards).routingTable();
@@ -329,8 +333,14 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         clusterState = ClusterState.builder(clusterState).routingTable(routingTable).build();
         routingNodes = clusterState.getRoutingNodes();
         for (FailedRerouteAllocation.FailedShard failedShard : failedShards) {
-            if (!routingNodes.node(failedShard.shard.currentNodeId()).isEmpty()) {
-                fail("shard " + failedShard + " was re-assigned to it's node");
+            if (routingNodes.getByAllocationId(failedShard.shardId(), failedShard.allocationId()) != null) {
+                fail("shard " + failedShard + " was not failed");
+            }
+        }
+
+        for (String failedNode : failedNodes) {
+            if (!routingNodes.node(failedNode).isEmpty()) {
+                fail("shard was re-assigned to failed node " + failedNode);
             }
         }
     }

@@ -428,6 +428,11 @@ public abstract class ESIndexLevelReplicationTestCase extends ESTestCase {
         }
 
         @Override
+        public long primaryTerm() {
+            return 0L;
+        }
+
+        @Override
         public void failShard(String message, Exception exception) {
             throw new UnsupportedOperationException();
         }
@@ -462,7 +467,7 @@ public abstract class ESIndexLevelReplicationTestCase extends ESTestCase {
         }
 
         @Override
-        public void failShard(ShardRouting replica, ShardRouting primary, String message, Exception exception, Runnable onSuccess,
+        public void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception, Runnable onSuccess,
                               Consumer<Exception> onPrimaryDemoted, Consumer<Exception> onIgnoredFailure) {
             throw new UnsupportedOperationException();
         }

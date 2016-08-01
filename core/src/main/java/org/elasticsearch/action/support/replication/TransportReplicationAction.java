@@ -856,6 +856,11 @@ public abstract class TransportReplicationAction<
         public ShardRouting routingEntry() {
             return indexShard.routingEntry();
         }
+
+        @Override
+        public long primaryTerm() {
+            return indexShard.getPrimaryTerm();
+        }
     }
 
     final class ReplicasProxy implements ReplicationOperation.Replicas<ReplicaRequest> {
@@ -873,10 +878,10 @@ public abstract class TransportReplicationAction<
         }
 
         @Override
-        public void failShard(ShardRouting replica, ShardRouting primary, String message, Exception exception,
+        public void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception,
                               Runnable onSuccess, Consumer<Exception> onFailure, Consumer<Exception> onIgnoredFailure) {
             shardStateAction.shardFailed(
-                replica, primary, message, exception,
+                replica, primaryTerm, message, exception,
                 new ShardStateAction.Listener() {
                     @Override
                     public void onSuccess() {

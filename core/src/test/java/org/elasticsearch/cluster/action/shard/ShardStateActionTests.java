@@ -61,6 +61,7 @@ import static org.elasticsearch.test.ClusterServiceUtils.createClusterService;
 import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 
 public class ShardStateActionTests extends ESTestCase {
@@ -140,7 +141,7 @@ public class ShardStateActionTests extends ESTestCase {
         CountDownLatch latch = new CountDownLatch(1);
 
         ShardRouting shardRouting = getRandomShardRouting(index);
-        shardStateAction.shardFailed(shardRouting, shardRouting, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.shardFailed(shardRouting, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -161,7 +162,7 @@ public class ShardStateActionTests extends ESTestCase {
         assertThat(capturedRequests[0].request, is(instanceOf(ShardStateAction.ShardRoutingEntry.class)));
         ShardStateAction.ShardRoutingEntry shardRoutingEntry = (ShardStateAction.ShardRoutingEntry) capturedRequests[0].request;
         // for the right shard
-        assertEquals(shardRouting, shardRoutingEntry.getShardRouting());
+        assertTrue(shardRoutingEntry.matches(shardRouting));
         // sent to the master
         assertEquals(clusterService.state().nodes().getMasterNode().getId(), capturedRequests[0].node.getId());
 
@@ -188,7 +189,7 @@ public class ShardStateActionTests extends ESTestCase {
         });
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -237,7 +238,7 @@ public class ShardStateActionTests extends ESTestCase {
         setUpMasterRetryVerification(numberOfRetries, retries, latch, retryLoop);
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -273,7 +274,7 @@ public class ShardStateActionTests extends ESTestCase {
         AtomicBoolean failure = new AtomicBoolean();
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 failure.set(false);
@@ -305,7 +306,7 @@ public class ShardStateActionTests extends ESTestCase {
         ShardRouting failedShard = getRandomShardRouting(index);
         RoutingTable routingTable = RoutingTable.builder(clusterService.state().getRoutingTable()).remove(index).build();
         setState(clusterService, ClusterState.builder(clusterService.state()).routingTable(routingTable));
-        shardStateAction.shardFailed(failedShard, failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -334,13 +335,12 @@ public class ShardStateActionTests extends ESTestCase {
 
         ShardRouting failedShard = getRandomShardRouting(index);
 
-        String nodeId = randomFrom(clusterService.state().nodes().getNodes().keys().toArray(String.class));
-
         AtomicReference<Throwable> failure = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
 
-        ShardRouting sourceFailedShard = TestShardRouting.newShardRouting(failedShard.shardId(), nodeId, randomBoolean(), randomFrom(ShardRoutingState.values()));
-        shardStateAction.shardFailed(failedShard, sourceFailedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        long primaryTerm = clusterService.state().metaData().index(index).primaryTerm(failedShard.id());
+        assertThat(primaryTerm, greaterThanOrEqualTo(1L));
+        shardStateAction.shardFailed(failedShard, primaryTerm + 1, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 failure.set(null);
@@ -355,7 +355,7 @@ public class ShardStateActionTests extends ESTestCase {
         });
 
         ShardStateAction.NoLongerPrimaryShardException catastrophicError =
-                new ShardStateAction.NoLongerPrimaryShardException(failedShard.shardId(), "source shard [" + sourceFailedShard + " is neither the local allocation nor the primary allocation");
+                new ShardStateAction.NoLongerPrimaryShardException(failedShard.shardId(), "dummy failure");
         CapturingTransport.CapturedRequest[] capturedRequests = transport.getCapturedRequestsAndClear();
         transport.handleRemoteError(capturedRequests[0].requestId, catastrophicError);
 

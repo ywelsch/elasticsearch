@@ -170,7 +170,7 @@ public class ReplicationOperation<
                         shard.shardId(), shard.currentNodeId(), replicaException, restStatus, false));
                     String message = String.format(Locale.ROOT, "failed to perform %s on replica %s", opType, shard);
                     logger.warn("[{}] {}", replicaException, shard.shardId(), message);
-                    replicasProxy.failShard(shard, primary.routingEntry(), message, replicaException,
+                    replicasProxy.failShard(shard, primary.primaryTerm(), message, replicaException,
                         ReplicationOperation.this::decPendingAndFinishIfNeeded,
                         ReplicationOperation.this::onPrimaryDemoted,
                         throwable -> decPendingAndFinishIfNeeded()
@@ -308,6 +308,11 @@ public class ReplicationOperation<
         ShardRouting routingEntry();
 
         /**
+         * primary term for this primary (fixed when primary shard is created)
+         */
+        long primaryTerm();
+
+        /**
          * fail the primary, typically due to the fact that the operation has learned the primary has been demoted by the master
          */
         void failShard(String message, Exception exception);
@@ -338,7 +343,7 @@ public class ReplicationOperation<
         /**
          * Fail the specified shard, removing it from the current set of active shards
          * @param replica          shard to fail
-         * @param primary          the primary shard that requested the failure
+         * @param primaryTerm      the primary term of the primary shard when requesting the failure
          * @param message          a (short) description of the reason
          * @param exception        the original exception which caused the ReplicationOperation to request the shard to be failed
          * @param onSuccess        a callback to call when the shard has been successfully removed from the active set.
@@ -346,7 +351,7 @@ public class ReplicationOperation<
 *                         by the master.
          * @param onIgnoredFailure a callback to call when failing a shard has failed, but it that failure can be safely ignored and the
          */
-        void failShard(ShardRouting replica, ShardRouting primary, String message, Exception exception, Runnable onSuccess,
+        void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception, Runnable onSuccess,
                        Consumer<Exception> onPrimaryDemoted, Consumer<Exception> onIgnoredFailure);
     }
 

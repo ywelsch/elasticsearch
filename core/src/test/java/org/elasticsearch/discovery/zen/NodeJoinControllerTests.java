@@ -24,10 +24,10 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.FailedRerouteAllocation;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
+import org.elasticsearch.cluster.routing.allocation.ShardAllocationId;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
@@ -563,7 +563,7 @@ public class NodeJoinControllerTests extends ESTestCase {
         }
 
         @Override
-        public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<? extends ShardRouting> startedShards,
+        public RoutingAllocation.Result applyStartedShards(ClusterState clusterState, List<ShardAllocationId> startedShards,
                                                            boolean withReroute) {
             return new RoutingAllocation.Result(false, clusterState.routingTable(), clusterState.metaData());
         }

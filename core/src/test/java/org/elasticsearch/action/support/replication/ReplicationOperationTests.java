@@ -175,7 +175,7 @@ public class ReplicationOperationTests extends ESTestCase {
         final ClusterState finalState = state;
         final TestReplicaProxy replicasProxy = new TestReplicaProxy(expectedFailures) {
             @Override
-            public void failShard(ShardRouting replica, ShardRouting primary, String message, Exception exception,
+            public void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception,
                                   Runnable onSuccess, Consumer<Exception> onPrimaryDemoted,
                                   Consumer<Exception> onIgnoredFailure) {
                 assertThat(replica, equalTo(failedReplica));
@@ -376,6 +376,11 @@ public class ReplicationOperationTests extends ESTestCase {
         }
 
         @Override
+        public long primaryTerm() {
+            return term;
+        }
+
+        @Override
         public void failShard(String message, Exception exception) {
             throw new AssertionError("should shouldn't be failed with [" + message + "]", exception);
         }
@@ -438,7 +443,7 @@ public class ReplicationOperationTests extends ESTestCase {
         }
 
         @Override
-        public void failShard(ShardRouting replica, ShardRouting primary, String message, Exception exception, Runnable onSuccess,
+        public void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception, Runnable onSuccess,
                               Consumer<Exception> onPrimaryDemoted, Consumer<Exception> onIgnoredFailure) {
             if (failedReplicas.add(replica) == false) {
                 fail("replica [" + replica + "] was failed twice");

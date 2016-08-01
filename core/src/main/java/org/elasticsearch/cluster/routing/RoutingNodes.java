@@ -276,6 +276,20 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         return replicaSet == null ? EMPTY : Collections.unmodifiableList(replicaSet);
     }
 
+    @Nullable
+    public ShardRouting getByAllocationId(ShardId shardId, String allocationId) {
+        final List<ShardRouting> replicaSet = assignedShards.get(shardId);
+        if (replicaSet == null) {
+            return null;
+        }
+        for (ShardRouting shardRouting : replicaSet) {
+            if (shardRouting.allocationId().getId().equals(allocationId)) {
+                return shardRouting;
+            }
+        }
+        return null;
+    }
+
     /**
      * Returns the active primary shard for the given shard id or <code>null</code> if
      * no primary is found or the primary is not active.
