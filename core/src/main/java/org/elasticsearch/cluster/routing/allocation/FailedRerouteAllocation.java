@@ -40,9 +40,9 @@ public class FailedRerouteAllocation extends RoutingAllocation {
      * details on why it failed.
      */
     public static class FailedShard {
+        public final ShardRouting routingEntry;
         public final String message;
         public final Exception failure;
-        public final ShardRouting routingEntry;
 
         public FailedShard(ShardRouting routingEntry, String message, Exception failure) {
             assert routingEntry.assignedToNode() : "only assigned shards can be failed " + routingEntry;
@@ -53,7 +53,7 @@ public class FailedRerouteAllocation extends RoutingAllocation {
 
         @Override
         public String toString() {
-            return "failed shard, shard " + super.toString() + ", message [" + message + "], failure [" +
+            return "failed shard, shard " + routingEntry + ", message [" + message + "], failure [" +
                 ExceptionsHelper.detailedMessage(failure) + "]";
         }
     }

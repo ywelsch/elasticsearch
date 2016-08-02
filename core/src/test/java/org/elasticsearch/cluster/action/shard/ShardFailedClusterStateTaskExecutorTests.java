@@ -248,7 +248,11 @@ public class ShardFailedClusterStateTaskExecutorTests extends ESAllocationTestCa
             if (entry.getValue().isSuccess()) {
                 // the shard was successfully failed and so should not be in the routing table
                 for (ShardRouting shard : shards) {
-                    assertFalse("entry key " + entry.getKey() + ", shard routing " + shard, entry.getKey().matches(shard));
+                    if (shard.assignedToNode()) {
+                        assertFalse("entry key " + entry.getKey() + ", shard routing " + shard,
+                            entry.getKey().getShardId().equals(shard.shardId()) &&
+                                entry.getKey().getAllocationId().equals(shard.allocationId().getId()));
+                    }
                 }
             } else {
                 // check we saw the expected failure

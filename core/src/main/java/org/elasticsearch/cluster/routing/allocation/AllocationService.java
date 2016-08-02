@@ -456,7 +456,8 @@ public class AllocationService extends AbstractComponent {
         return replicas.isEmpty() == false;
     }
 
-    private void applyStartedShards(RoutingAllocation routingAllocation, Iterable<ShardRouting> startedShardEntries) {
+    private void applyStartedShards(RoutingAllocation routingAllocation, List<ShardRouting> startedShardEntries) {
+        assert startedShardEntries.isEmpty() == false : "non-empty list of started shard entries expected";
         RoutingNodes routingNodes = routingAllocation.routingNodes();
         for (ShardRouting startedShard : startedShardEntries) {
             assert startedShard.initializing() : "only initializing shards can be started";

@@ -139,7 +139,7 @@ public class ShardStateActionTests extends ESTestCase {
         CountDownLatch latch = new CountDownLatch(1);
 
         ShardRouting shardRouting = getRandomShardRouting(index);
-        shardStateAction.shardFailed(shardRouting, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.localShardFailed(shardRouting, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -160,7 +160,8 @@ public class ShardStateActionTests extends ESTestCase {
         assertThat(capturedRequests[0].request, is(instanceOf(ShardStateAction.ShardEntry.class)));
         ShardStateAction.ShardEntry shardEntry = (ShardStateAction.ShardEntry) capturedRequests[0].request;
         // for the right shard
-        assertTrue(shardEntry.matches(shardRouting));
+        assertEquals(shardEntry.shardId, shardRouting.shardId());
+        assertEquals(shardEntry.allocationId, shardRouting.allocationId().getId());
         // sent to the master
         assertEquals(clusterService.state().nodes().getMasterNode().getId(), capturedRequests[0].node.getId());
 
@@ -187,7 +188,7 @@ public class ShardStateActionTests extends ESTestCase {
         });
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.localShardFailed(failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -236,7 +237,7 @@ public class ShardStateActionTests extends ESTestCase {
         setUpMasterRetryVerification(numberOfRetries, retries, latch, retryLoop);
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.localShardFailed(failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -272,7 +273,7 @@ public class ShardStateActionTests extends ESTestCase {
         AtomicBoolean failure = new AtomicBoolean();
 
         ShardRouting failedShard = getRandomShardRouting(index);
-        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.localShardFailed(failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 failure.set(false);
@@ -304,7 +305,7 @@ public class ShardStateActionTests extends ESTestCase {
         ShardRouting failedShard = getRandomShardRouting(index);
         RoutingTable routingTable = RoutingTable.builder(clusterService.state().getRoutingTable()).remove(index).build();
         setState(clusterService, ClusterState.builder(clusterService.state()).routingTable(routingTable));
-        shardStateAction.shardFailed(failedShard, 0L, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.localShardFailed(failedShard, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 success.set(true);
@@ -338,7 +339,7 @@ public class ShardStateActionTests extends ESTestCase {
 
         long primaryTerm = clusterService.state().metaData().index(index).primaryTerm(failedShard.id());
         assertThat(primaryTerm, greaterThanOrEqualTo(1L));
-        shardStateAction.shardFailed(failedShard, primaryTerm + 1, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
+        shardStateAction.remoteShardFailed(failedShard, primaryTerm + 1, "test", getSimulatedFailure(), new ShardStateAction.Listener() {
             @Override
             public void onSuccess() {
                 failure.set(null);

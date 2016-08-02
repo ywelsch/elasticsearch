@@ -127,16 +127,27 @@ public class ShardStateAction extends AbstractComponent {
     }
 
     /**
-     * Send a shard failed request to the master node to update the
-     * cluster state.
+     * Send a shard failed request to the master node to update the cluster state with the failure of a shard on another node.
+     *
      * @param shardRouting       the shard to fail
-     * @param primaryTerm        the primary term associated with the primary shard when the shard is failed by the primary. Use 0L if the
-     *                           shard fails itself.
+     * @param primaryTerm        the primary term associated with the primary shard that is failing the shard.
      * @param message            the reason for the failure
      * @param failure            the underlying cause of the failure
      * @param listener           callback upon completion of the request
      */
-    public void shardFailed(final ShardRouting shardRouting, long primaryTerm, final String message, @Nullable final Exception failure, Listener listener) {
+    public void remoteShardFailed(final ShardRouting shardRouting, long primaryTerm, final String message, @Nullable final Exception failure, Listener listener) {
+        assert primaryTerm > 0L : "primary term should be strictly positive";
+        shardFailed(shardRouting, primaryTerm, message, failure, listener);
+    }
+
+    /**
+     * Send a shard failed request to the master node to update the cluster state when a shard on the local node failed.
+     */
+    public void localShardFailed(final ShardRouting shardRouting, final String message, @Nullable final Exception failure, Listener listener) {
+        shardFailed(shardRouting, 0L, message, failure, listener);
+    }
+
+    private void shardFailed(final ShardRouting shardRouting, long primaryTerm, final String message, @Nullable final Exception failure, Listener listener) {
         ClusterStateObserver observer = new ClusterStateObserver(clusterService, null, logger, threadPool.getThreadContext());
         ShardEntry shardEntry = new ShardEntry(shardRouting.shardId(), shardRouting.allocationId().getId(), primaryTerm, message, failure);
         sendShardAction(SHARD_FAILED_ACTION_NAME, observer, shardEntry, listener);
@@ -249,7 +260,7 @@ public class ShardStateAction extends AbstractComponent {
                 } else {
                     // non-local requests
                     if (task.primaryTerm > 0 && task.primaryTerm != indexMetaData.primaryTerm(task.shardId.id())) {
-                        logger.trace("{} primary term does not match (required [{}] but was [{}] for task {}", task.shardId,
+                        logger.trace("{} primary term does not match for task {} (required [{}] but was [{}])", task.shardId,
                             indexMetaData.primaryTerm(task.shardId.id()), task.primaryTerm, task);
                         batchResultBuilder.failure(task, new NoLongerPrimaryShardException(
                             task.shardId,
@@ -434,9 +445,12 @@ public class ShardStateAction extends AbstractComponent {
             this.failure = failure;
         }
 
-        public boolean matches(ShardRouting shardRouting) {
-            return shardId.equals(shardRouting.shardId()) && shardRouting.assignedToNode() &&
-                allocationId.equals(shardRouting.allocationId().getId());
+        public ShardId getShardId() {
+            return shardId;
+        }
+
+        public String getAllocationId() {
+            return allocationId;
         }
 
         @Override

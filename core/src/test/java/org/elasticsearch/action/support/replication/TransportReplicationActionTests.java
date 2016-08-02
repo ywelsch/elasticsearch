@@ -540,7 +540,8 @@ public class TransportReplicationActionTests extends ESTestCase {
         CapturingTransport.CapturedRequest shardFailedRequest = shardFailedRequests[0];
         ShardStateAction.ShardEntry shardEntry = (ShardStateAction.ShardEntry) shardFailedRequest.request;
         // the shard the request was sent to and the shard to be failed should be the same
-        assertTrue("request: " + shardEntry + " failed to match replica: " + replica, shardEntry.matches(replica));
+        assertEquals(shardEntry.getShardId(), replica.shardId());
+        assertEquals(shardEntry.getAllocationId(), replica.allocationId().getId());
         if (randomBoolean()) {
             // simulate success
             transport.handleResponse(shardFailedRequest.requestId, TransportResponse.Empty.INSTANCE);

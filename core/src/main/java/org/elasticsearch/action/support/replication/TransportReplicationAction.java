@@ -875,7 +875,7 @@ public abstract class TransportReplicationAction<
         @Override
         public void failShard(ShardRouting replica, long primaryTerm, String message, Exception exception,
                               Runnable onSuccess, Consumer<Exception> onFailure, Consumer<Exception> onIgnoredFailure) {
-            shardStateAction.shardFailed(
+            shardStateAction.remoteShardFailed(
                 replica, primaryTerm, message, exception,
                 new ShardStateAction.Listener() {
                     @Override

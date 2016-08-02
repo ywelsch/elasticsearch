@@ -466,7 +466,7 @@ public final class ShardRouting implements Writeable, ToXContent {
     }
 
     /**
-     * Returns <code>true</code> if this shard is a relocation target for another shard (i.e., was created with {@link #getTargetRelocatingShard()}
+     * Returns <code>true</code> if this shard is a relocation target for another shard (i.e., was created with {@link #initializeTargetRelocatingShard()}
      */
     public boolean isRelocationTarget() {
         return state == ShardRoutingState.INITIALIZING && relocatingNodeId != null;
