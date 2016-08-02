@@ -207,7 +207,7 @@ public class ClusterStateChanges extends AbstractComponent {
 
     public ClusterState applyFailedShards(ClusterState clusterState, List<FailedRerouteAllocation.FailedShard> failedShards) {
         List<ShardStateAction.ShardRoutingEntry> entries = failedShards.stream().map(failedShard ->
-            new ShardStateAction.ShardRoutingEntry(failedShard.routingEntry().shardId(), failedShard.routingEntry().allocationId().getId(),
+            new ShardStateAction.ShardRoutingEntry(failedShard.routingEntry.shardId(), failedShard.routingEntry.allocationId().getId(),
                 0L, failedShard.message, failedShard.failure))
             .collect(Collectors.toList());
         try {

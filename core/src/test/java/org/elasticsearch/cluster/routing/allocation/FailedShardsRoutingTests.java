@@ -331,7 +331,7 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         clusterState = ClusterState.builder(clusterState).routingTable(routingTable).build();
         routingNodes = clusterState.getRoutingNodes();
         for (FailedRerouteAllocation.FailedShard failedShard : failedShards) {
-            if (routingNodes.getByAllocationId(failedShard.routingEntry().shardId(), failedShard.routingEntry().allocationId().getId()) != null) {
+            if (routingNodes.getByAllocationId(failedShard.routingEntry.shardId(), failedShard.routingEntry.allocationId().getId()) != null) {
                 fail("shard " + failedShard + " was not failed");
             }
         }

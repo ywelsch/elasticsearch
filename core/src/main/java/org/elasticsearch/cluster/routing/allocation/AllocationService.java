@@ -237,10 +237,10 @@ public class AllocationService extends AbstractComponent {
 
         // as failing primaries also fail associated replicas, we fail replicas first here to avoid re-resolving replica ShardRouting
         List<FailedRerouteAllocation.FailedShard> orderedFailedShards = new ArrayList<>(failedShards);
-        orderedFailedShards.sort(Comparator.comparing(failedShard -> failedShard.routingEntry().primary()));
+        orderedFailedShards.sort(Comparator.comparing(failedShard -> failedShard.routingEntry.primary()));
 
         for (FailedRerouteAllocation.FailedShard failedShardEntry : orderedFailedShards) {
-            ShardRouting failedShard = failedShardEntry.routingEntry();
+            ShardRouting failedShard = failedShardEntry.routingEntry;
             final int failedAllocations = failedShard.unassignedInfo() != null ? failedShard.unassignedInfo().getNumFailedAllocations() : 0;
             UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.ALLOCATION_FAILED, failedShardEntry.message,
                 failedShardEntry.failure, failedAllocations + 1, currentNanoTime, System.currentTimeMillis(), false,
@@ -250,7 +250,7 @@ public class AllocationService extends AbstractComponent {
         }
         gatewayAllocator.applyFailedShards(allocation);
         reroute(allocation);
-        String failedShardsAsString = firstListElementsToCommaDelimitedString(failedShards, s -> s.routingEntry().shardId().toString());
+        String failedShardsAsString = firstListElementsToCommaDelimitedString(failedShards, s -> s.routingEntry.shardId().toString());
         return buildResultAndLogHealthChange(allocation, "shards failed [" + failedShardsAsString + "] ...");
     }
 

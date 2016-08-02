@@ -51,10 +51,6 @@ public class FailedRerouteAllocation extends RoutingAllocation {
             this.failure = failure;
         }
 
-        public ShardRouting routingEntry() {
-            return routingEntry;
-        }
-
         @Override
         public String toString() {
             return "failed shard, shard " + super.toString() + ", message [" + message + "], failure [" +
