@@ -220,9 +220,6 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         assertThat(routingTable.index("test").shard(0).primaryShard().currentNodeId(), anyOf(equalTo("node1"), equalTo("node2")));
         assertThat(routingTable.index("test").shard(0).replicaShards().size(), equalTo(1));
         assertThat(routingTable.index("test").shard(0).replicaShards().get(0).state(), equalTo(UNASSIGNED));
-
-        logger.info("fail the shard again, check that nothing happens");
-        assertThat(strategy.applyFailedShard(clusterState, shardToFail).changed(), equalTo(false));
     }
 
     public void testFirstAllocationFailureSingleNode() {
@@ -276,9 +273,6 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
             assertThat(routingTable.index("test").shard(i).replicaShards().size(), equalTo(1));
             assertThat(routingTable.index("test").shard(i).replicaShards().get(0).state(), equalTo(UNASSIGNED));
         }
-
-        logger.info("fail the shard again, see that nothing happens");
-        assertThat(strategy.applyFailedShard(clusterState, firstShard).changed(), equalTo(false));
     }
 
     public void testSingleShardMultipleAllocationFailures() {
@@ -320,12 +314,16 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         ArrayList<FailedRerouteAllocation.FailedShard> failedShards = new ArrayList<>();
         RoutingNodes routingNodes = clusterState.getRoutingNodes();
         Set<String> failedNodes = new HashSet<>();
+        Set<ShardRouting> shardRoutingsToFail = new HashSet<>();
         for (int i = 0; i < shardsToFail; i++) {
             String failedNode = "node" + Integer.toString(randomInt(numberOfReplicas));
             logger.info("failing shard on node [{}]", failedNode);
             ShardRouting shardToFail = routingNodes.node(failedNode).iterator().next();
-            failedShards.add(new FailedRerouteAllocation.FailedShard(shardToFail, null, null));
-            failedNodes.add(failedNode);
+            if (shardRoutingsToFail.contains(shardToFail) == false) {
+                failedShards.add(new FailedRerouteAllocation.FailedShard(shardToFail, null, null));
+                failedNodes.add(failedNode);
+                shardRoutingsToFail.add(shardToFail);
+            }
         }
 
         routingTable = strategy.applyFailedShards(clusterState, failedShards).routingTable();
@@ -333,7 +331,7 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         clusterState = ClusterState.builder(clusterState).routingTable(routingTable).build();
         routingNodes = clusterState.getRoutingNodes();
         for (FailedRerouteAllocation.FailedShard failedShard : failedShards) {
-            if (routingNodes.getByAllocationId(failedShard.shardId(), failedShard.allocationId()) != null) {
+            if (routingNodes.getByAllocationId(failedShard.routingEntry().shardId(), failedShard.routingEntry().allocationId().getId()) != null) {
                 fail("shard " + failedShard + " was not failed");
             }
         }
@@ -400,9 +398,6 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
             assertThat(routingTable.index("test").shard(i).replicaShards().size(), equalTo(1));
             assertThat(routingTable.index("test").shard(i).replicaShards().get(0).state(), equalTo(UNASSIGNED));
         }
-
-        logger.info("fail the shard again, see that nothing happens");
-        assertThat(strategy.applyFailedShard(clusterState, firstShard).changed(), equalTo(false));
     }
 
     public void testRebalanceFailure() {
@@ -540,10 +535,6 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
         clusterState = ClusterState.builder(clusterState).routingTable(allocation.applyStartedShards(clusterState, clusterState.getRoutingNodes().shardsWithState(INITIALIZING)).routingTable()).build();
         assertThat(clusterState.getRoutingNodes().shardsWithState(STARTED).size(), equalTo(1));
         assertThat(clusterState.getRoutingNodes().shardsWithState(INITIALIZING).size(), equalTo(2));
-
-        // simulate another failure coming in, with the "old" shard routing, verify that nothing changes, and we ignore it
-        routingResult = allocation.applyFailedShard(clusterState, primaryShardToFail);
-        assertThat(routingResult.changed(), equalTo(false));
     }
 
     public void testFailAllReplicasInitializingOnPrimaryFailWhileHavingAReplicaToElect() {
@@ -585,9 +576,5 @@ public class FailedShardsRoutingTests extends ESAllocationTestCase {
 
         ShardRouting newPrimaryShard = clusterState.routingTable().index("test").shard(0).primaryShard();
         assertThat(newPrimaryShard, not(equalTo(primaryShardToFail)));
-
-        // simulate another failure coming in, with the "old" shard routing, verify that nothing changes, and we ignore it
-        routingResult = allocation.applyFailedShard(clusterState, primaryShardToFail);
-        assertThat(routingResult.changed(), equalTo(false));
     }
 }

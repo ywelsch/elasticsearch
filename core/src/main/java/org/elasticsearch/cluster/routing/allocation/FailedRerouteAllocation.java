@@ -39,32 +39,33 @@ public class FailedRerouteAllocation extends RoutingAllocation {
      * A failed shard with the shard routing itself and an optional
      * details on why it failed.
      */
-    public static class FailedShard extends ShardAllocationId {
+    public static class FailedShard {
         public final String message;
         public final Exception failure;
+        public final ShardRouting routingEntry;
 
-        public FailedShard(ShardRouting shard, String message, Exception failure) {
-            super(shard);
-            assert shard.assignedToNode() : "only assigned shards can fail " + shard;
+        public FailedShard(ShardRouting routingEntry, String message, Exception failure) {
+            assert routingEntry.assignedToNode() : "only assigned shards can be failed " + routingEntry;
+            this.routingEntry = routingEntry;
             this.message = message;
             this.failure = failure;
         }
 
-        public FailedShard(ShardId shardId, String allocationId, String message, Exception failure) {
-            super(shardId, allocationId);
-            this.message = message;
-            this.failure = failure;
+        public ShardRouting routingEntry() {
+            return routingEntry;
         }
 
         @Override
         public String toString() {
-            return "failed shard, shard " + super.toString() + ", message [" + message + "], failure [" + ExceptionsHelper.detailedMessage(failure) + "]";
+            return "failed shard, shard " + super.toString() + ", message [" + message + "], failure [" +
+                ExceptionsHelper.detailedMessage(failure) + "]";
         }
     }
 
     private final List<FailedShard> failedShards;
 
-    public FailedRerouteAllocation(AllocationDeciders deciders, RoutingNodes routingNodes, ClusterState clusterState, List<FailedShard> failedShards, ClusterInfo clusterInfo, long currentNanoTime) {
+    public FailedRerouteAllocation(AllocationDeciders deciders, RoutingNodes routingNodes, ClusterState clusterState,
+                                   List<FailedShard> failedShards, ClusterInfo clusterInfo, long currentNanoTime) {
         super(deciders, routingNodes, clusterState, clusterInfo, currentNanoTime, false);
         this.failedShards = failedShards;
     }

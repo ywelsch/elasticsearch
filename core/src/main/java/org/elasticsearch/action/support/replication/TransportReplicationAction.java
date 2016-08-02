@@ -856,11 +856,6 @@ public abstract class TransportReplicationAction<
         public ShardRouting routingEntry() {
             return indexShard.routingEntry();
         }
-
-        @Override
-        public long primaryTerm() {
-            return indexShard.getPrimaryTerm();
-        }
     }
 
     final class ReplicasProxy implements ReplicationOperation.Replicas<ReplicaRequest> {

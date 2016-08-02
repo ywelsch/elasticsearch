@@ -21,7 +21,6 @@ package org.elasticsearch.cluster.routing;
 
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -99,7 +98,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
             }
             if (shard.relocating()) {
                 // create the target initializing shard routing on the node the shard is relocating to
-                allInitializingShards.add(shard.buildTargetRelocatingShard());
+                allInitializingShards.add(shard.getTargetRelocatingShard());
             }
             if (shard.assignedToNode()) {
                 assignedShards.add(shard);

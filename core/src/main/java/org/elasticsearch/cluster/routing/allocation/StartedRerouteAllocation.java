@@ -22,6 +22,7 @@ package org.elasticsearch.cluster.routing.allocation;
 import org.elasticsearch.cluster.ClusterInfo;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.routing.RoutingNodes;
+import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.allocation.decider.AllocationDeciders;
 
 import java.util.List;
@@ -32,9 +33,10 @@ import java.util.List;
  */
 public class StartedRerouteAllocation extends RoutingAllocation {
 
-    private final List<ShardAllocationId> startedShards;
+    private final List<ShardRouting> startedShards;
 
-    public StartedRerouteAllocation(AllocationDeciders deciders, RoutingNodes routingNodes, ClusterState clusterState, List<ShardAllocationId> startedShards, ClusterInfo clusterInfo, long currentNanoTime) {
+    public StartedRerouteAllocation(AllocationDeciders deciders, RoutingNodes routingNodes, ClusterState clusterState,
+                                    List<ShardRouting> startedShards, ClusterInfo clusterInfo, long currentNanoTime) {
         super(deciders, routingNodes, clusterState, clusterInfo, currentNanoTime, false);
         this.startedShards = startedShards;
     }
@@ -43,7 +45,7 @@ public class StartedRerouteAllocation extends RoutingAllocation {
      * Get started shards
      * @return list of started shards
      */
-    public List<ShardAllocationId> startedShards() {
+    public List<ShardRouting> startedShards() {
         return startedShards;
     }
 }

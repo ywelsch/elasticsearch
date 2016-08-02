@@ -24,14 +24,12 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.cluster.routing.AllocationId;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.cluster.routing.TestShardRouting;
-import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
@@ -49,7 +47,7 @@ public class StartedShardsRoutingTests extends ESAllocationTestCase {
         logger.info("--> building initial cluster state");
         final IndexMetaData indexMetaData = IndexMetaData.builder("test")
                 .settings(settings(Version.CURRENT))
-                .numberOfShards(3).numberOfReplicas(0)
+                .numberOfShards(2).numberOfReplicas(0)
                 .build();
         final Index index = indexMetaData.getIndex();
         ClusterState.Builder stateBuilder = ClusterState.builder(ClusterName.CLUSTER_NAME_SETTING.getDefault(Settings.EMPTY))
@@ -57,63 +55,27 @@ public class StartedShardsRoutingTests extends ESAllocationTestCase {
                 .metaData(MetaData.builder().put(indexMetaData, false));
 
         final ShardRouting initShard = TestShardRouting.newShardRouting(new ShardId(index, 0), "node1", true, ShardRoutingState.INITIALIZING);
-        final ShardRouting startedShard = TestShardRouting.newShardRouting(new ShardId(index, 1), "node2", true, ShardRoutingState.STARTED);
-        final ShardRouting relocatingShard = TestShardRouting.newShardRouting(new ShardId(index, 2), "node1", "node2", true, ShardRoutingState.RELOCATING);
+        final ShardRouting relocatingShard = TestShardRouting.newShardRouting(new ShardId(index, 1), "node1", "node2", true, ShardRoutingState.RELOCATING);
         stateBuilder.routingTable(RoutingTable.builder().add(IndexRoutingTable.builder(index)
                 .addIndexShard(new IndexShardRoutingTable.Builder(initShard.shardId()).addShard(initShard).build())
-                .addIndexShard(new IndexShardRoutingTable.Builder(startedShard.shardId()).addShard(startedShard).build())
                 .addIndexShard(new IndexShardRoutingTable.Builder(relocatingShard.shardId()).addShard(relocatingShard).build())).build());
 
         ClusterState state = stateBuilder.build();
 
         logger.info("--> test starting of shard");
 
-        RoutingAllocation.Result result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(initShard.shardId(), initShard.allocationId().getId())), false);
+        RoutingAllocation.Result result = allocation.applyStartedShards(state, Arrays.asList(initShard), false);
         assertTrue("failed to start " + initShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
         assertTrue(initShard + "isn't started \ncurrent routing table:" + result.routingTable().prettyPrint(),
                 result.routingTable().index("test").shard(initShard.id()).allShardsStarted());
 
 
-        logger.info("--> testing shard variants that shouldn't match the initializing shard");
-
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(initShard.shardId(), UUIDs.randomBase64UUID())), false);
-        assertFalse("wrong allocation id flag shouldn't start shard " + initShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
-
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(initShard.shardId(),
-                AllocationId.newTargetRelocation(AllocationId.newRelocation(initShard.allocationId())).getId())), false);
-        assertFalse("relocating shard from node shouldn't start shard " + initShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
-
-
-
-        logger.info("--> testing double starting");
-
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(startedShard.shardId(), startedShard.allocationId().getId())), false);
-        assertFalse("duplicate starting of the same shard should be ignored \ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
-
         logger.info("--> testing starting of relocating shards");
-        final AllocationId targetAllocationId = AllocationId.newTargetRelocation(relocatingShard.allocationId());
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(relocatingShard.shardId(), targetAllocationId.getId())), false);
-
+        result = allocation.applyStartedShards(state, Arrays.asList(relocatingShard.getTargetRelocatingShard()), false);
         assertTrue("failed to start " + relocatingShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
         ShardRouting shardRouting = result.routingTable().index("test").shard(relocatingShard.id()).getShards().get(0);
         assertThat(shardRouting.state(), equalTo(ShardRoutingState.STARTED));
         assertThat(shardRouting.currentNodeId(), equalTo("node2"));
         assertThat(shardRouting.relocatingNodeId(), nullValue());
-
-        logger.info("--> testing shard variants that shouldn't match the initializing relocating shard");
-
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(relocatingShard.shardId(), UUIDs.randomBase64UUID())), false);
-        assertFalse("wrong allocation id shouldn't start shard" + relocatingShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
-
-        result = allocation.applyStartedShards(state,
-            Arrays.asList(new ShardAllocationId(relocatingShard.shardId(), relocatingShard.allocationId().getId())), false);
-        assertFalse("wrong allocation id shouldn't start shard even if relocatingId==shard.id" + relocatingShard + "\ncurrent routing table:" + result.routingTable().prettyPrint(), result.changed());
-
     }
 }

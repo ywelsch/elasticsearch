@@ -31,13 +31,11 @@ import org.elasticsearch.cluster.MasterNodeChangePredicate;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.RoutingService;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.FailedRerouteAllocation;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
-import org.elasticsearch.cluster.routing.allocation.ShardAllocationId;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
@@ -65,8 +63,10 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class ShardStateAction extends AbstractComponent {
 
@@ -237,6 +237,7 @@ public class ShardStateAction extends AbstractComponent {
             BatchResult.Builder<ShardRoutingEntry> batchResultBuilder = BatchResult.builder();
             List<ShardRoutingEntry> validTasks = new ArrayList<>();
             List<FailedRerouteAllocation.FailedShard> validShardRoutings = new ArrayList<>();
+            Set<ShardRouting> seenValidShardRoutings = new HashSet<>();
 
             for (ShardRoutingEntry task : tasks) {
                 IndexMetaData indexMetaData = currentState.metaData().index(task.shardId.getIndex());
@@ -264,13 +265,22 @@ public class ShardStateAction extends AbstractComponent {
                             task.allocationId, task);
                         batchResultBuilder.success(task);
                     } else {
-                        logger.trace("{} shard with allocation id {} exists, marking task {} as successful", task.shardId,
-                            task.allocationId, task);
-                        validTasks.add(task);
-                        validShardRoutings.add(new FailedRerouteAllocation.FailedShard(matched, task.message, task.failure));
+                        // remove duplicate actions
+                        if (seenValidShardRoutings.contains(matched)) {
+                            logger.trace("{} shard with allocation id {} exists and already scheduled, processing task {}", task.shardId,
+                                task.allocationId, task);
+                            validTasks.add(task);
+                        } else {
+                            logger.trace("{} shard with allocation id {} exists, processing task {}", task.shardId,
+                                task.allocationId, task);
+                            validTasks.add(task);
+                            validShardRoutings.add(new FailedRerouteAllocation.FailedShard(matched, task.message, task.failure));
+                            seenValidShardRoutings.add(matched);
+                        }
                     }
                 }
             }
+            assert validTasks.size() >= validShardRoutings.size();
 
             ClusterState maybeUpdatedState = currentState;
             try {
@@ -349,22 +359,52 @@ public class ShardStateAction extends AbstractComponent {
         @Override
         public BatchResult<ShardRoutingEntry> execute(ClusterState currentState, List<ShardRoutingEntry> tasks) throws Exception {
             BatchResult.Builder<ShardRoutingEntry> builder = BatchResult.builder();
-            List<ShardAllocationId> shardEntriesToBeApplied = new ArrayList<>(tasks.size());
+            List<ShardRoutingEntry> validTasks = new ArrayList<>();
+            List<ShardRouting> validShardRoutings = new ArrayList<>(tasks.size());
+            Set<ShardRouting> seenValidShardRoutings = new HashSet<>();
             for (ShardRoutingEntry task : tasks) {
                 assert task.primaryTerm == 0L : "shard is only started by itself";
-                shardEntriesToBeApplied.add(new ShardAllocationId(task.shardId, task.allocationId));
+
+                ShardRouting matched = currentState.getRoutingTable().getByAllocationId(task.shardId, task.allocationId);
+                if (matched == null) {
+                    // tasks that correspond to non-existent shards are marked as successful
+                    logger.trace("{} shard with allocation id {} does not exist anymore, marking task {} as successful", task.shardId,
+                        task.allocationId, task);
+                    builder.success(task);
+                } else {
+                    if (matched.initializing() == false) {
+                        logger.trace("{} shard with allocation id {} exists, but is not initializing ({}), marking task {} as successful",
+                            task.shardId, task.allocationId, matched, task);
+                        builder.success(task);
+                    } else {
+                        // remove duplicate actions
+                        if (seenValidShardRoutings.contains(matched)) {
+                            logger.trace("{} shard with allocation id {} exists and already scheduled, processing task {}", task.shardId,
+                                task.allocationId, task);
+                            validTasks.add(task);
+                        } else {
+                            logger.trace("{} shard with allocation id {} exists, processing task {}", task.shardId,
+                                task.allocationId, task);
+                            validTasks.add(task);
+                            validShardRoutings.add(matched);
+                            seenValidShardRoutings.add(matched);
+                        }
+                    }
+                }
             }
+            assert validTasks.size() >= validShardRoutings.size();
+
             ClusterState maybeUpdatedState = currentState;
             try {
                 RoutingAllocation.Result result =
-                    allocationService.applyStartedShards(currentState, shardEntriesToBeApplied, true);
+                    allocationService.applyStartedShards(currentState, validShardRoutings, true);
                 if (result.changed()) {
                     maybeUpdatedState = ClusterState.builder(currentState).routingResult(result).build();
                 }
-                builder.successes(tasks);
+                builder.successes(validTasks);
             } catch (Exception e) {
                 logger.trace("failed to apply started shards", e);
-                builder.failures(tasks, e);
+                builder.failures(validTasks, e);
             }
 
             return builder.build(maybeUpdatedState);

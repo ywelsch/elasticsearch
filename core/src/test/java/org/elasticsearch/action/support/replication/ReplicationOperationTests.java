@@ -76,7 +76,7 @@ public class ReplicationOperationTests extends ESTestCase {
             // simulate execution of the replication phase on the relocation target node after relocation source was marked as relocated
             state = ClusterState.builder(state)
                 .nodes(DiscoveryNodes.builder(state.nodes()).localNodeId(primaryShard.relocatingNodeId())).build();
-            primaryShard = primaryShard.buildTargetRelocatingShard();
+            primaryShard = primaryShard.getTargetRelocatingShard();
         }
 
         final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state);
@@ -161,7 +161,7 @@ public class ReplicationOperationTests extends ESTestCase {
             // simulate execution of the replication phase on the relocation target node after relocation source was marked as relocated
             state = ClusterState.builder(state)
                 .nodes(DiscoveryNodes.builder(state.nodes()).localNodeId(primaryShard.relocatingNodeId())).build();
-            primaryShard = primaryShard.buildTargetRelocatingShard();
+            primaryShard = primaryShard.getTargetRelocatingShard();
         }
 
         final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state);
@@ -328,7 +328,7 @@ public class ReplicationOperationTests extends ESTestCase {
                 }
 
                 if (shardRouting.relocating() && localNodeId.equals(shardRouting.relocatingNodeId()) == false) {
-                    expectedReplicas.add(shardRouting.buildTargetRelocatingShard());
+                    expectedReplicas.add(shardRouting.getTargetRelocatingShard());
                 }
             }
         }
@@ -373,11 +373,6 @@ public class ReplicationOperationTests extends ESTestCase {
         @Override
         public ShardRouting routingEntry() {
             return routing;
-        }
-
-        @Override
-        public long primaryTerm() {
-            return term;
         }
 
         @Override

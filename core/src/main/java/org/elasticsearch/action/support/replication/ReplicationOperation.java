@@ -139,7 +139,7 @@ public class ReplicationOperation<
             }
 
             if (shard.relocating() && shard.relocatingNodeId().equals(localNodeId) == false) {
-                performOnReplica(shard.buildTargetRelocatingShard(), replicaRequest);
+                performOnReplica(shard.getTargetRelocatingShard(), replicaRequest);
             }
         }
     }
@@ -170,7 +170,7 @@ public class ReplicationOperation<
                         shard.shardId(), shard.currentNodeId(), replicaException, restStatus, false));
                     String message = String.format(Locale.ROOT, "failed to perform %s on replica %s", opType, shard);
                     logger.warn("[{}] {}", replicaException, shard.shardId(), message);
-                    replicasProxy.failShard(shard, primary.primaryTerm(), message, replicaException,
+                    replicasProxy.failShard(shard, replicaRequest.primaryTerm(), message, replicaException,
                         ReplicationOperation.this::decPendingAndFinishIfNeeded,
                         ReplicationOperation.this::onPrimaryDemoted,
                         throwable -> decPendingAndFinishIfNeeded()
@@ -306,11 +306,6 @@ public class ReplicationOperation<
          * routing entry for this primary
          */
         ShardRouting routingEntry();
-
-        /**
-         * primary term for this primary (fixed when primary shard is created)
-         */
-        long primaryTerm();
 
         /**
          * fail the primary, typically due to the fact that the operation has learned the primary has been demoted by the master
