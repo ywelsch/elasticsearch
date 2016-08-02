@@ -83,7 +83,7 @@ public final class ShardRouting implements Writeable, ToXContent {
     }
 
     @Nullable
-    private final ShardRouting initializeTargetRelocatingShard() {
+    private ShardRouting initializeTargetRelocatingShard() {
         if (state == ShardRoutingState.RELOCATING) {
             return new ShardRouting(shardId, relocatingNodeId, currentNodeId, restoreSource, primary,
                 ShardRoutingState.INITIALIZING, unassignedInfo, AllocationId.newTargetRelocation(allocationId), expectedShardSize);
