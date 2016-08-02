@@ -27,6 +27,7 @@ import org.elasticsearch.cluster.Diffable;
 import org.elasticsearch.cluster.DiffableUtils;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -144,6 +145,21 @@ public class RoutingTable implements Iterable<IndexRoutingTable>, Diffable<Routi
             .flatMap(irt -> Optional.ofNullable(irt.shard(shardId.getId())))
             .orElse(null);
     }
+
+    @Nullable
+    public ShardRouting getByAllocationId(ShardId shardId, String allocationId) {
+        IndexShardRoutingTable shardRoutingTable = shardRoutingTableOrNull(shardId);
+        if (shardRoutingTable == null) {
+            return null;
+        }
+        for (ShardRouting shardRouting : shardRoutingTable.assignedShards()) {
+            if (shardRouting.allocationId().getId().equals(allocationId)) {
+                return shardRouting;
+            }
+        }
+        return null;
+    }
+
 
     public boolean validate(MetaData metaData) {
         for (IndexRoutingTable indexRoutingTable : this) {

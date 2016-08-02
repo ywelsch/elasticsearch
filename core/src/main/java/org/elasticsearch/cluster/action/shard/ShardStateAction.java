@@ -31,6 +31,7 @@ import org.elasticsearch.cluster.MasterNodeChangePredicate;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.RoutingService;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
@@ -241,10 +242,14 @@ public class ShardStateAction extends AbstractComponent {
                 IndexMetaData indexMetaData = currentState.metaData().index(task.shardId.getIndex());
                 if (indexMetaData == null) {
                     // tasks that correspond to non-existent shards are marked as successful
+                    logger.trace("{} index metadata for index {} does not exist anymore, marking task {} as successful", task.shardId,
+                        task.shardId.getIndex(), task);
                     batchResultBuilder.success(task);
                 } else {
                     // non-local requests
                     if (task.primaryTerm > 0 && task.primaryTerm != indexMetaData.primaryTerm(task.shardId.id())) {
+                        logger.trace("{} primary term does not match (required [{}] but was [{}] for task {}", task.shardId,
+                            indexMetaData.primaryTerm(task.shardId.id()), task.primaryTerm, task);
                         batchResultBuilder.failure(task, new NoLongerPrimaryShardException(
                             task.shardId,
                             "primary term [" + task.primaryTerm + "] did not match current primary term [" +
@@ -252,11 +257,15 @@ public class ShardStateAction extends AbstractComponent {
                         continue;
                     }
 
-                    ShardRouting matched = currentState.getRoutingNodes().getByAllocationId(task.shardId, task.allocationId);
+                    ShardRouting matched = currentState.getRoutingTable().getByAllocationId(task.shardId, task.allocationId);
                     if (matched == null) {
                         // tasks that correspond to non-existent shards are marked as successful
+                        logger.trace("{} shard with allocation id {} does not exist anymore, marking task {} as successful", task.shardId,
+                            task.allocationId, task);
                         batchResultBuilder.success(task);
                     } else {
+                        logger.trace("{} shard with allocation id {} exists, marking task {} as successful", task.shardId,
+                            task.allocationId, task);
                         validTasks.add(task);
                         validShardRoutings.add(new FailedRerouteAllocation.FailedShard(matched, task.message, task.failure));
                     }
@@ -271,6 +280,7 @@ public class ShardStateAction extends AbstractComponent {
                 }
                 batchResultBuilder.successes(validTasks);
             } catch (Exception e) {
+                logger.trace("failed to apply failed shards", e);
                 // failures are communicated back to the requester
                 // cluster state will not be updated in this case
                 batchResultBuilder.failures(validTasks, e);
@@ -353,6 +363,7 @@ public class ShardStateAction extends AbstractComponent {
                 }
                 builder.successes(tasks);
             } catch (Exception e) {
+                logger.trace("failed to apply started shards", e);
                 builder.failures(tasks, e);
             }
 
