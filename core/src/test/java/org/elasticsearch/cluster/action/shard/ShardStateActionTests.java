@@ -29,9 +29,7 @@ import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.RoutingService;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
-import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.cluster.routing.ShardsIterator;
-import org.elasticsearch.cluster.routing.TestShardRouting;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
@@ -90,9 +88,9 @@ public class ShardStateActionTests extends ESTestCase {
         }
 
         @Override
-        protected void waitForNewMasterAndRetry(String actionName, ClusterStateObserver observer, ShardRoutingEntry shardRoutingEntry, Listener listener) {
+        protected void waitForNewMasterAndRetry(String actionName, ClusterStateObserver observer, ShardEntry shardEntry, Listener listener) {
             onBeforeWaitForNewMasterAndRetry.run();
-            super.waitForNewMasterAndRetry(actionName, observer, shardRoutingEntry, listener);
+            super.waitForNewMasterAndRetry(actionName, observer, shardEntry, listener);
             onAfterWaitForNewMasterAndRetry.run();
         }
     }
@@ -159,10 +157,10 @@ public class ShardStateActionTests extends ESTestCase {
         CapturingTransport.CapturedRequest[] capturedRequests = transport.getCapturedRequestsAndClear();
         assertEquals(1, capturedRequests.length);
         // the request is a shard failed request
-        assertThat(capturedRequests[0].request, is(instanceOf(ShardStateAction.ShardRoutingEntry.class)));
-        ShardStateAction.ShardRoutingEntry shardRoutingEntry = (ShardStateAction.ShardRoutingEntry) capturedRequests[0].request;
+        assertThat(capturedRequests[0].request, is(instanceOf(ShardStateAction.ShardEntry.class)));
+        ShardStateAction.ShardEntry shardEntry = (ShardStateAction.ShardEntry) capturedRequests[0].request;
         // for the right shard
-        assertTrue(shardRoutingEntry.matches(shardRouting));
+        assertTrue(shardEntry.matches(shardRouting));
         // sent to the master
         assertEquals(clusterService.state().nodes().getMasterNode().getId(), capturedRequests[0].node.getId());
 
