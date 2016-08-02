@@ -221,12 +221,12 @@ public class ShardStateAction extends AbstractComponent {
         }
     }
 
-    static class ShardFailedClusterStateTaskExecutor implements ClusterStateTaskExecutor<ShardRoutingEntry> {
+    public static class ShardFailedClusterStateTaskExecutor implements ClusterStateTaskExecutor<ShardRoutingEntry> {
         private final AllocationService allocationService;
         private final RoutingService routingService;
         private final ESLogger logger;
 
-        ShardFailedClusterStateTaskExecutor(AllocationService allocationService, RoutingService routingService, ESLogger logger) {
+        public ShardFailedClusterStateTaskExecutor(AllocationService allocationService, RoutingService routingService, ESLogger logger) {
             this.allocationService = allocationService;
             this.routingService = routingService;
             this.logger = logger;
@@ -347,7 +347,7 @@ public class ShardStateAction extends AbstractComponent {
         }
     }
 
-    private static class ShardStartedClusterStateTaskExecutor implements ClusterStateTaskExecutor<ShardRoutingEntry>, ClusterStateTaskListener {
+    public static class ShardStartedClusterStateTaskExecutor implements ClusterStateTaskExecutor<ShardRoutingEntry>, ClusterStateTaskListener {
         private final AllocationService allocationService;
         private final ESLogger logger;
 
@@ -426,7 +426,7 @@ public class ShardStateAction extends AbstractComponent {
         public ShardRoutingEntry() {
         }
 
-        ShardRoutingEntry(ShardId shardId, String allocationId, long primaryTerm, String message, @Nullable Exception failure) {
+        public ShardRoutingEntry(ShardId shardId, String allocationId, long primaryTerm, String message, @Nullable Exception failure) {
             this.shardId = shardId;
             this.allocationId = allocationId;
             this.primaryTerm = primaryTerm;
