@@ -110,27 +110,6 @@ public class ShardFailedClusterStateTaskExecutorTests extends ESAllocationTestCa
         assertTasksSuccessful(tasks, result, clusterState, false);
     }
 
-    public void testTriviallySuccessfulTasksBatchedWithFailingTasks() throws Exception {
-        String reason = "test trivially successful tasks batched with failing tasks";
-        ClusterState currentState = createClusterStateWithStartedShards(reason);
-        List<ShardStateAction.ShardEntry> failingTasks = createExistingShards(currentState, reason);
-        List<ShardStateAction.ShardEntry> nonExistentTasks = createNonExistentShards(currentState, reason);
-        ShardStateAction.ShardFailedClusterStateTaskExecutor failingExecutor = new ShardStateAction.ShardFailedClusterStateTaskExecutor(allocationService, null, logger) {
-            @Override
-            RoutingAllocation.Result applyFailedShards(ClusterState currentState, List<FailedRerouteAllocation.FailedShard> failedShards) {
-                throw new RuntimeException("simulated applyFailedShards failure");
-            }
-        };
-        List<ShardStateAction.ShardEntry> tasks = new ArrayList<>();
-        tasks.addAll(failingTasks);
-        tasks.addAll(nonExistentTasks);
-        ClusterStateTaskExecutor.BatchResult<ShardStateAction.ShardEntry> result = failingExecutor.execute(currentState, tasks);
-        Map<ShardStateAction.ShardEntry, ClusterStateTaskExecutor.TaskResult> taskResultMap =
-            failingTasks.stream().collect(Collectors.toMap(Function.identity(), task -> ClusterStateTaskExecutor.TaskResult.failure(new RuntimeException("simulated applyFailedShards failure"))));
-        taskResultMap.putAll(nonExistentTasks.stream().collect(Collectors.toMap(Function.identity(), task -> ClusterStateTaskExecutor.TaskResult.success())));
-        assertTaskResults(taskResultMap, result, currentState, false);
-    }
-
     public void testIllegalShardFailureRequests() throws Exception {
         String reason = "test illegal shard failure requests";
         ClusterState currentState = createClusterStateWithStartedShards(reason);

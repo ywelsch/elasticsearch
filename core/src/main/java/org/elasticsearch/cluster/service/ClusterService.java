@@ -19,6 +19,7 @@
 
 package org.elasticsearch.cluster.service;
 
+import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cluster.AckedClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
@@ -552,6 +553,8 @@ public class ClusterService extends AbstractLifecycleComponent {
             List<T> inputs = toExecute.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             batchResult = executor.execute(previousClusterState, inputs);
         } catch (Exception e) {
+            assert false : "cluster state update calculation should not fail. Tasks summary: " + tasksSummary +
+                ", previous cluster state: " + previousClusterState.prettyPrint() + ", exception: " + ExceptionsHelper.stackTrace(e);
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
             if (logger.isTraceEnabled()) {
                 logger.trace("failed to execute cluster state update in [{}], state:\nversion [{}], source [{}]\n{}{}{}", e, executionTime,
