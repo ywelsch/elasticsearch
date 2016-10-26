@@ -606,7 +606,7 @@ public class TransportService extends AbstractLifecycleComponent {
 
     }
 
-    private boolean shouldTraceAction(String action) {
+    public boolean shouldTraceAction(String action) {
         if (tracerLogInclude.length > 0) {
             if (Regex.simpleMatch(tracerLogInclude, action) == false) {
                 return false;
@@ -693,7 +693,7 @@ public class TransportService extends AbstractLifecycleComponent {
         @Override
         public void onRequestSent(DiscoveryNode node, long requestId, String action, TransportRequest request,
                                   TransportRequestOptions options) {
-            if (traceEnabled() && shouldTraceAction(action)) {
+            if (shouldTraceAction(action)) {
                 traceRequestSent(node, requestId, action, options);
             }
         }

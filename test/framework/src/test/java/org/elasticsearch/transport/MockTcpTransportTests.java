@@ -26,10 +26,18 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.indices.breaker.NoneCircuitBreakerService;
 import org.elasticsearch.test.transport.MockTransportService;
+import org.elasticsearch.threadpool.ThreadPool;
 
+import java.io.IOException;
 import java.util.Collections;
 
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.notNullValue;
+
 public class MockTcpTransportTests extends AbstractSimpleTransportTestCase {
+
+    public static final String NAME = "indices:admin/settings/update";
+
     @Override
     protected MockTransportService build(Settings settings, Version version, ClusterSettings clusterSettings) {
         NamedWriteableRegistry namedWriteableRegistry = new NamedWriteableRegistry(Collections.emptyList());
@@ -39,5 +47,69 @@ public class MockTcpTransportTests extends AbstractSimpleTransportTestCase {
             TransportService.NOOP_TRANSPORT_INTERCEPTOR, clusterSettings);
         mockTransportService.start();
         return mockTransportService;
+    }
+
+    public void testBla() throws InterruptedException {
+        serviceA.registerRequestHandler(NAME, TransportRequest.Empty::new, ThreadPool.Names.GENERIC,
+            (request, channel) -> {
+                try {
+                    TransportResponseOptions responseOptions = TransportResponseOptions.builder().withCompress(true).build();
+                    channel.sendResponse(TransportResponse.Empty.INSTANCE, responseOptions);
+                } catch (IOException e) {
+                    logger.error("Unexpected failure", e);
+                    fail(e.getMessage());
+                }
+            });
+
+        Thread[] threads = new Thread[50];
+        for (int j = 0; j < threads.length; j++) {
+            Thread thread = new Thread(() -> {
+                for (int i = 0; i < 10000; i++) {
+                    serviceB.shouldTraceAction(NAME);
+//                    TransportFuture<TransportResponse.Empty> res = serviceB.submitRequest(nodeA, NAME,
+//                        TransportRequest.Empty.INSTANCE, TransportRequestOptions.builder().withCompress(true).build(),
+//                        new TransportResponseHandler<TransportResponse.Empty>() {
+//                            @Override
+//                            public TransportResponse.Empty newInstance() {
+//                                return TransportResponse.Empty.INSTANCE;
+//                            }
+//
+//                            @Override
+//                            public String executor() {
+//                                return ThreadPool.Names.GENERIC;
+//                            }
+//
+//                            @Override
+//                            public void handleResponse(TransportResponse.Empty response) {
+//                            }
+//
+//                            @Override
+//                            public void handleException(TransportException exp) {
+//                                logger.error("Unexpected failure", exp);
+//                                fail("got exception instead of a response: " + exp.getMessage());
+//                            }
+//                        });
+//
+//                    try {
+//                        TransportResponse.Empty message = res.get();
+//                        assertThat(message, notNullValue());
+//                    } catch (Exception e) {
+//                        assertThat(e.getMessage(), false, equalTo(true));
+//                    }
+                }
+            });
+
+            threads[j] = thread;
+        }
+
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        for (Thread thread : threads) {
+            thread.join();
+        }
+
+
     }
 }
