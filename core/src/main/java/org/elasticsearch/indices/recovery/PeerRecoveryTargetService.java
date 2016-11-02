@@ -246,7 +246,7 @@ public class PeerRecoveryTargetService extends AbstractComponent implements Inde
             if (cause instanceof CancellableThreads.ExecutionCancelledException) {
                 // this can also come from the source wrapped in a RemoteTransportException
                 onGoingRecoveries.failRecovery(recoveryTarget.recoveryId(), new RecoveryFailedException(request, "source has canceled the" +
-                        " recovery", cause), false);
+                        " recovery", cause), true);
                 return;
             }
             if (cause instanceof RecoveryEngineException) {
@@ -293,7 +293,7 @@ public class PeerRecoveryTargetService extends AbstractComponent implements Inde
     public interface RecoveryListener {
         void onRecoveryDone(RecoveryState state);
 
-        void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure);
+        void onRecoveryFailure(RecoveryState state, RecoveryFailedException e);
     }
 
     class PrepareForTranslogOperationsRequestHandler implements TransportRequestHandler<RecoveryPrepareForTranslogOperationsRequest> {

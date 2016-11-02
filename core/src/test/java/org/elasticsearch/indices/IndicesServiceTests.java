@@ -97,7 +97,7 @@ public class IndicesServiceTests extends ESSingleNodeTestCase {
         shardId = new ShardId(test.index(), 0);
         assertTrue(test.hasShard(0));
         assertFalse("shard is allocated", indicesService.canDeleteShardContent(shardId, test.getIndexSettings()));
-        test.removeShard(0, "boom");
+        test.removeShard(test.getShard(0).routingEntry(), "boom");
         assertTrue("shard is removed", indicesService.canDeleteShardContent(shardId, test.getIndexSettings()));
         ShardId notAllocated = new ShardId(test.index(), 100);
         assertFalse("shard that was never on this node should NOT be deletable",

@@ -279,12 +279,12 @@ public abstract class AbstractIndicesClusterStateServiceTestCase extends ESTestC
         }
 
         @Override
-        public synchronized void removeShard(int shardId, String reason) {
-            if (shards.containsKey(shardId) == false) {
+        public synchronized void removeShard(ShardRouting shardRouting, String reason) {
+            if (shards.containsKey(shardRouting.getId()) == false) {
                 return;
             }
             HashMap<Integer, MockIndexShard> newShards = new HashMap<>(shards);
-            MockIndexShard indexShard = newShards.remove(shardId);
+            MockIndexShard indexShard = newShards.remove(shardRouting.getId());
             assert indexShard != null;
             shards = unmodifiableMap(newShards);
         }

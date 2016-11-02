@@ -97,7 +97,7 @@ public abstract class IndexShardTestCase extends ESTestCase {
         }
 
         @Override
-        public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure) {
+        public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e) {
             throw new AssertionError(e);
         }
     };

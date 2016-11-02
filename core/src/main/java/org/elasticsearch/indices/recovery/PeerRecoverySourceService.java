@@ -80,7 +80,7 @@ public class PeerRecoverySourceService extends AbstractComponent implements Inde
     public void beforeIndexShardClosed(ShardId shardId, @Nullable IndexShard indexShard,
                                        Settings indexSettings) {
         if (indexShard != null) {
-            ongoingRecoveries.cancel(indexShard, "shard is closed");
+            ongoingRecoveries.cancel(indexShard, "shard is closed", true);
         }
     }
 
@@ -154,13 +154,13 @@ public class PeerRecoverySourceService extends AbstractComponent implements Inde
             }
         }
 
-        synchronized void cancel(IndexShard shard, String reason) {
+        synchronized void cancel(IndexShard shard, String reason, boolean shardClosing) {
             final ShardRecoveryContext shardRecoveryContext = ongoingRecoveries.get(shard);
             if (shardRecoveryContext != null) {
                 final List<Exception> failures = new ArrayList<>();
                 for (RecoverySourceHandler handlers : shardRecoveryContext.recoveryHandlers) {
                     try {
-                        handlers.cancel(reason);
+                        handlers.cancel(reason, shardClosing);
                     } catch (Exception ex) {
                         failures.add(ex);
                     } finally {

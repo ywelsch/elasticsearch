@@ -48,7 +48,7 @@ public class RecoveryStatusTests extends ESSingleNodeTestCase {
             }
 
             @Override
-            public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure) {
+            public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e) {
             }
         }, version -> {});
         try (IndexOutput indexOutput = status.openAndPutIndexOutput("foo.bar", new StoreFileMetaData("foo.bar", 8 + CodecUtil.footerLength(), "9z51nw"), status.store())) {
@@ -82,6 +82,6 @@ public class RecoveryStatusTests extends ESSingleNodeTestCase {
         assertTrue(strings.toString(), strings.contains("foo.bar"));
         assertFalse(strings.toString(), strings.contains(expectedFile));
         // we must fail the recovery because marking it as done will try to move the shard to POST_RECOVERY, which will fail because it's started
-        status.fail(new RecoveryFailedException(status.state(), "end of test. OK.", null), false);
+        status.fail(new RecoveryFailedException(status.state(), "end of test. OK.", null));
     }
 }

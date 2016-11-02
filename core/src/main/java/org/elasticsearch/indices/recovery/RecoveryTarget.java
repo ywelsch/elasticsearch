@@ -215,12 +215,11 @@ public class RecoveryTarget extends AbstractRefCounted implements RecoveryTarget
      * fail the recovery and call listener
      *
      * @param e                exception that encapsulating the failure
-     * @param sendShardFailure indicates whether to notify the master of the shard failure
      */
-    public void fail(RecoveryFailedException e, boolean sendShardFailure) {
+    public void fail(RecoveryFailedException e) {
         if (finished.compareAndSet(false, true)) {
             try {
-                listener.onRecoveryFailure(state(), e, sendShardFailure);
+                listener.onRecoveryFailure(state(), e);
             } finally {
                 try {
                     cancellableThreads.cancel("failed recovery [" + ExceptionsHelper.stackTrace(e) + "]");
@@ -396,11 +395,11 @@ public class RecoveryTarget extends AbstractRefCounted implements RecoveryTarget
                 ex.addSuppressed(e);
             }
             RecoveryFailedException rfe = new RecoveryFailedException(state(), "failed to clean after recovery", ex);
-            fail(rfe, true);
+            fail(rfe);
             throw rfe;
         } catch (Exception ex) {
             RecoveryFailedException rfe = new RecoveryFailedException(state(), "failed to clean after recovery", ex);
-            fail(rfe, true);
+            fail(rfe);
             throw rfe;
         }
     }

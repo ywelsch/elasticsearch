@@ -378,17 +378,17 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
                     // we can just remove the shard without cleaning it locally, since we will clean it in IndicesStore
                     // once all shards are allocated
                     logger.debug("{} removing shard (not allocated)", shardId);
-                    indexService.removeShard(shardId.id(), "removing shard (not allocated)");
+                    indexService.removeShard(shard.routingEntry(), "removing shard (not allocated)");
                 } else if (newShardRouting.isSameAllocation(currentRoutingEntry) == false) {
                     logger.debug("{} removing shard (stale allocation id, stale {}, new {})", shardId,
                         currentRoutingEntry, newShardRouting);
-                    indexService.removeShard(shardId.id(), "removing shard (stale copy)");
+                    indexService.removeShard(shard.routingEntry(), "removing shard (stale copy)");
                 } else if (newShardRouting.initializing() && currentRoutingEntry.active()) {
                     // this can happen if the node was isolated/gc-ed, rejoins the cluster and a new shard with the same allocation id
                     // is assigned to it. Batch cluster state processing or if shard fetching completes before the node gets a new cluster
                     // state may result in a new shard being initialized while having the same allocation id as the currently started shard.
                     logger.debug("{} removing shard (not active, current {}, new {})", shardId, currentRoutingEntry, newShardRouting);
-                    indexService.removeShard(shardId.id(), "removing shard (stale copy)");
+                    indexService.removeShard(shard.routingEntry(), "removing shard (stale copy)");
                 } else {
                     // remove shards where recovery source has changed. This re-initializes shards later in createOrUpdateShards
                     if (newShardRouting.recoverySource() != null && newShardRouting.recoverySource().getType() == Type.PEER) {
@@ -399,7 +399,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
                                 // getting here means that the shard was still recovering
                                 logger.debug("{} removing shard (recovery source changed), current [{}], global [{}], shard [{}])",
                                     shardId, recoveryState.getSourceNode(), sourceNode, newShardRouting);
-                                indexService.removeShard(shardId.id(), "removing shard (recovery source node changed)");
+                                indexService.removeShard(shard.routingEntry(), "removing shard (recovery source node changed)");
                             }
                         }
                     }
@@ -616,20 +616,20 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
         }
 
         @Override
-        public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e, boolean sendShardFailure) {
-            handleRecoveryFailure(shardRouting, sendShardFailure, e);
+        public void onRecoveryFailure(RecoveryState state, RecoveryFailedException e) {
+            handleRecoveryFailure(shardRouting, e);
         }
     }
 
-    private synchronized void handleRecoveryFailure(ShardRouting shardRouting, boolean sendShardFailure, Exception failure) {
-        failAndRemoveShard(shardRouting, sendShardFailure, "failed recovery", failure);
+    private synchronized void handleRecoveryFailure(ShardRouting shardRouting, Exception failure) {
+        failAndRemoveShard(shardRouting, true, "failed recovery", failure);
     }
 
     private void failAndRemoveShard(ShardRouting shardRouting, boolean sendShardFailure, String message, @Nullable Exception failure) {
         try {
             AllocatedIndex<? extends Shard> indexService = indicesService.indexService(shardRouting.shardId().getIndex());
             if (indexService != null) {
-                indexService.removeShard(shardRouting.shardId().id(), message);
+                indexService.removeShard(shardRouting, message);
             }
         } catch (ShardNotFoundException e) {
             // the node got closed on us, ignore it
@@ -736,7 +736,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
         /**
          * Removes shard with given id.
          */
-        void removeShard(int shardId, String message);
+        void removeShard(ShardRouting shardRouting, String message);
     }
 
     public interface AllocatedIndices<T extends Shard, U extends AllocatedIndex<T>> extends Iterable<U> {

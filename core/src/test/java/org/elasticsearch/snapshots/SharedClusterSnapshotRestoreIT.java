@@ -2543,7 +2543,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         assertNotNull("should be at least one node with a primary shard", nodeWithPrimary);
         IndicesService indicesService = internalCluster().getInstance(IndicesService.class, nodeWithPrimary);
         IndexService indexService = indicesService.indexService(resolveIndex(index));
-        indexService.removeShard(0, "simulate node removal");
+        indexService.removeShard(indexService.getShard(0).routingEntry(), "simulate node removal");
 
         logger.info("--> unblocking blocked node [{}]", blockedNode);
         unblockNode(repo, blockedNode);

@@ -85,12 +85,13 @@ public class RecoverySourceHandler {
     private final RecoveryTargetHandler recoveryTarget;
 
     protected final RecoveryResponse response;
+    volatile boolean shardClosing;
 
     private final CancellableThreads cancellableThreads = new CancellableThreads() {
         @Override
         protected void onCancel(String reason, @Nullable Exception suppressedException) {
             RuntimeException e;
-            if (shard.state() == IndexShardState.CLOSED) { // check if the shard got closed on us
+            if (shardClosing) { // check if the shard is getting closed on us
                 e = new IndexShardClosedException(shard.shardId(), "shard is closed and recovery was canceled reason [" + reason + "]");
             } else {
                 e = new ExecutionCancelledException("recovery was canceled reason [" + reason + "]");
@@ -494,7 +495,8 @@ public class RecoverySourceHandler {
     /**
      * Cancels the recovery and interrupts all eligible threads.
      */
-    public void cancel(String reason) {
+    public void cancel(String reason, boolean shardClosing) {
+        this.shardClosing = shardClosing;
         cancellableThreads.cancel(reason);
     }
 

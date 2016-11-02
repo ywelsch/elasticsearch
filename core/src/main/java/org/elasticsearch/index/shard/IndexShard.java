@@ -1483,7 +1483,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             recoveryListener.onRecoveryDone(recoveryState);
                         }
                     } catch (Exception e) {
-                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e));
                     }
                 });
                 break;
@@ -1493,7 +1493,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                     recoveryTargetService.startRecovery(this, recoveryState.getSourceNode(), recoveryListener);
                 } catch (Exception e) {
                     failShard("corrupted preexisting index", e);
-                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e));
                 }
                 break;
             case SNAPSHOT:
@@ -1506,7 +1506,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             recoveryListener.onRecoveryDone(recoveryState);
                         }
                     } catch (Exception e) {
-                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                        recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e));
                     }
                 });
                 break;
@@ -1535,7 +1535,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             }
                         } catch (Exception e) {
                             recoveryListener.onRecoveryFailure(recoveryState,
-                                new RecoveryFailedException(recoveryState, null, e), true);
+                                new RecoveryFailedException(recoveryState, null, e));
                         }
                     });
                 } else {
@@ -1547,7 +1547,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                             + " are started yet, expected " + numShards + " found " + startedShards.size() + " can't recover shard "
                             + shardId());
                     }
-                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e), true);
+                    recoveryListener.onRecoveryFailure(recoveryState, new RecoveryFailedException(recoveryState, null, e));
                 }
                 break;
             default:

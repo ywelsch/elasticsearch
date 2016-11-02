@@ -85,6 +85,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
+import java.util.stream.Collectors;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.unmodifiableMap;
@@ -240,10 +241,10 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         if (closed.compareAndSet(false, true)) {
             deleted.compareAndSet(false, delete);
             try {
-                final Set<Integer> shardIds = shardIds();
-                for (final int shardId : shardIds) {
+                Set<ShardRouting> shardRoutings = shards.values().stream().map(IndexShard::routingEntry).collect(Collectors.toSet());
+                for (ShardRouting shardRouting : shardRoutings) {
                     try {
-                        removeShard(shardId, reason);
+                        removeShard(shardRouting, reason);
                     } catch (Exception e) {
                         logger.warn("failed to close shard", e);
                     }
@@ -377,15 +378,16 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     }
 
     @Override
-    public synchronized void removeShard(int shardId, String reason) {
+    public synchronized void removeShard(ShardRouting shardRouting, String reason) {
+        int shardId = shardRouting.id();
         final ShardId sId = new ShardId(index(), shardId);
-        final IndexShard indexShard;
-        if (shards.containsKey(shardId) == false) {
+        final IndexShard indexShard = shards.get(shardId);
+        if (indexShard == null || indexShard.routingEntry().isSameAllocation(shardRouting) == false) {
             return;
         }
         logger.debug("[{}] closing... (reason: [{}])", shardId, reason);
         HashMap<Integer, IndexShard> newShards = new HashMap<>(shards);
-        indexShard = newShards.remove(shardId);
+        newShards.remove(shardId);
         shards = unmodifiableMap(newShards);
         closeShard(reason, sId, indexShard, indexShard.store(), indexShard.getIndexEventListener());
         logger.debug("[{}] closed (reason: [{}])", shardId, reason);
