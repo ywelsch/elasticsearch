@@ -230,9 +230,11 @@ final class Security {
             }
             // resource itself
             policy.add(new FilePermission(path.toString(), "read,readlink"));
+            policy.add(new FilePermission(path.toAbsolutePath().toString(), "read,readlink"));
             // classes underneath
             if (Files.isDirectory(path)) {
                 policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", "read,readlink"));
+                policy.add(new FilePermission(path.toAbsolutePath().toString() + path.getFileSystem().getSeparator() + "-", "read,readlink"));
             }
         }
     }
@@ -263,6 +265,7 @@ final class Security {
         if (environment.pidFile() != null) {
             // we just need permission to remove the file if its elsewhere.
             policy.add(new FilePermission(environment.pidFile().toString(), "delete"));
+            policy.add(new FilePermission(environment.pidFile().toAbsolutePath().toString(), "delete"));
         }
     }
 
@@ -313,7 +316,9 @@ final class Security {
 
         // add each path twice: once for itself, again for files underneath it
         policy.add(new FilePermission(path.toString(), permissions));
+        policy.add(new FilePermission(path.toAbsolutePath().toString(), permissions));
         policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
+        policy.add(new FilePermission(path.toAbsolutePath().toString() + path.getFileSystem().getSeparator() + "-", permissions));
     }
 
     /**
@@ -327,7 +332,9 @@ final class Security {
         if (Files.isDirectory(path)) {
             // add each path twice: once for itself, again for files underneath it
             policy.add(new FilePermission(path.toString(), permissions));
+            policy.add(new FilePermission(path.toAbsolutePath().toString(), permissions));
             policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
+            policy.add(new FilePermission(path.toAbsolutePath().toString() + path.getFileSystem().getSeparator() + "-", permissions));
             try {
                 path.getFileSystem().provider().checkAccess(path.toRealPath(), AccessMode.READ);
             } catch (IOException e) {

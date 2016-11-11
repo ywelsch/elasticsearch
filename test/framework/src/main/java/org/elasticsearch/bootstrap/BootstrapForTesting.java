@@ -104,7 +104,9 @@ public class BootstrapForTesting {
                     if (filename.contains("jython") && filename.endsWith(".jar")) {
                         // just enough so it won't fail when it does not exist
                         perms.add(new FilePermission(path.getParent().toString(), "read,readlink"));
+                        perms.add(new FilePermission(path.getParent().toAbsolutePath().toString(), "read,readlink"));
                         perms.add(new FilePermission(path.getParent().resolve("Lib").toString(), "read,readlink"));
+                        perms.add(new FilePermission(path.getParent().resolve("Lib").toAbsolutePath().toString(), "read,readlink"));
                     }
                 }
                 // java.io.tmpdir
@@ -117,8 +119,10 @@ public class BootstrapForTesting {
                 if (Boolean.getBoolean("tests.coverage")) {
                     Path coverageDir = PathUtils.get(System.getProperty("tests.coverage.dir"));
                     perms.add(new FilePermission(coverageDir.resolve("jacoco.exec").toString(), "read,write"));
+                    perms.add(new FilePermission(coverageDir.resolve("jacoco.exec").toAbsolutePath().toString(), "read,write"));
                     // in case we get fancy and use the -integration goals later:
                     perms.add(new FilePermission(coverageDir.resolve("jacoco-it.exec").toString(), "read,write"));
+                    perms.add(new FilePermission(coverageDir.resolve("jacoco-it.exec").toAbsolutePath().toString(), "read,write"));
                 }
                 // intellij hack: intellij test runner wants setIO and will
                 // screw up all test logging without it!
