@@ -311,9 +311,28 @@ final class Security {
             throw new IllegalStateException("Unable to access '" + configurationName + "' (" + path + ")", e);
         }
 
+//        assert path.isAbsolute() : "Path " + path + " not absolute";
+//        assert path.normalize().toString().equals(path.toString()) : "Path " + path + " is not normalized: " + path.normalize();
+//        assert Files.isSymbolicLink(path) == false;
+
+        //assert realPath.toString().equals(path.toString());
+
         // add each path twice: once for itself, again for files underneath it
-        policy.add(new FilePermission(path.toString(), permissions));
-        policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
+
+        Path realPath;
+        try {
+            realPath = path.normalize().toRealPath();
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to convert to real path '" + configurationName + "' (" + path + ")", e);
+        }
+        if (path.toString().equals(realPath.toString()) == false) {
+            System.out.println("NEED REALPATH " + path + " real: " + realPath);
+            policy.add(new FilePermission(realPath.toString(), permissions));
+            policy.add(new FilePermission(realPath.toString() + path.getFileSystem().getSeparator() + "-", permissions));
+        } else {
+            policy.add(new FilePermission(path.toString(), permissions));
+            policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
+        }
     }
 
     /**
