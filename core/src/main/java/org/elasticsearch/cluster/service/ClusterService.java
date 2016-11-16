@@ -432,7 +432,7 @@ public class ClusterService extends AbstractLifecycleComponent {
      * @param source   the source of the cluster state update task
      * @param tasks    a map of update tasks and their corresponding listeners
      * @param config   the cluster state update task configuration
-     * @param executor the cluster state update task executor; tasks
+     * @param ex       the cluster state update task executor; tasks
      *                 that share the same executor will be executed
      *                 batches on this executor
      * @param <T>      the type of the cluster state update task state
@@ -440,7 +440,7 @@ public class ClusterService extends AbstractLifecycleComponent {
      */
     public <T> void submitStateUpdateTasks(final String source,
                                            final Map<T, ClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
-                                           final ClusterStateTaskExecutor<T> executor) {
+                                           final ClusterStateTaskExecutor<T> ex) {
         if (!lifecycle.started()) {
             return;
         }
@@ -448,16 +448,18 @@ public class ClusterService extends AbstractLifecycleComponent {
             return;
         }
         try {
+            @SuppressWarnings("unchecked")
+            ClusterStateTaskExecutor<Object> executor = (ClusterStateTaskExecutor<Object>) ex;
             // convert to an identity map to check for dups based on update tasks semantics of using identity instead of equal
-            final IdentityHashMap<T, ClusterStateTaskListener> tasksIdentity = new IdentityHashMap<>(tasks);
-            final List<UpdateTask<T>> updateTasks = tasksIdentity.entrySet().stream().map(
-                entry -> new UpdateTask<>(source, entry.getKey(), config.priority(), executor, safe(entry.getValue(), logger))
+            final IdentityHashMap<Object, ClusterStateTaskListener> tasksIdentity = new IdentityHashMap<>(tasks);
+            final List<UpdateTask> updateTasks = tasksIdentity.entrySet().stream().map(
+                entry -> new UpdateTask(source, entry.getKey(), config.priority(), executor, safe(entry.getValue(), logger))
             ).collect(Collectors.toList());
 
             synchronized (updateTasksPerExecutor) {
                 LinkedHashSet<UpdateTask> existingTasks = updateTasksPerExecutor.computeIfAbsent(executor,
                     k -> new LinkedHashSet<>(updateTasks.size()));
-                for (@SuppressWarnings("unchecked") UpdateTask<T> existing : existingTasks) {
+                for (UpdateTask existing : existingTasks) {
                     if (tasksIdentity.containsKey(existing.task)) {
                         throw new IllegalStateException("task [" + executor.describeTasks(Collections.singletonList(existing.task)) +
                             "] with source [" + source + "] is already queued");
@@ -466,20 +468,20 @@ public class ClusterService extends AbstractLifecycleComponent {
                 existingTasks.addAll(updateTasks);
             }
 
-            final UpdateTask<T> firstTask = updateTasks.get(0);
+            final UpdateTask firstTask = updateTasks.get(0);
 
             final TimeValue timeout = config.timeout();
             if (timeout != null) {
                 updateTasksExecutor.execute(firstTask, threadPool.scheduler(), timeout, () -> threadPool.generic().execute(() -> {
-                    final ArrayList<UpdateTask<T>> toRemove = new ArrayList<>();
-                    for (UpdateTask<T> task : updateTasks) {
+                    final ArrayList<UpdateTask> toRemove = new ArrayList<>();
+                    for (UpdateTask task : updateTasks) {
                         if (task.processed.getAndSet(true) == false) {
                             logger.debug("cluster state update task [{}] timed out after [{}]", source, timeout);
                             toRemove.add(task);
                         }
                     }
                     if (toRemove.isEmpty() == false) {
-                        ClusterStateTaskExecutor<T> clusterStateTaskExecutor = toRemove.get(0).executor;
+                        ClusterStateTaskExecutor<Object> clusterStateTaskExecutor = toRemove.get(0).executor;
                         synchronized (updateTasksPerExecutor) {
                             LinkedHashSet<UpdateTask> existingTasks = updateTasksPerExecutor.get(clusterStateTaskExecutor);
                             if (existingTasks != null) {
@@ -489,7 +491,7 @@ public class ClusterService extends AbstractLifecycleComponent {
                                 }
                             }
                         }
-                        for (UpdateTask<T> task : toRemove) {
+                        for (UpdateTask task : toRemove) {
                             task.listener.onFailure(source, new ProcessClusterEventTimeoutException(timeout, source));
                         }
                     }
@@ -582,13 +584,13 @@ public class ClusterService extends AbstractLifecycleComponent {
         }
     }
 
-    <T> void runTasksForExecutor(ClusterStateTaskExecutor<T> executor) {
-        final ArrayList<UpdateTask<T>> toExecute = new ArrayList<>();
-        final Map<String, ArrayList<T>> processTasksBySource = new HashMap<>();
+    void runTasksForExecutor(ClusterStateTaskExecutor<Object> executor) {
+        final ArrayList<UpdateTask> toExecute = new ArrayList<>();
+        final Map<String, ArrayList<Object>> processTasksBySource = new HashMap<>();
         synchronized (updateTasksPerExecutor) {
             LinkedHashSet<UpdateTask> pending = updateTasksPerExecutor.remove(executor);
             if (pending != null) {
-                for (UpdateTask<T> task : pending) {
+                for (UpdateTask task : pending) {
                     if (task.processed.getAndSet(true) == false) {
                         logger.trace("will process {}", task);
                         toExecute.add(task);
@@ -618,10 +620,10 @@ public class ClusterService extends AbstractLifecycleComponent {
             toExecute.stream().forEach(task -> task.listener.onNoLongerMaster(task.source));
             return;
         }
-        ClusterStateTaskExecutor.BatchResult<T> batchResult;
+        ClusterStateTaskExecutor.BatchResult<Object> batchResult;
         long startTimeNS = currentTimeInNanos();
         try {
-            List<T> inputs = toExecute.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
+            List<Object> inputs = toExecute.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             batchResult = executor.execute(previousClusterState, inputs);
         } catch (Exception e) {
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
@@ -638,7 +640,7 @@ public class ClusterService extends AbstractLifecycleComponent {
                     e);
             }
             warnAboutSlowTaskIfNeeded(executionTime, tasksSummary);
-            batchResult = ClusterStateTaskExecutor.BatchResult.<T>builder()
+            batchResult = ClusterStateTaskExecutor.BatchResult.builder()
                     .failures(toExecute.stream().map(updateTask -> updateTask.task)::iterator, e)
                     .build(previousClusterState);
         }
@@ -650,16 +652,16 @@ public class ClusterService extends AbstractLifecycleComponent {
         boolean assertsEnabled = false;
         assert (assertsEnabled = true);
         if (assertsEnabled) {
-            for (UpdateTask<T> updateTask : toExecute) {
+            for (UpdateTask updateTask : toExecute) {
                 assert batchResult.executionResults.containsKey(updateTask.task) :
                     "missing task result for " + updateTask;
             }
         }
 
         ClusterState newClusterState = batchResult.resultingState;
-        final ArrayList<UpdateTask<T>> proccessedListeners = new ArrayList<>();
+        final ArrayList<UpdateTask> proccessedListeners = new ArrayList<>();
         // fail all tasks that have failed and extract those that are waiting for results
-        for (UpdateTask<T> updateTask : toExecute) {
+        for (UpdateTask updateTask : toExecute) {
             assert batchResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask;
             final ClusterStateTaskExecutor.TaskResult executionResult =
                     batchResult.executionResults.get(updateTask.task);
@@ -675,7 +677,7 @@ public class ClusterService extends AbstractLifecycleComponent {
         }
 
         if (previousClusterState == newClusterState) {
-            for (UpdateTask<T> task : proccessedListeners) {
+            for (UpdateTask task : proccessedListeners) {
                 if (task.listener instanceof AckedClusterStateTaskListener) {
                     //no need to wait for ack if nothing changed, the update can be counted as acknowledged
                     ((AckedClusterStateTaskListener) task.listener).onAllNodesAcked(null);
@@ -701,7 +703,7 @@ public class ClusterService extends AbstractLifecycleComponent {
                     builder.metaData(MetaData.builder(newClusterState.metaData()).version(newClusterState.metaData().version() + 1));
                 }
                 newClusterState = builder.build();
-                for (UpdateTask<T> task : proccessedListeners) {
+                for (UpdateTask task : proccessedListeners) {
                     if (task.listener instanceof AckedClusterStateTaskListener) {
                         final AckedClusterStateTaskListener ackedListener = (AckedClusterStateTaskListener) task.listener;
                         if (ackedListener.ackTimeout() == null || ackedListener.ackTimeout().millis() == 0) {
@@ -808,7 +810,7 @@ public class ClusterService extends AbstractLifecycleComponent {
                 }
             }
 
-            for (UpdateTask<T> task : proccessedListeners) {
+            for (UpdateTask task : proccessedListeners) {
                 task.listener.clusterStateProcessed(task.source, previousClusterState, newClusterState);
             }
 
@@ -943,14 +945,15 @@ public class ClusterService extends AbstractLifecycleComponent {
         }
     }
 
-    class UpdateTask<T> extends SourcePrioritizedRunnable {
+    class UpdateTask extends SourcePrioritizedRunnable {
 
-        public final T task;
+        public final Object task;
         public final ClusterStateTaskListener listener;
-        private final ClusterStateTaskExecutor<T> executor;
+        private final ClusterStateTaskExecutor<Object> executor;
         public final AtomicBoolean processed = new AtomicBoolean();
 
-        UpdateTask(String source, T task, Priority priority, ClusterStateTaskExecutor<T> executor, ClusterStateTaskListener listener) {
+        UpdateTask(String source, Object task, Priority priority, ClusterStateTaskExecutor<Object> executor,
+                   ClusterStateTaskListener listener) {
             super(priority, source);
             this.task = task;
             this.executor = executor;
