@@ -25,13 +25,21 @@ import org.elasticsearch.cluster.ClusterState;
  * A simple immutable container class that comprises a cluster state and cluster state status. Used by {@link ClusterService}
  * to provide a snapshot view on which cluster state is currently being applied / already applied.
  */
-public class ClusterServiceState {
+public final class ClusterServiceState {
     private final ClusterState clusterState;
     private final ClusterStateStatus clusterStateStatus;
+    private final ClusterState publishedClusterState;
 
     public ClusterServiceState(ClusterState clusterState, ClusterStateStatus clusterStateStatus) {
+        this(clusterState, clusterStateStatus, clusterState);
+    }
+
+    public ClusterServiceState(ClusterState clusterState, ClusterStateStatus clusterStateStatus, ClusterState publishedClusterState) {
         this.clusterState = clusterState;
         this.clusterStateStatus = clusterStateStatus;
+        this.publishedClusterState = publishedClusterState;
+//        assert clusterStateStatus == ClusterStateStatus.UNKNOWN || publishedClusterState.nodes().getMasterNodeId() != null :
+//            "published cluster state must have master: " + publishedClusterState;
     }
 
     public ClusterState getClusterState() {
@@ -40,6 +48,10 @@ public class ClusterServiceState {
 
     public ClusterStateStatus getClusterStateStatus() {
         return clusterStateStatus;
+    }
+
+    public ClusterState getPublishedClusterState() {
+        return clusterState;
     }
 
     @Override
