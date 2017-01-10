@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
-import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
@@ -56,9 +56,10 @@ public class TestZenDiscovery extends ZenDiscovery {
         @Override
         public Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                                   NamedWriteableRegistry namedWriteableRegistry,
-                                                                  ClusterService clusterService, UnicastHostsProvider hostsProvider) {
+                                                                  DiscoveryService discoveryService, UnicastHostsProvider hostsProvider) {
             return Collections.singletonMap("test-zen",
-                () -> new TestZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, clusterService, hostsProvider));
+                () -> new TestZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService,
+                    hostsProvider));
         }
 
         @Override
@@ -73,9 +74,9 @@ public class TestZenDiscovery extends ZenDiscovery {
     }
 
     private TestZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
-                             NamedWriteableRegistry namedWriteableRegistry, ClusterService clusterService,
+                             NamedWriteableRegistry namedWriteableRegistry, DiscoveryService discoveryService,
                              UnicastHostsProvider hostsProvider) {
-        super(settings, threadPool, transportService, namedWriteableRegistry, clusterService, hostsProvider);
+        super(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, hostsProvider);
     }
 
     @Override

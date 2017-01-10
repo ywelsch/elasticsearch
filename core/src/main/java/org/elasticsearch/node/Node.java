@@ -409,8 +409,8 @@ public class Node implements Closeable {
                 };
             }
 
-            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService,
-                namedWriteableRegistry, networkService, clusterService, pluginsService.filterPlugins(DiscoveryPlugin.class));
+            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService, namedWriteableRegistry,
+                networkService, clusterService.getDiscoveryService(), pluginsService.filterPlugins(DiscoveryPlugin.class));
             modules.add(b -> {
                     b.bind(NamedXContentRegistry.class).toInstance(xContentRegistry);
                     b.bind(PluginsService.class).toInstance(pluginsService);
@@ -567,9 +567,9 @@ public class Node implements Closeable {
         injector.getInstance(ResourceWatcherService.class).start();
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
-        clusterService.setDiscoverySettings(discovery.getDiscoverySettings());
+        clusterService.getDiscoveryService().setDiscoverySettings(discovery.getDiscoverySettings());
         clusterService.addInitialStateBlock(discovery.getDiscoverySettings().getNoMasterBlock());
-        clusterService.setClusterStatePublisher(discovery::publish);
+        clusterService.getDiscoveryService().setClusterStatePublisher(discovery::publish);
 
         // start before the cluster service since it adds/removes initial Cluster state blocks
         final TribeService tribeService = injector.getInstance(TribeService.class);

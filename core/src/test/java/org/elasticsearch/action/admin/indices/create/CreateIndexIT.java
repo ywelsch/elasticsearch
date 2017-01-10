@@ -37,6 +37,7 @@ import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.ESIntegTestCase.ClusterScope;
 import org.elasticsearch.test.ESIntegTestCase.Scope;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
@@ -66,11 +67,14 @@ public class CreateIndexIT extends ESIntegTestCase {
         }
     }
 
+    @TestLogging("_root:DEBUG")
     public void testCreationDateGenerated() {
         long timeBeforeRequest = System.currentTimeMillis();
         prepareCreate("test").get();
+        logger.info("created");
         long timeAfterRequest = System.currentTimeMillis();
         ClusterStateResponse response = client().admin().cluster().prepareState().get();
+        logger.info("got clusterstate");
         ClusterState state = response.getState();
         assertThat(state, notNullValue());
         MetaData metadata = state.getMetaData();
@@ -81,6 +85,7 @@ public class CreateIndexIT extends ESIntegTestCase {
         IndexMetaData index = indices.get("test");
         assertThat(index, notNullValue());
         assertThat(index.getCreationDate(), allOf(lessThanOrEqualTo(timeAfterRequest), greaterThanOrEqualTo(timeBeforeRequest)));
+        logger.info("reached end of test");
     }
 
     public void testDoubleAddMapping() throws Exception {

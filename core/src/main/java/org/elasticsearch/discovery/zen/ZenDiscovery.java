@@ -38,7 +38,7 @@ import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
-import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.component.Lifecycle;
@@ -54,6 +54,7 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.DiscoveryStats;
+import org.elasticsearch.discovery.DiscoveryUpdateTask;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
 import org.elasticsearch.transport.TransportChannel;
@@ -68,6 +69,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -103,8 +105,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     public static final String DISCOVERY_REJOIN_ACTION_NAME = "internal:discovery/zen/rejoin";
 
     private final TransportService transportService;
-    private final NamedWriteableRegistry namedWriteableRegistry;
-    private final ClusterService clusterService;
+    private final DiscoveryService discoveryService;
     private AllocationService allocationService;
     private final ClusterName clusterName;
     private final DiscoverySettings discoverySettings;
@@ -141,13 +142,12 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     public ZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
                         NamedWriteableRegistry namedWriteableRegistry,
-                        ClusterService clusterService, UnicastHostsProvider hostsProvider) {
+                        DiscoveryService discoveryService, UnicastHostsProvider hostsProvider) {
         super(settings);
-        this.clusterService = clusterService;
-        this.clusterName = clusterService.getClusterName();
+        this.discoveryService = discoveryService;
+        this.clusterName = discoveryService.getClusterName();
         this.transportService = transportService;
-        this.namedWriteableRegistry = namedWriteableRegistry;
-        this.discoverySettings = new DiscoverySettings(settings, clusterService.getClusterSettings());
+        this.discoverySettings = new DiscoverySettings(settings, discoveryService.getClusterSettings());
         this.zenPing = newZenPing(settings, threadPool, transportService, hostsProvider);
         this.electMaster = new ElectMasterService(settings);
         this.pingTimeout = PING_TIMEOUT_SETTING.get(settings);
@@ -163,9 +163,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         logger.debug("using ping_timeout [{}], join.timeout [{}], master_election.ignore_non_master [{}]",
                 this.pingTimeout, joinTimeout, masterElectionIgnoreNonMasters);
 
-        clusterService.getClusterSettings().addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
+        discoveryService.getClusterSettings().addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
             this::handleMinimumMasterNodesChanged, (value) -> {
-                final ClusterState clusterState = clusterService.state();
+                final ClusterState clusterState = discoveryService.state();
                 int masterNodes = clusterState.nodes().getMasterNodes().size();
                 if (value > masterNodes) {
                     throw new IllegalArgumentException("cannot set "
@@ -174,9 +174,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 }
         });
 
-        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, clusterService);
+        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, discoveryService);
         this.masterFD.addListener(new MasterNodeFailureListener());
-        this.nodesFD = new NodesFaultDetection(settings, threadPool, transportService, clusterService.getClusterName());
+        this.nodesFD = new NodesFaultDetection(settings, threadPool, transportService, discoveryService.getClusterName());
         this.nodesFD.addListener(new NodeFaultDetectionListener());
 
         this.publishClusterState =
@@ -184,10 +184,10 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         settings,
                         transportService,
                         namedWriteableRegistry,
-                        clusterService::state,
+                        discoveryService::state,
                         new NewPendingClusterStateListener(),
                         discoverySettings,
-                        clusterService.getClusterName());
+                        discoveryService.getClusterName());
         this.membership = new MembershipAction(settings, transportService, this::localNode, new MembershipListener());
         this.joinThreadControl = new JoinThreadControl(threadPool);
 
@@ -208,17 +208,17 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     protected void doStart() {
-        nodesFD.setLocalNode(clusterService.localNode());
+        nodesFD.setLocalNode(discoveryService.localNode());
         joinThreadControl.start();
         zenPing.start(this);
-        this.nodeJoinController = new NodeJoinController(clusterService, allocationService, electMaster, settings);
+        this.nodeJoinController = new NodeJoinController(discoveryService, allocationService, electMaster, settings);
         this.nodeRemovalExecutor = new NodeRemovalClusterStateTaskExecutor(allocationService, electMaster, this::submitRejoin, logger);
     }
 
     @Override
     public void startInitialJoin() {
         // start the join thread from a cluster state update. See {@link JoinThreadControl} for details.
-        clusterService.submitStateUpdateTask("initial_join", new LocalClusterUpdateTask() {
+        discoveryService.submitStateUpdateTask("initial_join", new DiscoveryUpdateTask() {
 
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
@@ -274,23 +274,23 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     public DiscoveryNode localNode() {
-        return clusterService.localNode();
+        return discoveryService.localNode();
     }
 
     @Override
     public String nodeDescription() {
-        return clusterName.value() + "/" + clusterService.localNode().getId();
+        return clusterName.value() + "/" + discoveryService.localNode().getId();
     }
 
     /** start of {@link PingContextProvider } implementation */
     @Override
     public DiscoveryNodes nodes() {
-        return clusterService.state().nodes();
+        return discoveryService.state().nodes();
     }
 
     @Override
     public ClusterState clusterState() {
-        return clusterService.state();
+        return discoveryService.state();
     }
 
     /** end of {@link PingContextProvider } implementation */
@@ -302,7 +302,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             throw new IllegalStateException("Shouldn't publish state when not master");
         }
         try {
-            publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
+            publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), discoveryService.getClusterApplier(), ackListener);
         } catch (FailedToCommitClusterStateException t) {
             // cluster service logs a WARN message
             logger.debug("failed to publish cluster state version [{}] (not enough nodes acknowledged, min master nodes [{}])", clusterChangedEvent.state().version(), electMaster.minimumMasterNodes());
@@ -377,7 +377,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             return;
         }
 
-        if (clusterService.localNode().equals(masterNode)) {
+        if (discoveryService.localNode().equals(masterNode)) {
             final int requiredJoins = Math.max(0, electMaster.minimumMasterNodes() - 1); // we count as one
             logger.debug("elected as master, waiting for incoming joins ([{}] needed)", requiredJoins);
             nodeJoinController.waitToBeElectedAsMaster(requiredJoins, masterElectionWaitForJoinsTimeout,
@@ -406,7 +406,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
             // finalize join through the cluster state update thread
             final DiscoveryNode finalMasterNode = masterNode;
-            clusterService.submitStateUpdateTask("finalize_join (" + masterNode + ")", new LocalClusterUpdateTask() {
+            discoveryService.submitStateUpdateTask("finalize_join (" + masterNode + ")", new DiscoveryUpdateTask() {
                 @Override
                 public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
                     if (!success) {
@@ -459,7 +459,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
-                membership.sendJoinRequestBlocking(masterNode, clusterService.localNode(), joinTimeout);
+                membership.sendJoinRequestBlocking(masterNode, discoveryService.localNode(), joinTimeout);
                 return true;
             } catch (Exception e) {
                 final Throwable unwrap = ExceptionsHelper.unwrapCause(e);
@@ -489,7 +489,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     private void submitRejoin(String source) {
-        clusterService.submitStateUpdateTask(source, new LocalClusterUpdateTask(Priority.IMMEDIATE) {
+        discoveryService.submitStateUpdateTask(source, new DiscoveryUpdateTask(Priority.IMMEDIATE) {
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
                 return rejoin(currentState, source);
@@ -595,7 +595,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     private void removeNode(final DiscoveryNode node, final String source, final String reason) {
-        clusterService.submitStateUpdateTask(
+        discoveryService.submitStateUpdateTask(
                 source + "(" + node + "), reason(" + reason + ")",
                 new NodeRemovalClusterStateTaskExecutor.Task(node, reason),
                 ClusterStateTaskConfig.build(Priority.IMMEDIATE),
@@ -638,7 +638,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             // We only set the new value. If the master doesn't see enough nodes it will revoke it's mastership.
             return;
         }
-        clusterService.submitStateUpdateTask("zen-disco-min-master-nodes-changed", new LocalClusterUpdateTask(Priority.IMMEDIATE) {
+        discoveryService.submitStateUpdateTask("zen-disco-min-master-nodes-changed", new DiscoveryUpdateTask(Priority.IMMEDIATE) {
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
                 // check if we have enough master nodes, if not, we need to move into joining the cluster again
@@ -678,7 +678,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         logger.info((Supplier<?>) () -> new ParameterizedMessage("master_left [{}], reason [{}]", masterNode, reason), cause);
 
-        clusterService.submitStateUpdateTask("master_failed (" + masterNode + ")", new LocalClusterUpdateTask(Priority.IMMEDIATE) {
+        discoveryService.submitStateUpdateTask("master_failed (" + masterNode + ")", new DiscoveryUpdateTask(Priority.IMMEDIATE) {
 
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
@@ -702,8 +702,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     void processNextPendingClusterState(String reason) {
-        clusterService.submitStateUpdateTask("zen-disco-receive(from master [" + reason + "])", new LocalClusterUpdateTask(Priority.URGENT) {
-            ClusterState newClusterState = null;
+        discoveryService.submitStateUpdateTask("zen-disco-receive(from master [" + reason + "])", new DiscoveryUpdateTask(Priority.URGENT) {
+            volatile ClusterState newClusterState = null;
 
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
@@ -717,7 +717,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 assert newClusterState.nodes().getMasterNode() != null : "received a cluster state without a master";
                 assert !newClusterState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock()) : "received a cluster state with a master block";
 
-                if (currentState.nodes().isLocalNodeElectedMaster()) {
+                if (currentState.nodes().isLocalNodeElectedMaster() && newClusterState.nodes().getMasterNodeId() != null && newClusterState.nodes().isLocalNodeElectedMaster() == false) {
                     return handleAnotherMaster(currentState, newClusterState.nodes().getMasterNode(), newClusterState.version(), "via a new cluster state");
                 }
 
@@ -730,40 +730,84 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     masterFD.restart(newClusterState.nodes().getMasterNode(), "new cluster state received and we are monitoring the wrong master [" + masterFD.masterNode() + "]");
                 }
 
+                final ClusterState newState;
                 if (currentState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock())) {
                     // its a fresh update from the master as we transition from a start of not having a master to having one
                     logger.debug("got first state from fresh master [{}]", newClusterState.nodes().getMasterNodeId());
-                    return newState(newClusterState);
-                }
-
-
-                // some optimizations to make sure we keep old objects where possible
-                ClusterState.Builder builder = ClusterState.builder(newClusterState);
-
-                // if the routing table did not change, use the original one
-                if (newClusterState.routingTable().version() == currentState.routingTable().version()) {
-                    builder.routingTable(currentState.routingTable());
-                }
-                // same for metadata
-                if (newClusterState.metaData().version() == currentState.metaData().version()) {
-                    builder.metaData(currentState.metaData());
+                    newState = newClusterState;
                 } else {
-                    // if its not the same version, only copy over new indices or ones that changed the version
-                    MetaData.Builder metaDataBuilder = MetaData.builder(newClusterState.metaData()).removeAllIndices();
-                    for (IndexMetaData indexMetaData : newClusterState.metaData()) {
-                        IndexMetaData currentIndexMetaData = currentState.metaData().index(indexMetaData.getIndex());
-                        if (currentIndexMetaData != null && currentIndexMetaData.isSameUUID(indexMetaData.getIndexUUID()) &&
-                                currentIndexMetaData.getVersion() == indexMetaData.getVersion()) {
-                            // safe to reuse
-                            metaDataBuilder.put(currentIndexMetaData, false);
-                        } else {
-                            metaDataBuilder.put(indexMetaData, false);
-                        }
+                    // some optimizations to make sure we keep old objects where possible
+                    ClusterState.Builder builder = ClusterState.builder(newClusterState);
+
+                    // if the routing table did not change, use the original one
+                    if (newClusterState.routingTable().version() == currentState.routingTable().version()) {
+                        builder.routingTable(currentState.routingTable());
                     }
-                    builder.metaData(metaDataBuilder);
+                    // same for metadata
+                    if (newClusterState.metaData().version() == currentState.metaData().version()) {
+                        builder.metaData(currentState.metaData());
+                    } else {
+                        // if its not the same version, only copy over new indices or ones that changed the version
+                        MetaData.Builder metaDataBuilder = MetaData.builder(newClusterState.metaData()).removeAllIndices();
+                        for (IndexMetaData indexMetaData : newClusterState.metaData()) {
+                            IndexMetaData currentIndexMetaData = currentState.metaData().index(indexMetaData.getIndex());
+                            if (currentIndexMetaData != null && currentIndexMetaData.isSameUUID(indexMetaData.getIndexUUID()) &&
+                                currentIndexMetaData.getVersion() == indexMetaData.getVersion()) {
+                                // safe to reuse
+                                metaDataBuilder.put(currentIndexMetaData, false);
+                            } else {
+                                metaDataBuilder.put(indexMetaData, false);
+                            }
+                        }
+                        builder.metaData(metaDataBuilder);
+                    }
+                    newState = builder.build();
                 }
 
-                return newState(builder.build());
+                return newState(newState);
+            }
+
+            @Override
+            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                if (oldState == newState) {
+                    return;
+                }
+                CountDownLatch countDownLatch = new CountDownLatch(1);
+                discoveryService.getClusterApplier().submitStateUpdateTask("apply cluster state (from master [" + reason + "])",
+                    newClusterState,
+                    new ClusterStateTaskListener() {
+
+                        @Override
+                        public void onFailure(String source, Exception e) {
+                            logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected failure applying [{}]", source), e);
+                            try {
+                                // TODO: use cluster state uuid instead of full cluster state so that we don't keep reference to CS around
+                                // for too long.
+                                publishClusterState.pendingStatesQueue().markAsFailed(newClusterState, e);
+                            } catch (Exception inner) {
+                                inner.addSuppressed(e);
+                                logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected exception while failing [{}]", source), inner);
+                            } finally {
+                                countDownLatch.countDown();
+                            }
+                        }
+
+                        @Override
+                        public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                            try {
+                                publishClusterState.pendingStatesQueue().markAsProcessed(newClusterState);
+                            } catch (Exception e) {
+                                onFailure(source, e);
+                            } finally {
+                                countDownLatch.countDown();
+                            }
+                        }
+                    });
+                try {
+                    countDownLatch.await();
+                } catch (InterruptedException e) {
+                    logger.warn((Supplier<?>) () -> new ParameterizedMessage("interrupted while applying cluster state locally [{}]", source), e);
+                }
             }
 
             @Override
@@ -776,17 +820,6 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         inner.addSuppressed(e);
                         logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected exception while failing [{}]", source), inner);
                     }
-                }
-            }
-
-            @Override
-            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                try {
-                    if (newClusterState != null) {
-                        publishClusterState.pendingStatesQueue().markAsProcessed(newClusterState);
-                    }
-                } catch (Exception e) {
-                    onFailure(source, e);
                 }
             }
         });
@@ -874,13 +907,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             logger.trace("full ping responses:{}", sb);
         }
 
-        final DiscoveryNode localNode = clusterService.localNode();
+        final DiscoveryNode localNode = discoveryService.localNode();
 
         // add our selves
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)
             .filter(n -> n.equals(localNode)).findAny().isPresent() == false;
 
-        fullPingResponses.add(new ZenPing.PingResponse(localNode, null, clusterService.state()));
+        fullPingResponses.add(new ZenPing.PingResponse(localNode, null, discoveryService.state()));
 
         // filter responses
         final List<ZenPing.PingResponse> pingResponses = filterPingResponses(fullPingResponses, masterElectionIgnoreNonMasters, logger);
@@ -942,9 +975,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     protected ClusterStateTaskExecutor.ClusterTasksResult<LocalClusterUpdateTask> rejoin(ClusterState clusterState, String reason) {
-
-        // *** called from within an cluster state update task *** //
-        assert Thread.currentThread().getName().contains(ClusterService.UPDATE_THREAD_NAME);
+        assert DiscoveryService.assertDiscoveryUpdateThread();
 
         logger.warn("{}, current nodes: {}", reason, clusterState.nodes());
         nodesFD.stop();
@@ -962,7 +993,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     private ClusterStateTaskExecutor.ClusterTasksResult handleAnotherMaster(ClusterState localClusterState, final DiscoveryNode otherMaster, long otherClusterStateVersion, String reason) {
         assert localClusterState.nodes().isLocalNodeElectedMaster() : "handleAnotherMaster called but current node is not a master";
-        assert Thread.currentThread().getName().contains(ClusterService.UPDATE_THREAD_NAME) : "not called from the cluster state update thread";
+        assert DiscoveryService.assertDiscoveryUpdateThread();
 
         if (otherClusterStateVersion > localClusterState.version()) {
             return rejoin(localClusterState, "zen-disco-discovered another master with a new cluster_state [" + otherMaster + "][" + reason + "]");
@@ -1018,7 +1049,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private class MembershipListener implements MembershipAction.MembershipListener {
         @Override
         public void onJoin(DiscoveryNode node, MembershipAction.JoinCallback callback) {
-            handleJoinRequest(node, clusterService.state(), callback);
+            handleJoinRequest(node, discoveryService.state(), callback);
         }
 
         @Override
@@ -1050,7 +1081,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 return;
             }
             logger.debug("got a ping from another master {}. resolving who should rejoin. current ping count: [{}]", pingRequest.masterNode(), pingsWhileMaster.get());
-            clusterService.submitStateUpdateTask("ping from another master", new LocalClusterUpdateTask(Priority.IMMEDIATE) {
+            discoveryService.submitStateUpdateTask("ping from another master", new DiscoveryUpdateTask(Priority.IMMEDIATE) {
 
                 @Override
                 public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
@@ -1105,7 +1136,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     class RejoinClusterRequestHandler implements TransportRequestHandler<RejoinClusterRequest> {
         @Override
         public void messageReceived(final RejoinClusterRequest request, final TransportChannel channel) throws Exception {
-            clusterService.submitStateUpdateTask("received a request to rejoin the cluster from [" + request.fromNodeId + "]", new LocalClusterUpdateTask(Priority.IMMEDIATE) {
+            discoveryService.submitStateUpdateTask("received a request to rejoin the cluster from [" + request.fromNodeId + "]", new DiscoveryUpdateTask(Priority.IMMEDIATE) {
 
                 @Override
                 public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
@@ -1153,14 +1184,14 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         /** cleans any running joining thread and calls {@link #rejoin} */
         public ClusterStateTaskExecutor.ClusterTasksResult<LocalClusterUpdateTask> stopRunningThreadAndRejoin(ClusterState clusterState, String reason) {
-            ClusterService.assertClusterStateThread();
+            DiscoveryService.assertDiscoveryUpdateThread();
             currentJoinThread.set(null);
             return rejoin(clusterState, reason);
         }
 
         /** starts a new joining thread if there is no currently active one and join thread controlling is started */
         public void startNewThreadIfNotRunning() {
-            ClusterService.assertClusterStateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             if (joinThreadActive()) {
                 return;
             }
@@ -1193,7 +1224,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
          * If the given thread is not the currently running join thread, the command is ignored.
          */
         public void markThreadAsDoneAndStartNew(Thread joinThread) {
-            ClusterService.assertClusterStateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             if (!markThreadAsDone(joinThread)) {
                 return;
             }
@@ -1202,7 +1233,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         /** marks the given joinThread as completed. Returns false if the supplied thread is not the currently active join thread */
         public boolean markThreadAsDone(Thread joinThread) {
-            ClusterService.assertClusterStateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             return currentJoinThread.compareAndSet(joinThread, null);
         }
 

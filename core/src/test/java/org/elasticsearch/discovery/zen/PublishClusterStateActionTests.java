@@ -33,6 +33,7 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
@@ -343,10 +344,7 @@ public class PublishClusterStateActionTests extends ESTestCase {
     }
 
     public void testUnexpectedDiffPublishing() throws Exception {
-        MockNode nodeA = createMockNode("nodeA", Settings.EMPTY, event -> {
-            fail("Shouldn't send cluster state to myself");
-        }).setAsMaster();
-
+        MockNode nodeA = createMockNode("nodeA").setAsMaster();
         MockNode nodeB = createMockNode("nodeB");
 
         // Initial cluster state with both states - the second node still shouldn't
@@ -368,19 +366,8 @@ public class PublishClusterStateActionTests extends ESTestCase {
     public void testDisablingDiffPublishing() throws Exception {
         Settings noDiffPublishingSettings = Settings.builder().put(DiscoverySettings.PUBLISH_DIFF_ENABLE_SETTING.getKey(), false).build();
 
-        MockNode nodeA = createMockNode("nodeA", noDiffPublishingSettings, new ClusterStateListener() {
-            @Override
-            public void clusterChanged(ClusterChangedEvent event) {
-                fail("Shouldn't send cluster state to myself");
-            }
-        });
-
-        MockNode nodeB = createMockNode("nodeB", noDiffPublishingSettings, new ClusterStateListener() {
-            @Override
-            public void clusterChanged(ClusterChangedEvent event) {
-                assertFalse(event.state().wasReadFromDiff());
-            }
-        });
+        MockNode nodeA = createMockNode("nodeA", noDiffPublishingSettings, event -> assertFalse(event.state().wasReadFromDiff()));
+        MockNode nodeB = createMockNode("nodeB", noDiffPublishingSettings, event -> assertFalse(event.state().wasReadFromDiff()));
 
         // Initial cluster state
         DiscoveryNodes discoveryNodes = DiscoveryNodes.builder()
@@ -452,13 +439,7 @@ public class PublishClusterStateActionTests extends ESTestCase {
     }
 
     public void testSerializationFailureDuringDiffPublishing() throws Exception {
-        MockNode nodeA = createMockNode("nodeA", Settings.EMPTY, new ClusterStateListener() {
-            @Override
-            public void clusterChanged(ClusterChangedEvent event) {
-                fail("Shouldn't send cluster state to myself");
-            }
-        }).setAsMaster();
-
+        MockNode nodeA = createMockNode("nodeA").setAsMaster();
         MockNode nodeB = createMockNode("nodeB");
 
         // Initial cluster state with both states - the second node still shouldn't get
@@ -809,7 +790,8 @@ public class PublishClusterStateActionTests extends ESTestCase {
                                              ClusterState previousState, int minMasterNodes) throws InterruptedException {
         AssertingAckListener assertingAckListener = new AssertingAckListener(state.nodes().getSize() - 1);
         ClusterChangedEvent changedEvent = new ClusterChangedEvent("test update", state, previousState);
-        action.publish(changedEvent, minMasterNodes, assertingAckListener);
+        ClusterApplier applier = (s, c, l) -> l.clusterStateProcessed(s, null, null);
+        action.publish(changedEvent, minMasterNodes, applier, assertingAckListener);
         return assertingAckListener;
     }
 

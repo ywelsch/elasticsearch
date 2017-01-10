@@ -24,21 +24,20 @@ import org.apache.logging.log4j.util.Supplier;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterChangedEvent;
-import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
-import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.discovery.DiscoveryService;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,7 +54,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class NodeJoinController extends AbstractComponent {
 
-    private final ClusterService clusterService;
+    private final DiscoveryService discoveryService;
     private final AllocationService allocationService;
     private final ElectMasterService electMaster;
     private final JoinTaskExecutor joinTaskExecutor = new JoinTaskExecutor();
@@ -65,10 +64,10 @@ public class NodeJoinController extends AbstractComponent {
     private ElectionContext electionContext = null;
 
 
-    public NodeJoinController(ClusterService clusterService, AllocationService allocationService, ElectMasterService electMaster,
+    public NodeJoinController(DiscoveryService discoveryService, AllocationService allocationService, ElectMasterService electMaster,
                               Settings settings) {
         super(settings);
-        this.clusterService = clusterService;
+        this.discoveryService = discoveryService;
         this.allocationService = allocationService;
         this.electMaster = electMaster;
     }
@@ -176,7 +175,7 @@ public class NodeJoinController extends AbstractComponent {
             electionContext.addIncomingJoin(node, callback);
             checkPendingJoinsAndElectIfNeeded();
         } else {
-            clusterService.submitStateUpdateTask("zen-disco-node-join",
+            discoveryService.submitStateUpdateTask("zen-disco-node-join",
                 node, ClusterStateTaskConfig.build(Priority.URGENT),
                 joinTaskExecutor, new JoinTaskListener(callback, logger));
         }
@@ -279,7 +278,7 @@ public class NodeJoinController extends AbstractComponent {
 
             tasks.put(BECOME_MASTER_TASK, (source1, e) -> {}); // noop listener, the election finished listener determines result
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
-            clusterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
+            discoveryService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
 
         public synchronized void closeAndProcessPending(String reason) {
@@ -287,7 +286,7 @@ public class NodeJoinController extends AbstractComponent {
             Map<DiscoveryNode, ClusterStateTaskListener> tasks = getPendingAsTasks();
             final String source = "zen-disco-election-stop [" + reason + "]";
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
-            clusterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
+            discoveryService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
 
         private void innerClose() {
@@ -307,7 +306,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onElectedAsMaster(ClusterState state) {
-            ClusterService.assertClusterStateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             assert state.nodes().isLocalNodeElectedMaster() : "onElectedAsMaster called but local node is not master";
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
@@ -316,7 +315,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onFailure(Throwable t) {
-            ClusterService.assertClusterStateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
                 callback.onFailure(t);
