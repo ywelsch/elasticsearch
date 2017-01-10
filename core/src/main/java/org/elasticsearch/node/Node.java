@@ -419,12 +419,13 @@ public class Node implements Closeable {
                 };
                 httpServerTransport = null;
             }
-            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService,
-                namedWriteableRegistry, networkService, clusterService, pluginsService.filterPlugins(DiscoveryPlugin.class));
+
+            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService, namedWriteableRegistry,
+                networkService, clusterService.getDiscoveryService(), clusterService.getClusterApplierService(),
+                pluginsService.filterPlugins(DiscoveryPlugin.class));
             NodeService nodeService = new NodeService(settings, threadPool, monitorService, discoveryModule.getDiscovery(),
                 transportService, indicesService, pluginsService, circuitBreakerService, scriptModule.getScriptService(),
                 httpServerTransport, ingestService, clusterService, settingsModule.getSettingsFilter());
-
             modules.add(b -> {
                     b.bind(NodeService.class).toInstance(nodeService);
                     b.bind(NamedXContentRegistry.class).toInstance(xContentRegistry);
@@ -587,9 +588,8 @@ public class Node implements Closeable {
         injector.getInstance(ResourceWatcherService.class).start();
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
-        clusterService.setDiscoverySettings(discovery.getDiscoverySettings());
         clusterService.addInitialStateBlock(discovery.getDiscoverySettings().getNoMasterBlock());
-        clusterService.setClusterStatePublisher(discovery::publish);
+        clusterService.getDiscoveryService().setClusterStatePublisher(discovery::publish);
 
         // start before the cluster service since it adds/removes initial Cluster state blocks
         final TribeService tribeService = injector.getInstance(TribeService.class);

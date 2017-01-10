@@ -18,13 +18,14 @@
  */
 package org.elasticsearch.cluster;
 
+import org.elasticsearch.cluster.service.BatchingClusterTaskExecutor;
 import org.elasticsearch.common.Nullable;
 
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
-public interface ClusterStateTaskExecutor<T> {
+public interface ClusterStateTaskExecutor<T> extends BatchingClusterTaskExecutor.BatchingExecutor<T> {
     /**
      * Update the cluster state based on the current state and the given tasks. Return the *same instance* if no state
      * should be changed.
@@ -48,44 +49,22 @@ public interface ClusterStateTaskExecutor<T> {
     }
 
     /**
-     * Builds a concise description of a list of tasks (to be used in logging etc.).
-     *
-     * Note that the tasks given are not necessarily the same as those that will be passed to {@link #execute(ClusterState, List)}.
-     * but are guaranteed to be a subset of them. This method can be called multiple times with different lists before execution.
-     * This allows groupd task description but the submitting source.
-     */
-    default String describeTasks(List<T> tasks) {
-        return tasks.stream().map(T::toString).reduce((s1,s2) -> {
-            if (s1.isEmpty()) {
-                return s2;
-            } else if (s2.isEmpty()) {
-                return s1;
-            } else {
-                return s1 + ", " + s2;
-            }
-        }).orElse("");
-    }
-
-    /**
      * Represents the result of a batched execution of cluster state update tasks
      * @param <T> the type of the cluster state update task
      */
     class ClusterTasksResult<T> {
-        public final boolean noMaster;
         @Nullable
         public final ClusterState resultingState;
         public final Map<T, TaskResult> executionResults;
 
         /**
          * Construct an execution result instance with a correspondence between the tasks and their execution result
-         * @param noMaster whether this node steps down as master or has lost connection to the master
          * @param resultingState the resulting cluster state
          * @param executionResults the correspondence between tasks and their outcome
          */
-        ClusterTasksResult(boolean noMaster, ClusterState resultingState, Map<T, TaskResult> executionResults) {
+        ClusterTasksResult(ClusterState resultingState, Map<T, TaskResult> executionResults) {
             this.resultingState = resultingState;
             this.executionResults = executionResults;
-            this.noMaster = noMaster;
         }
 
         public static <T> Builder<T> builder() {
@@ -124,11 +103,11 @@ public interface ClusterStateTaskExecutor<T> {
             }
 
             public ClusterTasksResult<T> build(ClusterState resultingState) {
-                return new ClusterTasksResult<>(false, resultingState, executionResults);
+                return new ClusterTasksResult<>(resultingState, executionResults);
             }
 
             ClusterTasksResult<T> build(ClusterTasksResult<T> result, ClusterState previousState) {
-                return new ClusterTasksResult<>(result.noMaster, result.resultingState == null ? previousState : result.resultingState,
+                return new ClusterTasksResult<>(result.resultingState == null ? previousState : result.resultingState,
                     executionResults);
             }
         }

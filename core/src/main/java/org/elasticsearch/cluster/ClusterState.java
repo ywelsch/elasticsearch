@@ -22,7 +22,6 @@ package org.elasticsearch.cluster;
 import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
-import org.elasticsearch.Version;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -72,7 +71,7 @@ import java.util.Set;
  * single thread and controlled by the {@link ClusterService}. After every update the
  * {@link Discovery#publish} method publishes a new version of the cluster state to all other nodes in the
  * cluster.  The actual publishing mechanism is delegated to the {@link Discovery#publish} method and depends on
- * the type of discovery. In the Zen Discovery it is handled in the {@link PublishClusterStateAction#publish} method. The
+ * the type of discovery. In the Zen Discovery it is handled in the {@link PublishClusterStateAction#publishAndAwaitCommit} method. The
  * publishing mechanism can be overridden by other discovery.
  * <p>
  * The cluster state implements the {@link Diffable} interface in order to support publishing of cluster state

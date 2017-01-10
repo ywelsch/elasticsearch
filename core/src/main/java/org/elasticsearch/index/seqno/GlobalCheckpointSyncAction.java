@@ -106,6 +106,11 @@ public class GlobalCheckpointSyncAction extends TransportReplicationAction<Globa
         });
     }
 
+    @Override
+    protected boolean resolveIndex() {
+        return false;
+    }
+
     public static final class PrimaryRequest extends ReplicationRequest<PrimaryRequest> {
 
         private PrimaryRequest() {

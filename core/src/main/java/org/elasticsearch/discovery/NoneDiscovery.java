@@ -21,7 +21,6 @@ package org.elasticsearch.discovery;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
-import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.ClusterSettings;
@@ -35,24 +34,24 @@ import org.elasticsearch.discovery.zen.ElectMasterService;
  */
 public class NoneDiscovery extends AbstractLifecycleComponent implements Discovery {
 
-    private final ClusterService clusterService;
+    private final DiscoveryService discoveryService;
     private final DiscoverySettings discoverySettings;
 
     @Inject
-    public NoneDiscovery(Settings settings, ClusterService clusterService, ClusterSettings clusterSettings) {
+    public NoneDiscovery(Settings settings, DiscoveryService discoveryService, ClusterSettings clusterSettings) {
         super(settings);
-        this.clusterService = clusterService;
+        this.discoveryService = discoveryService;
         this.discoverySettings = new DiscoverySettings(settings, clusterSettings);
     }
 
     @Override
     public DiscoveryNode localNode() {
-        return clusterService.localNode();
+        return discoveryService.localNode();
     }
 
     @Override
     public String nodeDescription() {
-        return clusterService.getClusterName().value() + "/" + clusterService.localNode().getId();
+        return discoveryService.getClusterName().value() + "/" + discoveryService.localNode().getId();
     }
 
     @Override
