@@ -33,6 +33,7 @@ import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.discovery.DiscoveryUpdateTask;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Arrays;
@@ -123,7 +124,7 @@ public class ClusterServiceUtils {
 
     public static void setState(ClusterService clusterService, ClusterState clusterState) {
         CountDownLatch latch = new CountDownLatch(1);
-        clusterService.submitStateUpdateTask("test setting state", new LocalClusterUpdateTask() {
+        clusterService.submitStateUpdateTask("test setting state", new DiscoveryUpdateTask() {
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
                 // make sure we increment versions as listener may depend on it for change

@@ -111,10 +111,10 @@ public class NodeJoinControllerTests extends ESTestCase {
     public void setUp() throws Exception {
         super.setUp();
         clusterService = createClusterService(threadPool);
-        final DiscoveryNodes initialNodes = clusterService.state().nodes();
+        final DiscoveryNodes initialNodes = clusterService.publishingState().nodes();
         final DiscoveryNode localNode = initialNodes.getLocalNode();
         // make sure we have a master
-        setState(clusterService, ClusterState.builder(clusterService.state()).nodes(
+        setState(clusterService, ClusterState.builder(clusterService.publishingState()).nodes(
             DiscoveryNodes.builder(initialNodes).masterNodeId(localNode.getId())));
         nodeJoinController = new NodeJoinController(clusterService, createAllocationService(Settings.EMPTY),
             new ElectMasterService(Settings.EMPTY), Settings.EMPTY);
@@ -539,7 +539,7 @@ public class NodeJoinControllerTests extends ESTestCase {
 
     public void testRejectingJoinWithSameAddressButDifferentId() throws InterruptedException, ExecutionException {
         addNodes(randomInt(5));
-        ClusterState state = clusterService.state();
+        ClusterState state = clusterService.publishingState();
         final DiscoveryNode existing = randomFrom(StreamSupport.stream(state.nodes().spliterator(), false).collect(Collectors.toList()));
         final DiscoveryNode other_node = new DiscoveryNode("other_node", existing.getAddress(), emptyMap(), emptySet(), Version.CURRENT);
 

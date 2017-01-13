@@ -341,7 +341,7 @@ public class MasterFaultDetection extends FaultDetection {
 
         @Override
         public void messageReceived(final MasterPingRequest request, final TransportChannel channel) throws Exception {
-            final DiscoveryNodes nodes = clusterService.state().nodes();
+            final DiscoveryNodes nodes = clusterService.publishingState().nodes();
             // check if we are really the same master as the one we seemed to be think we are
             // this can happen if the master got "kill -9" and then another node started using the same port
             if (!request.masterNode.equals(nodes.getLocalNode())) {

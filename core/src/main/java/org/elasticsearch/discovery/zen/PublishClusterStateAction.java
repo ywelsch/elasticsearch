@@ -133,9 +133,12 @@ public class PublishClusterStateAction extends AbstractComponent {
         try {
             nodes = clusterChangedEvent.state().nodes();
             nodesToPublishTo = new HashSet<>(nodes.getSize());
+            DiscoveryNode localNode = nodes.getLocalNode();
             final int totalMasterNodes = nodes.getMasterNodes().size();
             for (final DiscoveryNode node : nodes) {
-                nodesToPublishTo.add(node);
+                if (node.equals(localNode) == false) {
+                    nodesToPublishTo.add(node);
+                }
             }
             sendFullVersion = !discoverySettings.getPublishDiff() || clusterChangedEvent.previousState() == null;
             serializedStates = new HashMap<>();
@@ -538,8 +541,8 @@ public class PublishClusterStateAction extends AbstractComponent {
                                   BlockingClusterStatePublishResponseHandler publishResponseHandler) {
             this.clusterState = clusterState;
             this.publishResponseHandler = publishResponseHandler;
-            this.neededMastersToCommit = Math.max(1, minMasterNodes);
-            this.pendingMasterNodes = totalMasterNodes;
+            this.neededMastersToCommit = Math.max(0, minMasterNodes - 1); // we are one of the master nodes
+            this.pendingMasterNodes = totalMasterNodes - 1;
             if (this.neededMastersToCommit > this.pendingMasterNodes) {
                 throw new Discovery.FailedToCommitClusterStateException("not enough masters to ack sent cluster state." +
                     "[{}] needed , have [{}]", neededMastersToCommit, pendingMasterNodes);
