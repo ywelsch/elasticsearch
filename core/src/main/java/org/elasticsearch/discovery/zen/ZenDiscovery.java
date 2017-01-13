@@ -758,7 +758,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     newState = builder.build();
                 }
 
-                clusterService.submitStateUpdateTask("apply cluster state (from master [" + reason + "])", newState,
+                clusterService.getClusterApplierService().submitStateUpdateTask("apply cluster state (from master [" + reason + "])", newState,
                     new ClusterStateTaskListener() {
 
                         @Override
