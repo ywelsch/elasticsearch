@@ -57,9 +57,7 @@ public class ClusterServiceUtils {
     }
 
     public static DiscoveryService createDiscoveryService(ThreadPool threadPool, DiscoveryNode localNode) {
-        ClusterApplier applier = (s, c, l) -> {
-            l.clusterStateProcessed(s, null, null);
-        };
+        ClusterApplier applier = (s, c, l) -> l.clusterStateProcessed(s, null, null);
         DiscoveryService discoveryService = new DiscoveryService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
             threadPool, applier);

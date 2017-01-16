@@ -129,8 +129,8 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     @Override
     protected synchronized void doStart() {
-        discoveryService.start();
         clusterApplierService.start();
+        discoveryService.start();
     }
 
     @Override

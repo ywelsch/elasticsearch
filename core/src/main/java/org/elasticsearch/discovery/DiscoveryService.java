@@ -248,7 +248,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
                 } else {
                     masterState.set(newClusterState);
                     CountDownLatch latch = new CountDownLatch(1);
-                    clusterApplier.submitStateUpdateTask("apply-locally-on-master", newClusterState, new ClusterStateTaskListener() {
+                    clusterApplier.submitStateUpdateTask("apply-unpublished-state", newClusterState, new ClusterStateTaskListener() {
                         @Override
                         public void onFailure(String source, Exception e) {
                             latch.countDown();
@@ -263,7 +263,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
                     try {
                         latch.await();
                     } catch (InterruptedException e) {
-                        logger.error(
+                        logger.warn(
                             (Supplier<?>) () -> new ParameterizedMessage(
                                 "interrupted while applying cluster state locally [{}]",
                                 taskInputs.summary),
@@ -390,38 +390,6 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
         }
 
         masterState.set(newClusterState);
-
-
-        CountDownLatch latch = new CountDownLatch(1);
-        clusterApplier.submitStateUpdateTask("apply-locally-on-master", newClusterState, new ClusterStateTaskListener() {
-            @Override
-            public void onFailure(String source, Exception e) {
-                latch.countDown();
-            }
-
-            @Override
-            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                latch.countDown();
-            }
-        });
-
-        try {
-            latch.await();
-            try {
-                ackListener.onNodeAck(newClusterState.nodes().getLocalNode(), null);
-            } catch (Exception e) {
-                final DiscoveryNode localNode = newClusterState.nodes().getLocalNode();
-                logger.debug(
-                    (Supplier<?>) () -> new ParameterizedMessage("error while processing ack for master node [{}]", localNode),
-                    e);
-            }
-        } catch (InterruptedException e) {
-            logger.error(
-                (Supplier<?>) () -> new ParameterizedMessage(
-                    "interrupted while applying cluster state locally [{}]",
-                    taskInputs.summary),
-                e);
-        }
 
         taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
 

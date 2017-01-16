@@ -301,7 +301,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             throw new IllegalStateException("Shouldn't publish state when not master");
         }
         try {
-            publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
+            publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), discoveryService.getClusterApplier(), ackListener);
         } catch (FailedToCommitClusterStateException t) {
             // cluster service logs a WARN message
             logger.debug("failed to publish cluster state version [{}] (not enough nodes acknowledged, min master nodes [{}])", clusterChangedEvent.state().version(), electMaster.minimumMasterNodes());
