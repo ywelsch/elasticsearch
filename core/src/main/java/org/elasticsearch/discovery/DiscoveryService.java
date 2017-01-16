@@ -53,7 +53,6 @@ import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
@@ -62,7 +61,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.UnaryOperator;
-import java.util.stream.Collectors;
 
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
 
@@ -88,9 +86,12 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
 
     private final ClusterApplier clusterApplier;
 
+    private final java.util.function.Supplier<DiscoveryNode> localNodeSupplier;
+
     public DiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                            ClusterApplier clusterApplier) {
+                            java.util.function.Supplier<DiscoveryNode> localNodeSupplier, ClusterApplier clusterApplier) {
         super(settings, clusterSettings, threadPool);
+        this.localNodeSupplier = localNodeSupplier;
         this.clusterApplier = clusterApplier;
         // will be replaced on doStart.
         this.masterState = new AtomicReference<>(ClusterState.builder(clusterName).build());
@@ -105,14 +106,6 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
 
     public synchronized void setClusterStatePublisher(BiConsumer<ClusterChangedEvent, Discovery.AckListener> publisher) {
         clusterStatePublisher = publisher;
-    }
-
-    public synchronized void setLocalNode(DiscoveryNode localNode) {
-        assert state().nodes().getLocalNodeId() == null : "local node is already set";
-        updateState(clusterState -> {
-            DiscoveryNodes nodes = DiscoveryNodes.builder(clusterState.nodes()).add(localNode).localNodeId(localNode.getId()).build();
-            return ClusterState.builder(clusterState).nodes(nodes).build();
-        });
     }
 
     private void updateState(UnaryOperator<ClusterState> updateFunction) {
@@ -154,10 +147,15 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
     @Override
     protected synchronized void doStart() {
         Objects.requireNonNull(clusterStatePublisher, "please set a cluster state publisher before starting");
-        Objects.requireNonNull(state().nodes().getLocalNode(), "please set the local node before starting");
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
         Objects.requireNonNull(discoverySettings, "please set discovery settings before starting");
-        updateState(state -> ClusterState.builder(state).blocks(initialBlocks).build());
+        DiscoveryNode localNode = localNodeSupplier.get();
+        assert localNode != null;
+        updateState(state -> {
+            assert state.nodes().getLocalNodeId() == null : "local node is already set";
+            DiscoveryNodes nodes = DiscoveryNodes.builder(state.nodes()).add(localNode).localNodeId(localNode.getId()).build();
+            return ClusterState.builder(state).nodes(nodes).blocks(initialBlocks).build();
+        });
         this.threadExecutor = EsExecutors.newSinglePrioritizing(DISCOVERY_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, DISCOVERY_UPDATE_THREAD_NAME), threadPool.getThreadContext());
     }

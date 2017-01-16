@@ -49,6 +49,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 public class ClusterService extends AbstractLifecycleComponent {
 
@@ -61,7 +62,6 @@ public class ClusterService extends AbstractLifecycleComponent {
                     Property.Dynamic, Property.NodeScope);
 
     private final ClusterName clusterName;
-    private final Supplier<DiscoveryNode> localNodeSupplier;
 
     private final OperationRouting operationRouting;
 
@@ -70,9 +70,8 @@ public class ClusterService extends AbstractLifecycleComponent {
     public ClusterService(Settings settings,
                           ClusterSettings clusterSettings, ThreadPool threadPool, Supplier<DiscoveryNode> localNodeSupplier) {
         super(settings);
-        this.localNodeSupplier = localNodeSupplier;
-        this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool);
-        this.discoveryService = new DiscoveryService(settings, clusterSettings, threadPool, clusterApplierService);
+        this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool, localNodeSupplier);
+        this.discoveryService = new DiscoveryService(settings, clusterSettings, threadPool, localNodeSupplier, clusterApplierService);
         this.operationRouting = new OperationRouting(settings, clusterSettings);
         this.clusterSettings = clusterSettings;
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
@@ -87,10 +86,6 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     public synchronized void setClusterStatePublisher(BiConsumer<ClusterChangedEvent, Discovery.AckListener> publisher) {
         discoveryService.setClusterStatePublisher(publisher);
-    }
-
-    private void updateState(UnaryOperator<ClusterState> updateFunction) {
-        this.state.getAndUpdate(updateFunction);
     }
 
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {

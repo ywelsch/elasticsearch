@@ -60,6 +60,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
@@ -77,11 +78,11 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
 
     TimedDiscoveryService createTimedClusterService(boolean makeMaster) throws InterruptedException {
         ClusterApplier applier = (s, c, l) -> l.clusterStateProcessed(s, c, c);
+        DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
+            emptySet(), Version.CURRENT);
         TimedDiscoveryService timedDiscoveryService = new TimedDiscoveryService(Settings.builder().put("cluster.name",
             DiscoveryServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, applier);
-        timedDiscoveryService.setLocalNode(new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
-            emptySet(), Version.CURRENT));
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode, applier);
         timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(Iterable<DiscoveryNode> discoveryNodes) {
@@ -625,11 +626,11 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
 
     public void testDisconnectFromNewlyAddedNodesIfClusterStatePublishingFails() throws InterruptedException {
         ClusterApplier applier = (s, c, l) -> l.clusterStateProcessed(s, null, null);
+        DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
+            emptySet(), Version.CURRENT);
         TimedDiscoveryService timedDiscoveryService = new TimedDiscoveryService(Settings.builder().put("cluster.name",
             DiscoveryServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, applier);
-        timedDiscoveryService.setLocalNode(new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
-            emptySet(), Version.CURRENT));
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode, applier);
         Set<DiscoveryNode> currentNodes = new HashSet<>();
         timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
@@ -696,8 +697,8 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
         public volatile Long currentTimeOverride = null;
 
         public TimedDiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                                     ClusterApplier clusterApplier) {
-            super(settings, clusterSettings, threadPool, clusterApplier);
+                                     Supplier<DiscoveryNode> localNodeSupplier, ClusterApplier clusterApplier) {
+            super(settings, clusterSettings, threadPool, localNodeSupplier, clusterApplier);
         }
 
         @Override

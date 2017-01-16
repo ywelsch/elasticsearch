@@ -60,8 +60,7 @@ public class ClusterServiceUtils {
         ClusterApplier applier = (s, c, l) -> l.clusterStateProcessed(s, null, null);
         DiscoveryService discoveryService = new DiscoveryService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
-            threadPool, applier);
-        discoveryService.setLocalNode(localNode);
+            threadPool, () -> localNode, applier);
         discoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(Iterable<DiscoveryNode> discoveryNodes) {

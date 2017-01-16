@@ -24,9 +24,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.cluster.AckedClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
-import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterState.Builder;
 import org.elasticsearch.cluster.ClusterStateApplier;
 import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
@@ -38,58 +36,37 @@ import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.TimeoutClusterStateListener;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.block.ClusterBlocks;
-import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.cluster.routing.OperationRouting;
-import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
-import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.text.Text;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
-import org.elasticsearch.common.util.concurrent.CountDown;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
-import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
-import org.elasticsearch.common.util.concurrent.PrioritizedRunnable;
 import org.elasticsearch.common.util.iterable.Iterables;
-import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.function.UnaryOperator;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
@@ -127,13 +104,16 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
 
     private final ClusterBlocks.Builder initialBlocks;
 
+    private final java.util.function.Supplier<DiscoveryNode> localNodeSupplier;
+
     private NodeConnectionsService nodeConnectionsService;
 
     private DiscoverySettings discoverySettings;
 
-    public ClusterApplierService(Settings settings,
-                          ClusterSettings clusterSettings, ThreadPool threadPool) {
+    public ClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
+                                 java.util.function.Supplier<DiscoveryNode> localNodeSupplier) {
         super(settings, clusterSettings, threadPool);
+        this.localNodeSupplier = localNodeSupplier;
         this.clusterSettings = clusterSettings;
         // will be replaced on doStart.
         this.state = new AtomicReference<>(ClusterState.builder(clusterName).build());
@@ -146,14 +126,6 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
 
     public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
         this.slowTaskLoggingThreshold = slowTaskLoggingThreshold;
-    }
-
-    public synchronized void setLocalNode(DiscoveryNode localNode) {
-        assert state().nodes().getLocalNodeId() == null : "local node is already set";
-        updateState(clusterState -> {
-            DiscoveryNodes nodes = DiscoveryNodes.builder(clusterState.nodes()).add(localNode).localNodeId(localNode.getId()).build();
-            return ClusterState.builder(clusterState).nodes(nodes).build();
-        });
     }
 
     private void updateState(UnaryOperator<ClusterState> updateFunction) {
@@ -194,11 +166,16 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
 
     @Override
     protected synchronized void doStart() {
-        Objects.requireNonNull(state().nodes().getLocalNode(), "please set the local node before starting");
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
         Objects.requireNonNull(discoverySettings, "please set discovery settings before starting");
         addListener(localNodeMasterListeners);
-        updateState(state -> ClusterState.builder(state).blocks(initialBlocks).build());
+        DiscoveryNode localNode = localNodeSupplier.get();
+        assert localNode != null;
+        updateState(state -> {
+            assert state.nodes().getLocalNodeId() == null : "local node is already set";
+            DiscoveryNodes nodes = DiscoveryNodes.builder(state.nodes()).add(localNode).localNodeId(localNode.getId()).build();
+            return ClusterState.builder(state).nodes(nodes).blocks(initialBlocks).build();
+        });
         this.threadExecutor = EsExecutors.newSinglePrioritizing(CLUSTER_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, CLUSTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
     }
@@ -222,17 +199,6 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
 
     @Override
     protected synchronized void doClose() {
-    }
-
-    /**
-     * The local node.
-     */
-    public DiscoveryNode localNode() {
-        DiscoveryNode localNode = state().getNodes().getLocalNode();
-        if (localNode == null) {
-            throw new IllegalStateException("No local node found. Is the node started?");
-        }
-        return localNode;
     }
 
     /**
