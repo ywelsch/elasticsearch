@@ -86,7 +86,7 @@ public abstract class ClusterStateUpdateTask implements ClusterStateTaskConfig, 
     }
 
     @Override
-    public final boolean isPublishingTask() {
+    public final boolean isDiscoveryServiceTask() {
         return true;
     }
 }

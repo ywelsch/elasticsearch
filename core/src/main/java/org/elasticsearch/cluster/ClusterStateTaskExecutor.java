@@ -38,7 +38,7 @@ public interface ClusterStateTaskExecutor<T> {
         return true;
     }
 
-    default boolean isPublishingTask() {
+    default boolean isDiscoveryServiceTask() {
         return true;
     }
 

@@ -42,7 +42,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoveryService;
-import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collections;
@@ -82,10 +81,6 @@ public class ClusterService extends AbstractLifecycleComponent {
     public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
         discoveryService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
         clusterApplierService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
-    }
-
-    public synchronized void setClusterStatePublisher(BiConsumer<ClusterChangedEvent, Discovery.AckListener> publisher) {
-        discoveryService.setClusterStatePublisher(publisher);
     }
 
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
@@ -153,7 +148,7 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     /**
      * The currently applied cluster state.
-     * Should be renamed to appliedClusterState in a follow-up PR
+     * Should be renamed to appliedState / appliedClusterState in a follow-up
      */
     public ClusterState state() {
         return clusterApplierService.state();
@@ -291,7 +286,7 @@ public class ClusterService extends AbstractLifecycleComponent {
         if (!lifecycle.started()) {
             return;
         }
-        if (executor.isPublishingTask()) {
+        if (executor.isDiscoveryServiceTask()) {
             discoveryService.submitStateUpdateTasks(source, tasks, config, executor);
         } else {
             clusterApplierService.submitStateUpdateTasks(source, tasks, config, executor);
@@ -329,7 +324,7 @@ public class ClusterService extends AbstractLifecycleComponent {
         return discoveryService.getMaxTaskWaitTime();
     }
 
-    public static boolean assertClusterOrMasterStateThread() {
+    public static boolean assertClusterOrDiscoveryStateThread() {
         assert Thread.currentThread().getName().contains(ClusterApplierService.CLUSTER_UPDATE_THREAD_NAME) ||
             Thread.currentThread().getName().contains(DiscoveryService.DISCOVERY_UPDATE_THREAD_NAME) :
             "not called from the master/cluster state update thread";
@@ -338,16 +333,6 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     public ClusterName getClusterName() {
         return clusterName;
-    }
-
-    public void setDiscoverySettings(DiscoverySettings discoverySettings) {
-        clusterApplierService.setDiscoverySettings(discoverySettings);
-        discoveryService.setDiscoverySettings(discoverySettings);
-    }
-
-    // this one is overridden in tests so we can control time
-    protected long currentTimeInNanos() {
-        return System.nanoTime();
     }
 
     public ClusterSettings getClusterSettings() {

@@ -71,8 +71,6 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
                 // skip
             }
         });
-        timedClusterApplierService.setDiscoverySettings(new DiscoverySettings(Settings.EMPTY,
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)));
         timedClusterApplierService.start();
         ClusterState state = timedClusterApplierService.state();
         final DiscoveryNodes nodes = state.nodes();

@@ -378,7 +378,7 @@ public class TribeService extends AbstractLifecycleComponent {
         }
 
         @Override
-        public boolean isPublishingTask() {
+        public boolean isDiscoveryServiceTask() {
             return false;
         }
 

@@ -69,6 +69,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -702,7 +703,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     void processNextPendingClusterState(String reason) {
         discoveryService.submitStateUpdateTask("zen-disco-receive(from master [" + reason + "])", new DiscoveryUpdateTask(Priority.URGENT) {
-            ClusterState newClusterState = null;
+            volatile ClusterState newClusterState = null;
 
             @Override
             public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) {
@@ -716,7 +717,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 assert newClusterState.nodes().getMasterNode() != null : "received a cluster state without a master";
                 assert !newClusterState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock()) : "received a cluster state with a master block";
 
-                if (currentState.nodes().isLocalNodeElectedMaster() && newClusterState.nodes().getMasterNodeId() != null && newClusterState.nodes().isLocalNodeElectedMaster() == false) {
+                if (currentState.nodes().isLocalNodeElectedMaster()) {
                     return handleAnotherMaster(currentState, newClusterState.nodes().getMasterNode(), newClusterState.version(), "via a new cluster state");
                 }
 
@@ -729,65 +730,40 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     masterFD.restart(newClusterState.nodes().getMasterNode(), "new cluster state received and we are monitoring the wrong master [" + masterFD.masterNode() + "]");
                 }
 
-                final ClusterState newState;
                 if (currentState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock())) {
                     // its a fresh update from the master as we transition from a start of not having a master to having one
                     logger.debug("got first state from fresh master [{}]", newClusterState.nodes().getMasterNodeId());
-                    newState = newClusterState;
-                } else {
-                    // some optimizations to make sure we keep old objects where possible
-                    ClusterState.Builder builder = ClusterState.builder(newClusterState);
-
-                    // if the routing table did not change, use the original one
-                    if (newClusterState.routingTable().version() == currentState.routingTable().version()) {
-                        builder.routingTable(currentState.routingTable());
-                    }
-                    // same for metadata
-                    if (newClusterState.metaData().version() == currentState.metaData().version()) {
-                        builder.metaData(currentState.metaData());
-                    } else {
-                        // if its not the same version, only copy over new indices or ones that changed the version
-                        MetaData.Builder metaDataBuilder = MetaData.builder(newClusterState.metaData()).removeAllIndices();
-                        for (IndexMetaData indexMetaData : newClusterState.metaData()) {
-                            IndexMetaData currentIndexMetaData = currentState.metaData().index(indexMetaData.getIndex());
-                            if (currentIndexMetaData != null && currentIndexMetaData.isSameUUID(indexMetaData.getIndexUUID()) &&
-                                currentIndexMetaData.getVersion() == indexMetaData.getVersion()) {
-                                // safe to reuse
-                                metaDataBuilder.put(currentIndexMetaData, false);
-                            } else {
-                                metaDataBuilder.put(indexMetaData, false);
-                            }
-                        }
-                        builder.metaData(metaDataBuilder);
-                    }
-                    newState = builder.build();
+                    return newState(newClusterState);
                 }
 
-                discoveryService.getClusterApplier().submitStateUpdateTask("apply cluster state (from master [" + reason + "])", newState,
-                    new ClusterStateTaskListener() {
 
-                        @Override
-                        public void onFailure(String source, Exception e) {
-                            logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected failure applying [{}]", source), e);
-                            try {
-                                publishClusterState.pendingStatesQueue().markAsFailed(newClusterState, e);
-                            } catch (Exception inner) {
-                                inner.addSuppressed(e);
-                                logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected exception while failing [{}]", source), inner);
-                            }
+                // some optimizations to make sure we keep old objects where possible
+                ClusterState.Builder builder = ClusterState.builder(newClusterState);
+
+                // if the routing table did not change, use the original one
+                if (newClusterState.routingTable().version() == currentState.routingTable().version()) {
+                    builder.routingTable(currentState.routingTable());
+                }
+                // same for metadata
+                if (newClusterState.metaData().version() == currentState.metaData().version()) {
+                    builder.metaData(currentState.metaData());
+                } else {
+                    // if its not the same version, only copy over new indices or ones that changed the version
+                    MetaData.Builder metaDataBuilder = MetaData.builder(newClusterState.metaData()).removeAllIndices();
+                    for (IndexMetaData indexMetaData : newClusterState.metaData()) {
+                        IndexMetaData currentIndexMetaData = currentState.metaData().index(indexMetaData.getIndex());
+                        if (currentIndexMetaData != null && currentIndexMetaData.isSameUUID(indexMetaData.getIndexUUID()) &&
+                                currentIndexMetaData.getVersion() == indexMetaData.getVersion()) {
+                            // safe to reuse
+                            metaDataBuilder.put(currentIndexMetaData, false);
+                        } else {
+                            metaDataBuilder.put(indexMetaData, false);
                         }
+                    }
+                    builder.metaData(metaDataBuilder);
+                }
 
-                        @Override
-                        public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                            try {
-                                publishClusterState.pendingStatesQueue().markAsProcessed(newClusterState);
-                            } catch (Exception e) {
-                                onFailure(source, e);
-                            }
-                        }
-                    });
-
-                return newState(newState);
+                return newState(builder.build());
             }
 
             @Override
@@ -800,6 +776,49 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         inner.addSuppressed(e);
                         logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected exception while failing [{}]", source), inner);
                     }
+                }
+            }
+
+            @Override
+            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                if (oldState == newState) {
+                    return;
+                }
+                CountDownLatch countDownLatch = new CountDownLatch(1);
+                discoveryService.getClusterApplier().submitStateUpdateTask("apply cluster state (from master [" + reason + "])",
+                    newClusterState,
+                    new ClusterStateTaskListener() {
+
+                        @Override
+                        public void onFailure(String source, Exception e) {
+                            logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected failure applying [{}]", source), e);
+                            try {
+                                // TODO: use cluster state uuid instead of full cluster state so that we don't keep reference to CS around
+                                // for too long.
+                                publishClusterState.pendingStatesQueue().markAsFailed(newClusterState, e);
+                            } catch (Exception inner) {
+                                inner.addSuppressed(e);
+                                logger.error((Supplier<?>) () -> new ParameterizedMessage("unexpected exception while failing [{}]", source), inner);
+                            } finally {
+                                countDownLatch.countDown();
+                            }
+                        }
+
+                        @Override
+                        public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                            try {
+                                publishClusterState.pendingStatesQueue().markAsProcessed(newClusterState);
+                            } catch (Exception e) {
+                                onFailure(source, e);
+                            } finally {
+                                countDownLatch.countDown();
+                            }
+                        }
+                    });
+                try {
+                    countDownLatch.await();
+                } catch (InterruptedException e) {
+                    logger.warn((Supplier<?>) () -> new ParameterizedMessage("interrupted while applying cluster state locally [{}]", source), e);
                 }
             }
         });
@@ -1164,7 +1183,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         /** cleans any running joining thread and calls {@link #rejoin} */
         public ClusterStateTaskExecutor.ClusterTasksResult<LocalClusterUpdateTask> stopRunningThreadAndRejoin(ClusterState clusterState, String reason) {
-            DiscoveryService.assertDiscoveryUpdateThread();
+            assert DiscoveryService.assertDiscoveryUpdateThread();
             currentJoinThread.set(null);
             return rejoin(clusterState, reason);
         }

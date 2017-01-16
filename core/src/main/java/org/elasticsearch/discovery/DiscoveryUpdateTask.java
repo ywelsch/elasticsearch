@@ -33,7 +33,7 @@ public abstract class DiscoveryUpdateTask extends LocalClusterUpdateTask {
     }
 
     @Override
-    public final boolean isPublishingTask() {
+    public final boolean isDiscoveryServiceTask() {
         return true;
     }
 }

@@ -41,7 +41,6 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.BaseFuture;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.VersionUtils;
 import org.elasticsearch.test.junit.annotations.TestLogging;
@@ -80,9 +79,7 @@ import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_NUMBER_OF_SHARDS;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_VERSION_CREATED;
 import static org.elasticsearch.cluster.routing.RoutingTableTests.updateActiveAllocations;
-import static org.elasticsearch.test.ClusterServiceUtils.createClusterService;
 import static org.elasticsearch.test.ClusterServiceUtils.createDiscoveryService;
-import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
@@ -115,7 +112,7 @@ public class NodeJoinControllerTests extends ESTestCase {
         final DiscoveryNodes initialNodes = discoveryService.state().nodes();
         final DiscoveryNode localNode = initialNodes.getLocalNode();
         // make sure we have a master
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(
             DiscoveryNodes.builder(initialNodes).masterNodeId(localNode.getId())).build());
         nodeJoinController = new NodeJoinController(discoveryService, createAllocationService(Settings.EMPTY),
             new ElectMasterService(Settings.EMPTY), Settings.EMPTY);
@@ -165,7 +162,7 @@ public class NodeJoinControllerTests extends ESTestCase {
     public void testFailingJoinsWhenNotMaster() throws ExecutionException, InterruptedException {
         // remove current master flag
         DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes()).masterNodeId(null);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
         int nodeId = 0;
         try {
             joinNode(newNode(nodeId++));
@@ -196,7 +193,7 @@ public class NodeJoinControllerTests extends ESTestCase {
 
     public void testSimpleMasterElectionWithoutRequiredJoins() throws InterruptedException, ExecutionException {
         DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes()).masterNodeId(null);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
         int nodeId = 0;
         final int requiredJoins = 0;
         logger.debug("--> using requiredJoins [{}]", requiredJoins);
@@ -246,7 +243,7 @@ public class NodeJoinControllerTests extends ESTestCase {
 
     public void testSimpleMasterElection() throws InterruptedException, ExecutionException {
         DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes()).masterNodeId(null);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
         int nodeId = 0;
         final int requiredJoins = 1 + randomInt(5);
         logger.debug("--> using requiredJoins [{}]", requiredJoins);
@@ -360,7 +357,7 @@ public class NodeJoinControllerTests extends ESTestCase {
 
     public void testMasterElectionTimeout() throws InterruptedException {
         DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes()).masterNodeId(null);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
         int nodeId = 0;
         final int requiredJoins = 1 + randomInt(5);
         logger.debug("--> using requiredJoins [{}]", requiredJoins);
@@ -428,7 +425,7 @@ public class NodeJoinControllerTests extends ESTestCase {
         final DiscoveryNode other_node = new DiscoveryNode("other_node", buildNewFakeTransportAddress(),
             emptyMap(), emptySet(), Version.CURRENT);
         nodesBuilder.add(other_node);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(state).nodes(nodesBuilder).build());
+        setState(discoveryService, ClusterState.builder(state).nodes(nodesBuilder).build());
 
         state = discoveryService.state();
         joinNode(other_node);
@@ -474,7 +471,7 @@ public class NodeJoinControllerTests extends ESTestCase {
 
     public void testElectionWithConcurrentJoins() throws InterruptedException, BrokenBarrierException {
         DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(discoveryService.state().nodes()).masterNodeId(null);
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodesBuilder).build());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodesBuilder).build());
 
         nodeJoinController.startElectionContext();
 
@@ -624,7 +621,7 @@ public class NodeJoinControllerTests extends ESTestCase {
                         .routingTable(RoutingTable.builder().add(indexRoutingTable).build());
         }
 
-        ClusterServiceUtils.setState(discoveryService, stateBuilder.build());
+        setState(discoveryService, stateBuilder.build());
 
         // conflict on node id or address
         final DiscoveryNode conflictingNode = randomBoolean() ?
@@ -674,7 +671,7 @@ public class NodeJoinControllerTests extends ESTestCase {
                 emptyMap(), new HashSet<>(randomSubsetOf(Arrays.asList(DiscoveryNode.Role.values()))), Version.CURRENT);
             nodesBuilder.add(node);
         }
-        ClusterServiceUtils.setState(discoveryService, ClusterState.builder(state).nodes(nodesBuilder).build());
+        setState(discoveryService, ClusterState.builder(state).nodes(nodesBuilder).build());
     }
 
     protected void assertNodesInCurrentState(List<DiscoveryNode> expectedNodes) {

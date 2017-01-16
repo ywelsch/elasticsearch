@@ -22,7 +22,6 @@ package org.elasticsearch.cluster.service;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
-import org.elasticsearch.cluster.AckedClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateApplier;
@@ -41,8 +40,6 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.settings.ClusterSettings;
-import org.elasticsearch.common.settings.Setting;
-import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
@@ -50,7 +47,7 @@ import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
 import org.elasticsearch.common.util.iterable.Iterables;
-import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collection;
@@ -69,13 +66,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
+import static org.elasticsearch.cluster.service.ClusterService.CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING;
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
 
 public class ClusterApplierService extends AbstractClusterTaskExecutor implements ClusterApplier {
-
-    public static final Setting<TimeValue> CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING =
-        Setting.positiveTimeSetting("cluster.service.slow_task_logging_threshold", TimeValue.timeValueSeconds(30),
-            Property.Dynamic, Property.NodeScope);
 
     public static final String CLUSTER_UPDATE_THREAD_NAME = "clusterService#updateTask";
 
@@ -107,8 +101,6 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
     private final java.util.function.Supplier<DiscoveryNode> localNodeSupplier;
 
     private NodeConnectionsService nodeConnectionsService;
-
-    private DiscoverySettings discoverySettings;
 
     public ClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
                                  java.util.function.Supplier<DiscoveryNode> localNodeSupplier) {
@@ -167,7 +159,6 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
     @Override
     protected synchronized void doStart() {
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
-        Objects.requireNonNull(discoverySettings, "please set discovery settings before starting");
         addListener(localNodeMasterListeners);
         DiscoveryNode localNode = localNodeSupplier.get();
         assert localNode != null;
@@ -319,23 +310,33 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
     @Override
     public void submitStateUpdateTask(final String source, final ClusterState clusterState,
                                       final ClusterStateTaskListener listener) {
-        submitStateUpdateTask(source, clusterState, ClusterStateTaskConfig.build(Priority.URGENT), clusterStateTaskExecutor, listener);
+        assert DiscoveryService.assertDiscoveryUpdateThread();
+        clusterStateToApply.set(clusterState);
+        submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.HIGH), clusterStateTaskExecutor, listener);
     }
+
+    private final AtomicReference<ClusterState> clusterStateToApply = new AtomicReference<>();
 
     private final ApplyClusterStateTaskExecutor clusterStateTaskExecutor = new ApplyClusterStateTaskExecutor();
 
-    static class ApplyClusterStateTaskExecutor implements ClusterStateTaskExecutor<ClusterState> {
+    class ApplyClusterStateTaskExecutor implements ClusterStateTaskExecutor<Object> {
 
         @Override
-        public ClusterTasksResult<ClusterState> execute(ClusterState currentState, List<ClusterState> tasks) throws Exception {
-            return ClusterTasksResult.<ClusterState>builder().successes(tasks).build(tasks.get(tasks.size() - 1));
+        public ClusterTasksResult<Object> execute(ClusterState currentState, List<Object> tasks) throws Exception {
+            ClusterState clusterState = clusterStateToApply.get();
+            if (clusterState == null) {
+                return ClusterTasksResult.builder().successes(tasks).build(currentState);
+            } else {
+                clusterStateToApply.compareAndSet(clusterState, null); // set to null if no other update has come in
+                return ClusterTasksResult.builder().successes(tasks).build(clusterState);
+            }
         }
 
         public boolean runOnlyOnMaster() {
             return false;
         }
 
-        public boolean isPublishingTask() {
+        public boolean isDiscoveryServiceTask() {
             return false;
         }
     }
@@ -366,10 +367,6 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
             }
         }
         return true;
-    }
-
-    public void setDiscoverySettings(DiscoverySettings discoverySettings) {
-        this.discoverySettings = discoverySettings;
     }
 
     @Override
@@ -426,12 +423,9 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
 
     public TaskOutputs calculateTaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState, long startTimeNS) {
         ClusterTasksResult<Object> clusterTasksResult = executeTasks(taskInputs, startTimeNS, previousClusterState);
-        // extract those that are waiting for results
-        List<UpdateTask> nonFailedTasks = getNonFailedTasks(taskInputs, clusterTasksResult);
         ClusterState newClusterState = clusterTasksResult.resultingState;
-
-        return new TaskOutputs(taskInputs, previousClusterState, newClusterState, nonFailedTasks,
-            clusterTasksResult.executionResults);
+        List<UpdateTask> nonFailedTasks = getNonFailedTasks(taskInputs, clusterTasksResult);
+        return new TaskOutputs(taskInputs, previousClusterState, newClusterState, nonFailedTasks, clusterTasksResult.executionResults);
     }
 
     private void applyChanges(TaskInputs taskInputs, TaskOutputs taskOutputs) {
@@ -531,13 +525,7 @@ public class ClusterApplierService extends AbstractClusterTaskExecutor implement
         }
 
         public void notifySuccessfulTasksOnUnchangedClusterState() {
-            nonFailedTasks.forEach(task -> {
-                if (task.listener instanceof AckedClusterStateTaskListener) {
-                    //no need to wait for ack if nothing changed, the update can be counted as acknowledged
-                    ((AckedClusterStateTaskListener) task.listener).onAllNodesAcked(null);
-                }
-                task.listener.clusterStateProcessed(task.source, newClusterState, newClusterState);
-            });
+            nonFailedTasks.forEach(task -> task.listener.clusterStateProcessed(task.source, newClusterState, newClusterState));
         }
     }
 

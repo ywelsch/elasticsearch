@@ -148,7 +148,7 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
 
             @Override
             public boolean mustAck(DiscoveryNode discoveryNode) {
-                // repository verification is only possible after the repo has been created on both master and data nodes
+                // repository is created on both master and data nodes
                 return discoveryNode.isMasterNode() || discoveryNode.isDataNode();
             }
         });
@@ -199,8 +199,8 @@ public class RepositoriesService extends AbstractComponent implements ClusterSta
 
             @Override
             public boolean mustAck(DiscoveryNode discoveryNode) {
-                // Since operation occurs only on masters, it's enough that only master-eligible nodes acked
-                return discoveryNode.isMasterNode();
+                // repository was created on both master and data nodes
+                return discoveryNode.isMasterNode() || discoveryNode.isDataNode();
             }
         });
     }

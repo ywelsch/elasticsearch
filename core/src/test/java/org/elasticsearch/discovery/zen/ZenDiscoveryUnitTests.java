@@ -43,7 +43,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.zen.PublishClusterStateActionTests.AssertingAckListener;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.VersionUtils;
 import org.elasticsearch.test.transport.MockTransportService;
@@ -77,9 +76,7 @@ import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_VERSION_C
 import static org.elasticsearch.cluster.routing.RoutingTableTests.updateActiveAllocations;
 import static org.elasticsearch.discovery.zen.ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING;
 import static org.elasticsearch.discovery.zen.ZenDiscovery.shouldIgnoreOrRejectNewClusterState;
-import static org.elasticsearch.test.ClusterServiceUtils.createClusterService;
 import static org.elasticsearch.test.ClusterServiceUtils.createDiscoveryService;
-import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.containsString;
@@ -190,7 +187,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             toClose.addFirst(masterDiscoveryService);
             // TODO: clustername shouldn't be stored twice in cluster service, but for now, work around it
             state = ClusterState.builder(masterDiscoveryService.getClusterName()).nodes(state.nodes()).build();
-            ClusterServiceUtils.setState(masterDiscoveryService, state);
+            setState(masterDiscoveryService, state);
             ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterDiscoveryService, threadPool);
             toClose.addFirst(masterZen);
             masterTransport.acceptIncomingRequests();
@@ -204,7 +201,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
                 .nodes(DiscoveryNodes.builder().add(otherNode).localNodeId(otherNode.getId())).build();
             DiscoveryService otherDiscoveryService = createDiscoveryService(threadPool, masterNode);
             toClose.addFirst(otherDiscoveryService);
-            ClusterServiceUtils.setState(otherDiscoveryService, otherState);
+            setState(otherDiscoveryService, otherState);
             ZenDiscovery otherZen = buildZenDiscovery(settings, otherTransport, otherDiscoveryService, threadPool);
             toClose.addFirst(otherZen);
             otherTransport.acceptIncomingRequests();
@@ -257,7 +254,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             DiscoveryService masterDiscoveryService = createDiscoveryService(threadPool, masterNode);
             toClose.addFirst(masterDiscoveryService);
             state = ClusterState.builder(masterDiscoveryService.getClusterName()).nodes(state.nodes()).build();
-            ClusterServiceUtils.setState(masterDiscoveryService, state);
+            setState(masterDiscoveryService, state);
             ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterDiscoveryService, threadPool);
             toClose.addFirst(masterZen);
             masterTransport.acceptIncomingRequests();

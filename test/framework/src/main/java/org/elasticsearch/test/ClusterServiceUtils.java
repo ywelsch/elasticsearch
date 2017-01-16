@@ -19,10 +19,13 @@
 package org.elasticsearch.test;
 
 import org.apache.logging.log4j.core.util.Throwables;
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -129,8 +132,9 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
-        clusterService.setClusterStatePublisher(createClusterStatePublisher(clusterService.getClusterApplierService()));
-        clusterService.setDiscoverySettings(new DiscoverySettings(Settings.EMPTY,
+        clusterService.getDiscoveryService().setClusterStatePublisher(
+            createClusterStatePublisher(clusterService.getClusterApplierService()));
+        clusterService.getDiscoveryService().setDiscoverySettings(new DiscoverySettings(Settings.EMPTY,
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)));
         clusterService.start();
         final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(clusterService.state().nodes());
@@ -139,38 +143,30 @@ public class ClusterServiceUtils {
         return clusterService;
     }
 
-    public static BiConsumer<ClusterChangedEvent, AckListener> createClusterStatePublisher(ClusterApplierService clusterApplierService) {
+    public static BiConsumer<ClusterChangedEvent, AckListener> createClusterStatePublisher(ClusterApplier clusterApplier) {
         return (event, ackListener) -> {
             CountDownLatch latch = new CountDownLatch(1);
-            clusterApplierService.submitStateUpdateTask("apply_cluster_state[" + event.source() + "]", new LocalClusterUpdateTask() {
+            clusterApplier.submitStateUpdateTask("mock_publish_to_self[" + event.source() + "]", event.state(),
+                new ClusterStateTaskListener() {
+
                 @Override
-                public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
-                    if (event.state().version() > currentState.version()) {
-                        return newState(event.state());
-                    } else {
-                        return unchanged();
-                    }
+                public void onFailure(String source, Exception e) {
+                    latch.countDown();
                 }
 
                 @Override
                 public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                     latch.countDown();
                 }
-
-                @Override
-                public void onFailure(String source, Exception e) {
-                    latch.countDown();
-                    throw new AssertionError("unexpected exception", e);
-                }
             });
-            if (clusterApplierService.lifecycleState().equals(Lifecycle.State.STOPPED) == false) {
-                // if cluster service is stopped, there is no point in waiting
+//            if (clusterApplierService.lifecycleState().equals(Lifecycle.State.STOPPED) == false) {
+//                // if cluster service is stopped, there is no point in waiting
                 try {
                     latch.await();
                 } catch (Exception e) {
                     Throwables.rethrow(e);
                 }
-            }
+//            }
         };
     }
 

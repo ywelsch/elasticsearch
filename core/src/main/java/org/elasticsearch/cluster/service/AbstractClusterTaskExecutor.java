@@ -414,7 +414,7 @@ public abstract class AbstractClusterTaskExecutor extends AbstractLifecycleCompo
         }
 
         public boolean isPublishingTask() {
-            return executor.isPublishingTask();
+            return executor.isDiscoveryServiceTask();
         }
 
         public void onNoLongerMaster() {

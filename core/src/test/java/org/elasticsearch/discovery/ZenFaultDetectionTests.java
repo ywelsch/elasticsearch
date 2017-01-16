@@ -38,7 +38,6 @@ import org.elasticsearch.discovery.zen.MasterFaultDetection;
 import org.elasticsearch.discovery.zen.NodesFaultDetection;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.indices.breaker.HierarchyCircuitBreakerService;
-import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.threadpool.TestThreadPool;
@@ -61,9 +60,7 @@ import java.util.concurrent.TimeUnit;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
 import static java.util.Collections.singleton;
-import static org.elasticsearch.test.ClusterServiceUtils.createClusterService;
 import static org.elasticsearch.test.ClusterServiceUtils.createDiscoveryService;
-import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -232,7 +229,7 @@ public class ZenFaultDetectionTests extends ESTestCase {
                 .put(FaultDetection.PING_INTERVAL_SETTING.getKey(), "5m").put("cluster.name", clusterName.value());
 
         final ClusterState state = ClusterState.builder(clusterName).nodes(buildNodesForA(false)).build();
-        ClusterServiceUtils.setState(clusterServiceA, state);
+        setState(clusterServiceA, state);
         MasterFaultDetection masterFD = new MasterFaultDetection(settings.build(), threadPool, serviceA,
             clusterServiceA);
         masterFD.start(nodeB, "test");
@@ -270,7 +267,7 @@ public class ZenFaultDetectionTests extends ESTestCase {
             .put(FaultDetection.PING_INTERVAL_SETTING.getKey(), "1s")
         .put("cluster.name", clusterName.value());
         final ClusterState stateNodeA = ClusterState.builder(clusterName).nodes(buildNodesForA(false)).build();
-        ClusterServiceUtils.setState(clusterServiceA, stateNodeA);
+        setState(clusterServiceA, stateNodeA);
 
         int minExpectedPings = 2;
 
@@ -285,7 +282,7 @@ public class ZenFaultDetectionTests extends ESTestCase {
         masterFDNodeA.start(nodeB, "test");
 
         final ClusterState stateNodeB = ClusterState.builder(clusterName).nodes(buildNodesForB(true)).build();
-        ClusterServiceUtils.setState(clusterServiceB, stateNodeB);
+        setState(clusterServiceB, stateNodeB);
 
         MasterFaultDetection masterFDNodeB = new MasterFaultDetection(settings.build(), threadPool, serviceB,
             clusterServiceB);

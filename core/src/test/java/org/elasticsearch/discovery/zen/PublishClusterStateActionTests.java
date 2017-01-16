@@ -344,7 +344,10 @@ public class PublishClusterStateActionTests extends ESTestCase {
     }
 
     public void testUnexpectedDiffPublishing() throws Exception {
-        MockNode nodeA = createMockNode("nodeA").setAsMaster();
+        MockNode nodeA = createMockNode("nodeA", Settings.EMPTY, event -> {
+            fail("Shouldn't send cluster state to myself");
+        }).setAsMaster();
+
         MockNode nodeB = createMockNode("nodeB");
 
         // Initial cluster state with both states - the second node still shouldn't
@@ -366,8 +369,19 @@ public class PublishClusterStateActionTests extends ESTestCase {
     public void testDisablingDiffPublishing() throws Exception {
         Settings noDiffPublishingSettings = Settings.builder().put(DiscoverySettings.PUBLISH_DIFF_ENABLE_SETTING.getKey(), false).build();
 
-        MockNode nodeA = createMockNode("nodeA", noDiffPublishingSettings, event -> assertFalse(event.state().wasReadFromDiff()));
-        MockNode nodeB = createMockNode("nodeB", noDiffPublishingSettings, event -> assertFalse(event.state().wasReadFromDiff()));
+        MockNode nodeA = createMockNode("nodeA", noDiffPublishingSettings, new ClusterStateListener() {
+            @Override
+            public void clusterChanged(ClusterChangedEvent event) {
+                fail("Shouldn't send cluster state to myself");
+            }
+        });
+
+        MockNode nodeB = createMockNode("nodeB", noDiffPublishingSettings, new ClusterStateListener() {
+            @Override
+            public void clusterChanged(ClusterChangedEvent event) {
+                assertFalse(event.state().wasReadFromDiff());
+            }
+        });
 
         // Initial cluster state
         DiscoveryNodes discoveryNodes = DiscoveryNodes.builder()
@@ -439,7 +453,13 @@ public class PublishClusterStateActionTests extends ESTestCase {
     }
 
     public void testSerializationFailureDuringDiffPublishing() throws Exception {
-        MockNode nodeA = createMockNode("nodeA").setAsMaster();
+        MockNode nodeA = createMockNode("nodeA", Settings.EMPTY, new ClusterStateListener() {
+            @Override
+            public void clusterChanged(ClusterChangedEvent event) {
+                fail("Shouldn't send cluster state to myself");
+            }
+        }).setAsMaster();
+
         MockNode nodeB = createMockNode("nodeB");
 
         // Initial cluster state with both states - the second node still shouldn't get

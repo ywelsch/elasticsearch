@@ -92,7 +92,7 @@ public abstract class LocalClusterUpdateTask implements ClusterStateTaskConfig, 
     }
 
     @Override
-    public boolean isPublishingTask() {
+    public boolean isDiscoveryServiceTask() {
         return false;
     }
 }

@@ -41,8 +41,6 @@ import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.ClusterSettings;
-import org.elasticsearch.common.settings.Setting;
-import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.CountDown;
@@ -62,13 +60,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.UnaryOperator;
 
+import static org.elasticsearch.cluster.service.ClusterService.CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING;
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
 
 public class DiscoveryService extends AbstractClusterTaskExecutor {
-
-    public static final Setting<TimeValue> CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING =
-        Setting.positiveTimeSetting("cluster.service.slow_task_logging_threshold", TimeValue.timeValueSeconds(30),
-            Property.Dynamic, Property.NodeScope);
 
     public static final String DISCOVERY_UPDATE_THREAD_NAME = "discoveryService#updateTask";
 
@@ -76,7 +71,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
 
     private TimeValue slowTaskLoggingThreshold;
 
-    private final AtomicReference<ClusterState> masterState;
+    private final AtomicReference<ClusterState> state;
 
     private final ClusterBlocks.Builder initialBlocks;
 
@@ -94,7 +89,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
         this.localNodeSupplier = localNodeSupplier;
         this.clusterApplier = clusterApplier;
         // will be replaced on doStart.
-        this.masterState = new AtomicReference<>(ClusterState.builder(clusterName).build());
+        this.state = new AtomicReference<>(ClusterState.builder(clusterName).build());
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
 
         initialBlocks = ClusterBlocks.builder();
@@ -109,7 +104,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
     }
 
     private void updateState(UnaryOperator<ClusterState> updateFunction) {
-        this.masterState.getAndUpdate(updateFunction);
+        this.state.getAndUpdate(updateFunction);
     }
 
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
@@ -184,7 +179,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
      * The current cluster state.
      */
     public ClusterState state() {
-        return this.masterState.get();
+        return this.state.get();
     }
 
     public ClusterApplier getClusterApplier() {
@@ -244,7 +239,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
                 if (newClusterState.nodes().isLocalNodeElectedMaster()) {
                     publishChanges(taskInputs, taskOutputs);
                 } else {
-                    masterState.set(newClusterState);
+                    state.set(newClusterState);
                     CountDownLatch latch = new CountDownLatch(1);
                     clusterApplier.submitStateUpdateTask("apply-unpublished-state", newClusterState, new ClusterStateTaskListener() {
                         @Override
@@ -295,12 +290,9 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
 
     public TaskOutputs calculateTaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState, long startTimeNS) {
         ClusterTasksResult<Object> clusterTasksResult = executeTasks(taskInputs, startTimeNS, previousClusterState);
-        // extract those that are waiting for results
-        List<UpdateTask> nonFailedTasks = getNonFailedTasks(taskInputs, clusterTasksResult);
         ClusterState newClusterState = patchVersionsAndNoMasterBlocks(taskInputs, previousClusterState, clusterTasksResult);
-
-        return new TaskOutputs(taskInputs, previousClusterState, newClusterState, nonFailedTasks,
-            clusterTasksResult.executionResults);
+        List<UpdateTask> nonFailedTasks = getNonFailedTasks(taskInputs, clusterTasksResult);
+        return new TaskOutputs(taskInputs, previousClusterState, newClusterState, nonFailedTasks, clusterTasksResult.executionResults);
     }
 
     private ClusterState patchVersionsAndNoMasterBlocks(TaskInputs taskInputs, ClusterState previousClusterState,
@@ -308,11 +300,11 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
         ClusterState newClusterState = executionResult.resultingState;
 
         if (executionResult.noMaster) {
-            assert newClusterState == previousClusterState : "state can only be changed by ClusterService when noMaster = true";
+            assert newClusterState == previousClusterState : "state can only be changed by DiscoveryService when noMaster = true";
             if (previousClusterState.nodes().getMasterNodeId() != null) {
                 // remove block if it already exists before adding new one
                 assert previousClusterState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock().id()) == false :
-                    "NO_MASTER_BLOCK should only be added by ClusterService";
+                    "NO_MASTER_BLOCK should only be added by DiscoveryService";
                 ClusterBlocks clusterBlocks = ClusterBlocks.builder().blocks(previousClusterState.blocks())
                     .addGlobalBlock(discoverySettings.getNoMasterBlock())
                     .build();
@@ -387,7 +379,7 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
             return;
         }
 
-        masterState.set(newClusterState);
+        state.set(newClusterState);
 
         taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
 
@@ -483,11 +475,6 @@ public class DiscoveryService extends AbstractClusterTaskExecutor {
                 task.listener.clusterStateProcessed(task.source(), newClusterState, newClusterState);
             });
         }
-    }
-
-    // this one is overridden in tests so we can control time
-    protected long currentTimeInNanos() {
-        return System.nanoTime();
     }
 
     @Override
