@@ -41,6 +41,7 @@ import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.threadpool.ThreadPool;
 
@@ -59,8 +60,6 @@ public class ClusterService extends AbstractLifecycleComponent {
             Setting.positiveTimeSetting("cluster.service.slow_task_logging_threshold", TimeValue.timeValueSeconds(30),
                     Property.Dynamic, Property.NodeScope);
 
-    public static final String CLUSTER_UPDATE_THREAD_NAME = "clusterService#updateTask";
-    public static final String MASTER_UPDATE_THREAD_NAME = "masterService#updateTask";
     private final ClusterName clusterName;
     private final Supplier<DiscoveryNode> localNodeSupplier;
 
@@ -158,18 +157,11 @@ public class ClusterService extends AbstractLifecycleComponent {
     }
 
     /**
-     * The current cluster state.
-     * Should be renamed to appliedClusterState
+     * The currently applied cluster state.
+     * Should be renamed to appliedClusterState in a follow-up PR
      */
     public ClusterState state() {
         return clusterApplierService.state();
-    }
-
-    /**
-     * The current master state.
-     */
-    public ClusterState publishingState() {
-        return discoveryService.state();
     }
 
     /**
@@ -342,36 +334,10 @@ public class ClusterService extends AbstractLifecycleComponent {
         return discoveryService.getMaxTaskWaitTime();
     }
 
-    /** asserts that the current thread is the cluster state update thread */
-    public static boolean assertClusterStateThread() {
-        assert Thread.currentThread().getName().contains(ClusterService.CLUSTER_UPDATE_THREAD_NAME) :
-                "not called from the cluster state update thread";
-        return true;
-    }
-
-    public static boolean assertMasterStateThread() {
-        assert Thread.currentThread().getName().contains(DiscoveryService.MASTER_UPDATE_THREAD_NAME) :
-            "not called from the master state update thread";
-        return true;
-    }
-
     public static boolean assertClusterOrMasterStateThread() {
-        assert Thread.currentThread().getName().contains(ClusterService.CLUSTER_UPDATE_THREAD_NAME) ||
-            Thread.currentThread().getName().contains(DiscoveryService.MASTER_UPDATE_THREAD_NAME) :
+        assert Thread.currentThread().getName().contains(ClusterApplierService.CLUSTER_UPDATE_THREAD_NAME) ||
+            Thread.currentThread().getName().contains(DiscoveryService.DISCOVERY_UPDATE_THREAD_NAME) :
             "not called from the master/cluster state update thread";
-        return true;
-    }
-
-    /** asserts that the current thread is <b>NOT</b> the cluster state update thread */
-    public static boolean assertNotClusterUpdateThread(String reason) {
-        assert Thread.currentThread().getName().contains(CLUSTER_UPDATE_THREAD_NAME) == false :
-            "Expected current thread [" + Thread.currentThread() + "] to not be the cluster state update thread. Reason: [" + reason + "]";
-        return true;
-    }
-
-    public static boolean assertNotMasterUpdateThread(String reason) {
-        assert Thread.currentThread().getName().contains(MASTER_UPDATE_THREAD_NAME) == false :
-            "Expected current thread [" + Thread.currentThread() + "] to not be the master state update thread. Reason: [" + reason + "]";
         return true;
     }
 

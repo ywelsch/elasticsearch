@@ -409,8 +409,8 @@ public class Node implements Closeable {
                 };
             }
 
-            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService,
-                namedWriteableRegistry, networkService, clusterService, pluginsService.filterPlugins(DiscoveryPlugin.class));
+            final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService, namedWriteableRegistry,
+                networkService, clusterService.getDiscoveryService(), pluginsService.filterPlugins(DiscoveryPlugin.class));
             modules.add(b -> {
                     b.bind(NamedXContentRegistry.class).toInstance(xContentRegistry);
                     b.bind(PluginsService.class).toInstance(pluginsService);

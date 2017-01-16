@@ -197,6 +197,8 @@ public class PublishClusterStateAction extends AbstractComponent {
 
         sendingController.waitForCommit(discoverySettings.getCommitTimeout());
 
+        // publish to itself
+
         try {
             long timeLeftInNanos = Math.max(0, publishTimeout.nanos() - (System.nanoTime() - publishingStartInNanos));
             final BlockingClusterStatePublishResponseHandler publishResponseHandler = sendingController.getPublishResponseHandler();

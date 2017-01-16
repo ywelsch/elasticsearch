@@ -17,23 +17,12 @@
  * under the License.
  */
 
-package org.elasticsearch.discovery;
+package org.elasticsearch.cluster.service;
 
-import org.elasticsearch.cluster.LocalClusterUpdateTask;
-import org.elasticsearch.common.Priority;
+import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 
-public abstract class DiscoveryUpdateTask extends LocalClusterUpdateTask {
-
-    public DiscoveryUpdateTask() {
-        this(Priority.NORMAL);
-    }
-
-    public DiscoveryUpdateTask(Priority priority) {
-        super(priority);
-    }
-
-    @Override
-    public final boolean isPublishingTask() {
-        return true;
-    }
+@FunctionalInterface
+public interface ClusterApplier {
+    void submitStateUpdateTask(String source, ClusterState clusterState, ClusterStateTaskListener listener);
 }

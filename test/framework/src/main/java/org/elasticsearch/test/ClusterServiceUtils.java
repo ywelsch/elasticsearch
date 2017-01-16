@@ -27,11 +27,15 @@ import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.AbstractClusterTaskExecutor;
+import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.ClusterApplierService;
 import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.common.component.Lifecycle;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.Discovery;
+import org.elasticsearch.discovery.Discovery.AckListener;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.DiscoveryUpdateTask;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -45,6 +49,67 @@ import java.util.function.BiConsumer;
 import static junit.framework.TestCase.fail;
 
 public class ClusterServiceUtils {
+
+    public static DiscoveryService createDiscoveryService(ThreadPool threadPool) {
+        DiscoveryNode discoveryNode = new DiscoveryNode("node", ESTestCase.buildNewFakeTransportAddress(), Collections.emptyMap(),
+            new HashSet<>(Arrays.asList(DiscoveryNode.Role.values())),Version.CURRENT);
+        return createDiscoveryService(threadPool, discoveryNode);
+    }
+
+    public static DiscoveryService createDiscoveryService(ThreadPool threadPool, DiscoveryNode localNode) {
+        ClusterApplier applier = (s, c, l) -> {
+            l.clusterStateProcessed(s, null, null);
+        };
+        DiscoveryService discoveryService = new DiscoveryService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+            threadPool, applier);
+        discoveryService.setLocalNode(localNode);
+        discoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
+            @Override
+            public void connectToNodes(Iterable<DiscoveryNode> discoveryNodes) {
+                // skip
+            }
+
+            @Override
+            public void disconnectFromNodesExcept(Iterable<DiscoveryNode> nodesToKeep) {
+                // skip
+            }
+        });
+        discoveryService.setClusterStatePublisher((event, ackListener) -> {});
+        discoveryService.setDiscoverySettings(new DiscoverySettings(Settings.EMPTY,
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)));
+        discoveryService.start();
+        final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes());
+        nodes.masterNodeId(discoveryService.localNode().getId());
+        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
+        return discoveryService;
+    }
+
+    public static void setState(AbstractClusterTaskExecutor executor, ClusterState clusterState) {
+        CountDownLatch latch = new CountDownLatch(1);
+        executor.submitStateUpdateTask("test setting state", new DiscoveryUpdateTask() {
+            @Override
+            public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
+                // make sure we increment versions as listener may depend on it for change
+                return newState(ClusterState.builder(clusterState).version(currentState.version() + 1).build());
+            }
+
+            @Override
+            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                latch.countDown();
+            }
+
+            @Override
+            public void onFailure(String source, Exception e) {
+                fail("unexpected exception" + e);
+            }
+        });
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            throw new ElasticsearchException("unexpected interruption", e);
+        }
+    }
 
     public static ClusterService createClusterService(ThreadPool threadPool) {
         DiscoveryNode discoveryNode = new DiscoveryNode("node", ESTestCase.buildNewFakeTransportAddress(), Collections.emptyMap(),
@@ -67,7 +132,7 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
-        clusterService.setClusterStatePublisher(createClusterStatePublisher(clusterService));
+        clusterService.setClusterStatePublisher(createClusterStatePublisher(clusterService.getClusterApplierService()));
         clusterService.setDiscoverySettings(new DiscoverySettings(Settings.EMPTY,
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)));
         clusterService.start();
@@ -77,10 +142,10 @@ public class ClusterServiceUtils {
         return clusterService;
     }
 
-    public static BiConsumer<ClusterChangedEvent, Discovery.AckListener> createClusterStatePublisher(ClusterService clusterService) {
+    public static BiConsumer<ClusterChangedEvent, AckListener> createClusterStatePublisher(ClusterApplierService clusterApplierService) {
         return (event, ackListener) -> {
             CountDownLatch latch = new CountDownLatch(1);
-            clusterService.submitStateUpdateTask("apply_cluster_state[" + event.source() + "]", new LocalClusterUpdateTask() {
+            clusterApplierService.submitStateUpdateTask("apply_cluster_state[" + event.source() + "]", new LocalClusterUpdateTask() {
                 @Override
                 public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
                     if (event.state().version() > currentState.version()) {
@@ -101,7 +166,7 @@ public class ClusterServiceUtils {
                     throw new AssertionError("unexpected exception", e);
                 }
             });
-            if (clusterService.lifecycleState().equals(Lifecycle.State.STOPPED) == false) {
+            if (clusterApplierService.lifecycleState().equals(Lifecycle.State.STOPPED) == false) {
                 // if cluster service is stopped, there is no point in waiting
                 try {
                     latch.await();
@@ -123,28 +188,6 @@ public class ClusterServiceUtils {
     }
 
     public static void setState(ClusterService clusterService, ClusterState clusterState) {
-        CountDownLatch latch = new CountDownLatch(1);
-        clusterService.submitStateUpdateTask("test setting state", new DiscoveryUpdateTask() {
-            @Override
-            public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
-                // make sure we increment versions as listener may depend on it for change
-                return newState(ClusterState.builder(clusterState).version(currentState.version() + 1).build());
-            }
-
-            @Override
-            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onFailure(String source, Exception e) {
-                fail("unexpected exception" + e);
-            }
-        });
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            throw new ElasticsearchException("unexpected interruption", e);
-        }
+        setState(clusterService.getDiscoveryService(), clusterState);
     }
 }

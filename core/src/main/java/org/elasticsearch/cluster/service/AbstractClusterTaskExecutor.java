@@ -1,8 +1,31 @@
+/*
+ * Licensed to Elasticsearch under one or more contributor
+ * license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright
+ * ownership. Elasticsearch licenses this file to you under
+ * the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package org.elasticsearch.cluster.service;
 
+import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.cluster.ClusterName;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
 import org.elasticsearch.common.Priority;
@@ -22,6 +45,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -237,7 +261,7 @@ public abstract class AbstractClusterTaskExecutor extends AbstractLifecycleCompo
         return threadExecutor.getMaxTaskWaitTime();
     }
 
-    class UpdateTask extends SourcePrioritizedRunnable {
+    protected class UpdateTask extends SourcePrioritizedRunnable {
 
         public final Object task;
         public final ClusterStateTaskListener listener;
@@ -280,7 +304,7 @@ public abstract class AbstractClusterTaskExecutor extends AbstractLifecycleCompo
                         return tasks.isEmpty() ? entry.getKey() : entry.getKey() + "[" + tasks + "]";
                     }).reduce((s1, s2) -> s1 + ", " + s2).orElse("");
 
-                    runTasks(executor, toExecute, tasksSummary);
+                    runTasks(new TaskInputs(executor, toExecute, tasksSummary));
                 }
             }
         }
@@ -315,5 +339,88 @@ public abstract class AbstractClusterTaskExecutor extends AbstractLifecycleCompo
     }
 
 
-    protected abstract void runTasks(ClusterStateTaskExecutor<Object> executor, ArrayList<UpdateTask> toExecute, String tasksSummary);
+    protected abstract void runTasks(TaskInputs taskInputs);
+
+    protected ClusterTasksResult<Object> executeTasks(TaskInputs taskInputs, long startTimeNS, ClusterState previousClusterState) {
+        ClusterTasksResult<Object> clusterTasksResult;
+        try {
+            List<Object> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
+            clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);
+        } catch (Exception e) {
+            TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
+            if (logger.isTraceEnabled()) {
+                logger.trace(
+                    (Supplier<?>) () -> new ParameterizedMessage(
+                        "failed to execute cluster state update in [{}], state:\nversion [{}], source [{}]\n{}{}{}",
+                        executionTime,
+                        previousClusterState.version(),
+                        taskInputs.summary,
+                        previousClusterState.nodes(),
+                        previousClusterState.routingTable(),
+                        previousClusterState.getRoutingNodes()),
+                    e);
+            }
+            warnAboutSlowTaskIfNeeded(executionTime, taskInputs.summary);
+            clusterTasksResult = ClusterTasksResult.builder()
+                .failures(taskInputs.updateTasks.stream().map(updateTask -> updateTask.task)::iterator, e)
+                .build(previousClusterState);
+        }
+
+        assert clusterTasksResult.executionResults != null;
+        assert clusterTasksResult.executionResults.size() == taskInputs.updateTasks.size()
+            : String.format(Locale.ROOT, "expected [%d] task result%s but was [%d]", taskInputs.updateTasks.size(),
+            taskInputs.updateTasks.size() == 1 ? "" : "s", clusterTasksResult.executionResults.size());
+        boolean assertsEnabled = false;
+        assert (assertsEnabled = true);
+        if (assertsEnabled) {
+            for (UpdateTask updateTask : taskInputs.updateTasks) {
+                assert clusterTasksResult.executionResults.containsKey(updateTask.task) :
+                    "missing task result for " + updateTask;
+            }
+        }
+
+        return clusterTasksResult;
+    }
+
+    public List<UpdateTask> getNonFailedTasks(TaskInputs taskInputs, ClusterTasksResult<Object> clusterTasksResult) {
+        List<UpdateTask> nonFailedTasks = new ArrayList<>();
+        for (UpdateTask updateTask : taskInputs.updateTasks) {
+            assert clusterTasksResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask;
+            final ClusterStateTaskExecutor.TaskResult taskResult =
+                clusterTasksResult.executionResults.get(updateTask.task);
+            if (taskResult.isSuccess()) {
+                nonFailedTasks.add(updateTask);
+            }
+        }
+        return nonFailedTasks;
+    }
+
+    /**
+     * Represents a set of tasks to be processed together with their executor
+     */
+    protected class TaskInputs {
+        public final String summary;
+        public final ArrayList<UpdateTask> updateTasks;
+        public final ClusterStateTaskExecutor<Object> executor;
+
+        TaskInputs(ClusterStateTaskExecutor<Object> executor, ArrayList<UpdateTask> updateTasks, String summary) {
+            this.summary = summary;
+            this.executor = executor;
+            this.updateTasks = updateTasks;
+        }
+
+        public boolean runOnlyOnMaster() {
+            return executor.runOnlyOnMaster();
+        }
+
+        public boolean isPublishingTask() {
+            return executor.isPublishingTask();
+        }
+
+        public void onNoLongerMaster() {
+            updateTasks.stream().forEach(task -> task.listener.onNoLongerMaster(task.source()));
+        }
+    }
+
+    protected abstract void warnAboutSlowTaskIfNeeded(TimeValue executionTime, String summary);
 }
