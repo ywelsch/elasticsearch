@@ -26,7 +26,7 @@ import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
@@ -34,7 +34,6 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.AbstractClusterTaskExecutorTestCase;
-import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.logging.Loggers;
@@ -179,7 +178,7 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
                     latch.countDown();
                 }
             },
-            new ClusterStateTaskListener() {
+            new PublishingClusterStateTaskListener() {
                 @Override
                 public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                     throw new IllegalStateException(source);
@@ -413,7 +412,7 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
             totalTaskCount += taskCount;
         }
         final CountDownLatch updateLatch = new CountDownLatch(totalTaskCount);
-        final ClusterStateTaskListener listener = new ClusterStateTaskListener() {
+        final PublishingClusterStateTaskListener listener = new PublishingClusterStateTaskListener() {
             @Override
             public void onFailure(String source, Exception e) {
                 fail(ExceptionsHelper.detailedMessage(e));
@@ -447,7 +446,7 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
                                 executor,
                                 listener);
                         } else {
-                            Map<Task, ClusterStateTaskListener> taskListeners = new HashMap<>();
+                            Map<Task, PublishingClusterStateTaskListener> taskListeners = new HashMap<>();
                             tasks.stream().forEach(t -> taskListeners.put(t, listener));
                             clusterTaskExecutor.submitStateUpdateTasks(
                                 threadName,
@@ -509,7 +508,7 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
                     return ClusterTasksResult.builder().successes(tasks).build(newClusterState);
                 }
             },
-            new ClusterStateTaskListener() {
+            new PublishingClusterStateTaskListener() {
                 @Override
                 public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                     BaseFuture<Void> future = new BaseFuture<Void>() {};

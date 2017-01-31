@@ -27,10 +27,11 @@ import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.Builder;
+import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.block.ClusterBlocks;
@@ -56,11 +57,13 @@ import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -79,6 +82,8 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
     private TimeValue slowTaskLoggingThreshold;
 
+    private final Collection<DiscoveryStateListener> stateListeners = new CopyOnWriteArrayList<>();
+
     private final AtomicReference<ClusterState> state;
 
     private final ClusterBlocks.Builder initialBlocks;
@@ -89,7 +94,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
     protected final ClusterName clusterName;
     protected final ThreadPool threadPool;
 
-    protected volatile BatchingClusterTaskExecutor<ClusterStateTaskListener> batchingClusterTaskExecutor;
+    protected volatile BatchingClusterTaskExecutor<PublishingClusterStateTaskListener> batchingClusterTaskExecutor;
 
 
 
@@ -175,9 +180,9 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         });
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(DISCOVERY_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, DISCOVERY_UPDATE_THREAD_NAME), threadPool.getThreadContext());
-        batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<ClusterStateTaskListener>(logger, threadExecutor, threadPool) {
+        batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<PublishingClusterStateTaskListener>(logger, threadExecutor, threadPool) {
             @Override
-            protected void onTimeout(String source, ClusterStateTaskListener listener, TimeValue timeout) {
+            protected void onTimeout(String source, PublishingClusterStateTaskListener listener, TimeValue timeout) {
                 listener.onFailure(source, new ProcessClusterEventTimeoutException(timeout, source));
             }
         };
@@ -259,6 +264,14 @@ public class DiscoveryService extends AbstractLifecycleComponent {
                     publishChanges(taskInputs, taskOutputs);
                 } else {
                     state.set(newClusterState);
+                    stateListeners.forEach(listener -> {
+                        try {
+                            logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
+                            listener.clusterChanged(previousClusterState, newClusterState);
+                        } catch (Exception ex) {
+                            logger.warn("failed to notify DiscoveryStateListener", ex);
+                        }
+                    });
                     taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
                 }
                 TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
@@ -350,6 +363,15 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
         state.set(newClusterState);
 
+        stateListeners.forEach(listener -> {
+            try {
+                logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
+                listener.clusterChanged(previousClusterState, newClusterState);
+            } catch (Exception ex) {
+                logger.warn("failed to notify DiscoveryStateListener", ex);
+            }
+        });
+
         taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
 
         try {
@@ -370,12 +392,12 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         public final TaskInputs<T> taskInputs;
         public final ClusterState previousClusterState;
         public final ClusterState newClusterState;
-        public final List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
+        public final List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
         public final Map<Object, ClusterStateTaskExecutor.TaskResult> executionResults;
 
         public TaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState,
                            ClusterState newClusterState,
-                           List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
+                           List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
                            Map<Object, ClusterStateTaskExecutor.TaskResult> executionResults) {
             this.taskInputs = taskInputs;
             this.previousClusterState = previousClusterState;
@@ -427,7 +449,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
         public void notifyFailedTasks() {
             // fail all tasks that have failed
-            for (BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>> updateTask : taskInputs.updateTasks) {
+            for (BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>> updateTask : taskInputs.updateTasks) {
                 assert executionResults.containsKey(updateTask.task) : "missing " + updateTask;
                 final ClusterStateTaskExecutor.TaskResult taskResult = executionResults.get(updateTask.task);
                 if (taskResult.isSuccess() == false) {
@@ -445,6 +467,20 @@ public class DiscoveryService extends AbstractLifecycleComponent {
                 task.listener.clusterStateProcessed(task.source(), newClusterState, newClusterState);
             });
         }
+    }
+
+    /**
+     * Add a listener for updated cluster states
+     */
+    public void addListener(DiscoveryStateListener listener) {
+        stateListeners.add(listener);
+    }
+
+    /**
+     * Removes a listener for updated cluster states.
+     */
+    public void removeListener(DiscoveryStateListener listener) {
+        stateListeners.remove(listener);
     }
 
     /**
@@ -470,7 +506,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         return batchingClusterTaskExecutor.getMaxTaskWaitTime();
     }
 
-    private SafeClusterStateTaskListener safe(ClusterStateTaskListener listener) {
+    private SafeClusterStateTaskListener safe(PublishingClusterStateTaskListener listener) {
         if (listener instanceof AckedClusterStateTaskListener) {
             return new SafeAckedClusterStateTaskListener((AckedClusterStateTaskListener) listener, logger);
         } else {
@@ -478,11 +514,11 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         }
     }
 
-    private static class SafeClusterStateTaskListener implements ClusterStateTaskListener {
-        private final ClusterStateTaskListener listener;
+    private static class SafeClusterStateTaskListener implements PublishingClusterStateTaskListener {
+        private final PublishingClusterStateTaskListener listener;
         private final Logger logger;
 
-        public SafeClusterStateTaskListener(ClusterStateTaskListener listener, Logger logger) {
+        public SafeClusterStateTaskListener(PublishingClusterStateTaskListener listener, Logger logger) {
             this.listener = listener;
             this.logger = logger;
         }
@@ -698,7 +734,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         return clusterTasksResult;
     }
 
-    public <T> List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> getNonFailedTasks(
+    public <T> List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> getNonFailedTasks(
         TaskInputs<T> taskInputs, ClusterTasksResult<T> clusterTasksResult) {
         return taskInputs.updateTasks.stream().filter(updateTask -> {
             assert clusterTasksResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask;
@@ -713,10 +749,10 @@ public class DiscoveryService extends AbstractLifecycleComponent {
      */
     protected class TaskInputs<T> {
         public final String summary;
-        public final List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> updateTasks;
+        public final List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> updateTasks;
         public final ClusterStateTaskExecutor<T> executor;
 
-        TaskInputs(ClusterStateTaskExecutor<T> executor, List<BatchingUpdateTask<T, ClusterStateTaskListener,
+        TaskInputs(ClusterStateTaskExecutor<T> executor, List<BatchingUpdateTask<T, PublishingClusterStateTaskListener,
             ClusterStateTaskExecutor<T>>> updateTasks, String summary) {
             this.summary = summary;
             this.executor = executor;
@@ -732,20 +768,20 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         }
     }
 
-    protected <T> BatchingClusterTaskExecutor.RunTasks<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>> runTasks() {
+    protected <T> BatchingClusterTaskExecutor.RunTasks<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>> runTasks() {
         return (executor, toExecute, tasksSummary) -> runTasks(new TaskInputs<>(executor, toExecute, tasksSummary));
     }
 
     /**
      * Submits a cluster state update task; unlike {@link #submitStateUpdateTask(String, Object, ClusterStateTaskConfig,
-     * ClusterStateTaskExecutor, ClusterStateTaskListener)}, submitted updates will not be batched.
+     * ClusterStateTaskExecutor, PublishingClusterStateTaskListener)}, submitted updates will not be batched.
      *
      * @param source     the source of the cluster state update task
      * @param updateTask the full context for the cluster state update
      *                   task
      *
      */
-    public <T extends ClusterStateTaskConfig & ClusterStateTaskExecutor<T> & ClusterStateTaskListener> void submitStateUpdateTask(
+    public <T extends ClusterStateTaskConfig & ClusterStateTaskExecutor<T> & PublishingClusterStateTaskListener> void submitStateUpdateTask(
         final String source, final T updateTask) {
         submitStateUpdateTask(source, updateTask, updateTask, updateTask, updateTask);
     }
@@ -772,7 +808,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
     public <T> void submitStateUpdateTask(final String source, final T task,
                                           final ClusterStateTaskConfig config,
                                           final ClusterStateTaskExecutor<T> executor,
-                                          final ClusterStateTaskListener listener) {
+                                          final PublishingClusterStateTaskListener listener) {
         submitStateUpdateTasks(source, Collections.singletonMap(task, listener), config, executor);
     }
 
@@ -790,13 +826,13 @@ public class DiscoveryService extends AbstractLifecycleComponent {
      *
      */
     public <T> void submitStateUpdateTasks(final String source,
-                                           final Map<T, ClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
+                                           final Map<T, PublishingClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
                                            final ClusterStateTaskExecutor<T> executor) {
         if (!lifecycle.started()) {
             return;
         }
         try {
-            Map<T, ClusterStateTaskListener> safeTasks = tasks.entrySet().stream().collect(
+            Map<T, PublishingClusterStateTaskListener> safeTasks = tasks.entrySet().stream().collect(
                 Collectors.toMap(Map.Entry::getKey, l -> safe(l.getValue())));
             batchingClusterTaskExecutor.submitTasks(source, safeTasks, config, executor, runTasks());
         } catch (EsRejectedExecutionException e) {

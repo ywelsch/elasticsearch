@@ -28,7 +28,7 @@ import java.util.List;
 /**
  * A task that can update the cluster state.
  */
-public abstract class ClusterStateUpdateTask implements ClusterStateTaskConfig, ClusterStateTaskExecutor<ClusterStateUpdateTask>, ClusterStateTaskListener {
+public abstract class ClusterStateUpdateTask implements ClusterStateTaskConfig, ClusterStateTaskExecutor<ClusterStateUpdateTask>, PublishingClusterStateTaskListener {
 
     private final Priority priority;
 
@@ -64,7 +64,7 @@ public abstract class ClusterStateUpdateTask implements ClusterStateTaskConfig, 
 
     /**
      * If the cluster state update task wasn't processed by the provided timeout, call
-     * {@link ClusterStateTaskListener#onFailure(String, Exception)}. May return null to indicate no timeout is needed (default).
+     * {@link PublishingClusterStateTaskListener#onFailure(String, Exception)}. May return null to indicate no timeout is needed (default).
      */
     @Nullable
     public TimeValue timeout() {

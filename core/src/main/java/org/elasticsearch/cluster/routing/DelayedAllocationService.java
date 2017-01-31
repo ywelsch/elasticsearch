@@ -19,9 +19,7 @@
 
 package org.elasticsearch.cluster.routing;
 
-import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.RoutingAllocation;
@@ -32,6 +30,8 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
+import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.discovery.DiscoveryStateListener;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.concurrent.ScheduledFuture;
@@ -51,7 +51,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link AllocationService#removeDelayMarkers(RoutingAllocation)}, triggering yet
  * another cluster change event.
  */
-public class DelayedAllocationService extends AbstractLifecycleComponent implements ClusterStateListener {
+public class DelayedAllocationService extends AbstractLifecycleComponent implements DiscoveryStateListener {
 
     static final String CLUSTER_UPDATE_TASK_SOURCE = "delayed_allocation_reroute";
 
@@ -133,7 +133,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
         this.threadPool = threadPool;
         this.clusterService = clusterService;
         this.allocationService = allocationService;
-        clusterService.addListener(this);
+        clusterService.getDiscoveryService().addListener(this);
     }
 
     @Override
@@ -146,7 +146,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
 
     @Override
     protected void doClose() {
-        clusterService.removeListener(this);
+        clusterService.getDiscoveryService().removeListener(this);
         removeTaskAndCancel();
     }
 
@@ -156,10 +156,10 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
     }
 
     @Override
-    public void clusterChanged(ClusterChangedEvent event) {
+    public void clusterChanged(ClusterState oldState, ClusterState newState) {
         long currentNanoTime = currentNanoTime();
-        if (event.state().nodes().isLocalNodeElectedMaster()) {
-            scheduleIfNeeded(currentNanoTime, event.state());
+        if (newState.nodes().isLocalNodeElectedMaster()) {
+            scheduleIfNeeded(currentNanoTime, newState);
         }
     }
 
@@ -179,7 +179,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
      * Figure out if an existing scheduled reroute is good enough or whether we need to cancel and reschedule.
      */
     private synchronized void scheduleIfNeeded(long currentNanoTime, ClusterState state) {
-        assertClusterOrDiscoveryStateThread();
+        assertDiscoveryStateThread();
         long nextDelayNanos = UnassignedInfo.findNextDelayedAllocation(currentNanoTime, state);
         if (nextDelayNanos < 0) {
             logger.trace("no need to schedule reroute - no delayed unassigned shards");
@@ -214,7 +214,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
     }
 
     // protected so that it can be overridden (and disabled) by unit tests
-    protected void assertClusterOrDiscoveryStateThread() {
-        ClusterService.assertClusterOrDiscoveryStateThread();
+    protected void assertDiscoveryStateThread() {
+        assert DiscoveryService.assertDiscoveryUpdateThread();
     }
 }

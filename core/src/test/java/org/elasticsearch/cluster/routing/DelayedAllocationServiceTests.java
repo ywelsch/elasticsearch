@@ -33,6 +33,7 @@ import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.junit.After;
@@ -56,21 +57,25 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 public class DelayedAllocationServiceTests extends ESAllocationTestCase {
 
     private TestDelayAllocationService delayedAllocationService;
     private MockAllocationService allocationService;
     private ClusterService clusterService;
+    private DiscoveryService discoveryService;
     private ThreadPool threadPool;
 
     @Before
     public void createDelayedAllocationService() {
         threadPool = new TestThreadPool(getTestName());
         clusterService = mock(ClusterService.class);
+        discoveryService = mock(DiscoveryService.class);
+        when(clusterService.getDiscoveryService()).thenReturn(discoveryService);
         allocationService = createAllocationService(Settings.EMPTY, new DelayedShardsMockGatewayAllocator());
         delayedAllocationService = new TestDelayAllocationService(Settings.EMPTY, threadPool, clusterService, allocationService);
-        verify(clusterService).addListener(delayedAllocationService);
+        verify(discoveryService).addListener(delayedAllocationService);
     }
 
     @After
@@ -114,7 +119,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
             assertThat(unassignedShards.get(0).unassignedInfo().isDelayed(), equalTo(false));
         }
 
-        delayedAllocationService.clusterChanged(new ClusterChangedEvent("test", newState, prevState));
+        delayedAllocationService.clusterChanged(newState, prevState);
         verifyNoMoreInteractions(clusterService);
         assertNull(delayedAllocationService.delayedRerouteTask.get());
     }
@@ -172,7 +177,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
         long delayUntilClusterChangeEvent = TimeValue.timeValueNanos(randomInt((int)delaySetting.nanos() - 1)).nanos();
         long clusterChangeEventTimestampNanos = baseTimestampNanos + delayUntilClusterChangeEvent;
         delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-        delayedAllocationService.clusterChanged(new ClusterChangedEvent("fake node left", stateWithDelayedShard, clusterState));
+        delayedAllocationService.clusterChanged(stateWithDelayedShard, clusterState);
 
         // check that delayed reroute task was created and registered with the proper settings
         DelayedAllocationService.DelayedRerouteTask delayedRerouteTask = delayedAllocationService.delayedRerouteTask.get();
@@ -198,8 +203,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
 
         // simulate calling listener (cluster change event)
         delayedAllocationService.setNanoTimeOverride(nanoTimeForReroute + timeValueMillis(randomInt(200)).nanos());
-        delayedAllocationService.clusterChanged(
-            new ClusterChangedEvent(CLUSTER_UPDATE_TASK_SOURCE, stateWithRemovedDelay, stateWithDelayedShard));
+        delayedAllocationService.clusterChanged(stateWithRemovedDelay, stateWithDelayedShard);
         // check that no new task is scheduled
         assertNull(delayedAllocationService.delayedRerouteTask.get());
         // check that no further cluster state update was submitted
@@ -283,8 +287,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
         long delayUntilClusterChangeEvent = TimeValue.timeValueNanos(randomInt((int)shortDelaySetting.nanos() - 1)).nanos();
         long clusterChangeEventTimestampNanos = baseTimestampNanos + delayUntilClusterChangeEvent;
         delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-        delayedAllocationService.clusterChanged(
-            new ClusterChangedEvent("fake node left", stateWithDelayedShards, clusterStateBeforeNodeLeft));
+        delayedAllocationService.clusterChanged(stateWithDelayedShards, clusterStateBeforeNodeLeft);
 
         // check that delayed reroute task was created and registered with the proper settings
         DelayedAllocationService.DelayedRerouteTask firstDelayedRerouteTask = delayedAllocationService.delayedRerouteTask.get();
@@ -322,8 +325,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
         delayUntilClusterChangeEvent = timeValueMillis(randomInt(50)).nanos();
         clusterChangeEventTimestampNanos = nanoTimeForReroute + delayUntilClusterChangeEvent;
         delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-        delayedAllocationService.clusterChanged(
-            new ClusterChangedEvent(CLUSTER_UPDATE_TASK_SOURCE, stateWithOnlyOneDelayedShard, stateWithDelayedShards));
+        delayedAllocationService.clusterChanged(stateWithOnlyOneDelayedShard, stateWithDelayedShards);
 
         // check that new delayed reroute task was created and registered with the proper settings
         DelayedAllocationService.DelayedRerouteTask secondDelayedRerouteTask = delayedAllocationService.delayedRerouteTask.get();
@@ -351,8 +353,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
 
         // simulate calling listener (cluster change event)
         delayedAllocationService.setNanoTimeOverride(nanoTimeForReroute + timeValueMillis(randomInt(50)).nanos());
-        delayedAllocationService.clusterChanged(
-            new ClusterChangedEvent(CLUSTER_UPDATE_TASK_SOURCE, stateWithNoDelayedShards, stateWithOnlyOneDelayedShard));
+        delayedAllocationService.clusterChanged(stateWithNoDelayedShards, stateWithOnlyOneDelayedShard);
         // check that no new task is scheduled
         assertNull(delayedAllocationService.delayedRerouteTask.get());
         // check that no further cluster state update was submitted
@@ -412,7 +413,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
         long delayUntilClusterChangeEvent = TimeValue.timeValueNanos(randomInt((int)shorterDelaySetting.nanos() - 1)).nanos();
         long clusterChangeEventTimestampNanos = nodeLeftTimestampNanos + delayUntilClusterChangeEvent;
         delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-        delayedAllocationService.clusterChanged(new ClusterChangedEvent("fake node left", stateWithDelayedShard, clusterState));
+        delayedAllocationService.clusterChanged(stateWithDelayedShard, clusterState);
 
         // check that delayed reroute task was created and registered with the proper settings
         DelayedAllocationService.DelayedRerouteTask delayedRerouteTask = delayedAllocationService.delayedRerouteTask.get();
@@ -428,8 +429,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
                 stateWithDelayedShard.metaData()).updateSettings(Settings.builder().put(
                 UnassignedInfo.INDEX_DELAYED_NODE_LEFT_TIMEOUT_SETTING.getKey(), shorterDelaySetting).build(), "foo")).build();
             delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-            delayedAllocationService.clusterChanged(
-                new ClusterChangedEvent("apply shorter delay", stateWithShorterDelay, stateWithDelayedShard));
+            delayedAllocationService.clusterChanged(stateWithShorterDelay, stateWithDelayedShard);
         } else {
             // node leaves with replica shard of index bar that has shorter delay
             String nodeIdOfBarReplica = null;
@@ -446,8 +446,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
                 DiscoveryNodes.builder(stateWithDelayedShard.nodes()).remove(nodeIdOfBarReplica)).build();
             ClusterState stateWithShorterDelay = allocationService.deassociateDeadNodes(clusterState, true, "fake node left");
             delayedAllocationService.setNanoTimeOverride(clusterChangeEventTimestampNanos);
-            delayedAllocationService.clusterChanged(
-                new ClusterChangedEvent("fake node left", stateWithShorterDelay, stateWithDelayedShard));
+            delayedAllocationService.clusterChanged(stateWithShorterDelay, stateWithDelayedShard);
         }
 
         // check that delayed reroute task was replaced by shorter reroute task
@@ -470,7 +469,7 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
         }
 
         @Override
-        protected void assertClusterOrDiscoveryStateThread() {
+        protected void assertDiscoveryStateThread() {
             // do not check this in the unit tests
         }
 

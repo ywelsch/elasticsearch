@@ -23,7 +23,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.cluster.ClusterApplierTaskListener;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
@@ -87,7 +87,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
     private TimeValue slowTaskLoggingThreshold;
 
-    protected volatile BatchingClusterTaskExecutor<ClusterApplierTaskListener> batchingClusterTaskExecutor;
+    protected volatile BatchingClusterTaskExecutor<ClusterStateTaskListener> batchingClusterTaskExecutor;
 
     /**
      * Those 3 state listeners are changing infrequently - CopyOnWriteArrayList is just fine
@@ -183,9 +183,9 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         });
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(CLUSTER_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, CLUSTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
-        batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<ClusterApplierTaskListener>(logger, threadExecutor, threadPool) {
+        batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<ClusterStateTaskListener>(logger, threadExecutor, threadPool) {
             @Override
-            protected void onTimeout(String source, ClusterApplierTaskListener listener, TimeValue timeout) {
+            protected void onTimeout(String source, ClusterStateTaskListener listener, TimeValue timeout) {
                 listener.onFailure(source, new ProcessClusterEventTimeoutException(timeout, source));
             }
         };
@@ -333,7 +333,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         assert DiscoveryService.assertDiscoveryUpdateThread();
         clusterStateToApply.set(clusterState);
         submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.HIGH), clusterStateTaskExecutor,
-            new ClusterApplierTaskListener() {
+            new ClusterStateTaskListener() {
                 @Override
                 public void onFailure(String source, Exception e) {
                     listener.onFailure(e);
@@ -514,12 +514,12 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         public final TaskInputs<T> taskInputs;
         public final ClusterState previousClusterState;
         public final ClusterState newClusterState;
-        public final List<BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
+        public final List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
         public final Map<T, ClusterStateTaskExecutor.TaskResult> executionResults;
 
         public TaskOutputs(TaskInputs<T> taskInputs, ClusterState previousClusterState,
                            ClusterState newClusterState,
-                           List<BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
+                           List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
                            Map<T, ClusterStateTaskExecutor.TaskResult> executionResults) {
             this.taskInputs = taskInputs;
             this.previousClusterState = previousClusterState;
@@ -538,7 +538,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
         public void notifyFailedTasks() {
             // fail all tasks that have failed
-            for (BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>> updateTask : taskInputs.updateTasks) {
+            for (BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>> updateTask : taskInputs.updateTasks) {
                 assert executionResults.containsKey(updateTask.task) : "missing " + updateTask;
                 final ClusterStateTaskExecutor.TaskResult taskResult = executionResults.get(updateTask.task);
                 if (taskResult.isSuccess() == false) {
@@ -552,15 +552,15 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         }
     }
 
-    protected SafeClusterApplierTaskListener safe(ClusterApplierTaskListener listener) {
-        return new SafeClusterApplierTaskListener(listener, logger);
+    protected SafeClusterStateTaskListener safe(ClusterStateTaskListener listener) {
+        return new SafeClusterStateTaskListener(listener, logger);
     }
 
-    private static class SafeClusterApplierTaskListener implements ClusterApplierTaskListener {
-        private final ClusterApplierTaskListener listener;
+    private static class SafeClusterStateTaskListener implements ClusterStateTaskListener {
+        private final ClusterStateTaskListener listener;
         private final Logger logger;
 
-        public SafeClusterApplierTaskListener(ClusterApplierTaskListener listener, Logger logger) {
+        public SafeClusterStateTaskListener(ClusterStateTaskListener listener, Logger logger) {
             this.listener = listener;
             this.logger = logger;
         }
@@ -740,7 +740,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         return clusterTasksResult;
     }
 
-    public <T> List<BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>>> getNonFailedTasks(
+    public <T> List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> getNonFailedTasks(
         TaskInputs<T> taskInputs, ClusterTasksResult<T> clusterTasksResult) {
         return taskInputs.updateTasks.stream().filter(updateTask -> {
             assert clusterTasksResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask;
@@ -755,18 +755,18 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
      */
     protected class TaskInputs<T> {
         public final String summary;
-        public final List<BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>>> updateTasks;
+        public final List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> updateTasks;
         public final ClusterStateTaskExecutor<T> executor;
 
         TaskInputs(ClusterStateTaskExecutor<T> executor,
-                   List<BatchingUpdateTask<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>>> updateTasks, String summary) {
+                   List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> updateTasks, String summary) {
             this.summary = summary;
             this.executor = executor;
             this.updateTasks = updateTasks;
         }
     }
 
-    protected <T> BatchingClusterTaskExecutor.RunTasks<T, ClusterApplierTaskListener, ClusterStateTaskExecutor<T>> runTasks() {
+    protected <T> BatchingClusterTaskExecutor.RunTasks<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>> runTasks() {
         return (executor, toExecute, tasksSummary) -> runTasks(new TaskInputs<>(executor, toExecute, tasksSummary));
     }
 
@@ -792,7 +792,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     public <T> void submitStateUpdateTask(final String source, final T task,
                                           final ClusterStateTaskConfig config,
                                           final ClusterStateTaskExecutor<T> executor,
-                                          final ClusterApplierTaskListener listener) {
+                                          final ClusterStateTaskListener listener) {
         if (!lifecycle.started()) {
             return;
         }

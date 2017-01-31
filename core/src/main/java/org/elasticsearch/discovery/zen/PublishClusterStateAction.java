@@ -187,7 +187,7 @@ public class PublishClusterStateAction extends AbstractComponent {
 
         for (final DiscoveryNode node : nodesToPublishTo) {
             if (node.equals(localNode)) {
-                // don't serialize cluster state when applying it locally, it's applied a few lines below
+                // don't serialize cluster state when applying it locally
                 continue;
             }
             // try and serialize the cluster state once (or per version), so we don't serialize it

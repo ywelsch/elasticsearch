@@ -27,7 +27,7 @@ import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -252,8 +252,8 @@ public class NodeJoinController extends AbstractComponent {
             return hasEnough;
         }
 
-        private Map<DiscoveryNode, ClusterStateTaskListener> getPendingAsTasks() {
-            Map<DiscoveryNode, ClusterStateTaskListener> tasks = new HashMap<>();
+        private Map<DiscoveryNode, PublishingClusterStateTaskListener> getPendingAsTasks() {
+            Map<DiscoveryNode, PublishingClusterStateTaskListener> tasks = new HashMap<>();
             joinRequestAccumulator.entrySet().stream().forEach(e -> tasks.put(e.getKey(), new JoinTaskListener(e.getValue(), logger)));
             return tasks;
         }
@@ -275,7 +275,7 @@ public class NodeJoinController extends AbstractComponent {
 
             innerClose();
 
-            Map<DiscoveryNode, ClusterStateTaskListener> tasks = getPendingAsTasks();
+            Map<DiscoveryNode, PublishingClusterStateTaskListener> tasks = getPendingAsTasks();
             final String source = "zen-disco-elected-as-master ([" + tasks.size() + "] nodes joined)";
 
             tasks.put(BECOME_MASTER_TASK, (source1, e) -> {}); // noop listener, the election finished listener determines result
@@ -285,7 +285,7 @@ public class NodeJoinController extends AbstractComponent {
 
         public synchronized void closeAndProcessPending(String reason) {
             innerClose();
-            Map<DiscoveryNode, ClusterStateTaskListener> tasks = getPendingAsTasks();
+            Map<DiscoveryNode, PublishingClusterStateTaskListener> tasks = getPendingAsTasks();
             final String source = "zen-disco-election-stop [" + reason + "]";
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
             discoveryService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
@@ -324,7 +324,7 @@ public class NodeJoinController extends AbstractComponent {
             }
         }
 
-        private final ClusterStateTaskListener electionFinishedListener = new ClusterStateTaskListener() {
+        private final PublishingClusterStateTaskListener electionFinishedListener = new PublishingClusterStateTaskListener() {
 
             @Override
             public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
@@ -343,7 +343,7 @@ public class NodeJoinController extends AbstractComponent {
 
     }
 
-    static class JoinTaskListener implements ClusterStateTaskListener {
+    static class JoinTaskListener implements PublishingClusterStateTaskListener {
         final List<MembershipAction.JoinCallback> callbacks;
         private final Logger logger;
 

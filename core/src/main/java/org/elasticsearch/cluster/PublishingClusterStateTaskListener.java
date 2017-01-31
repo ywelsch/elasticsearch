@@ -16,20 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+package org.elasticsearch.cluster;
 
-package org.elasticsearch.cluster.service;
+public interface PublishingClusterStateTaskListener extends ClusterStateTaskListener {
 
-import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.cluster.ClusterState;
-
-@FunctionalInterface
-public interface ClusterApplier {
     /**
-     * Method to invoke when a new cluster state is available to be applied
-     *
-     * @param source information where the cluster state came from
-     * @param clusterState the cluster state to apply
-     * @param listener callback that is invoked after cluster state is applied
+     * called when the task was rejected because the local node is no longer master
      */
-    void onNewClusterState(String source, ClusterState clusterState, ActionListener<ClusterState> listener);
+    default void onNoLongerMaster(String source) {
+        onFailure(source, new NotMasterException("no longer master. source: [" + source + "]"));
+    }
 }

@@ -17,19 +17,14 @@
  * under the License.
  */
 
-package org.elasticsearch.cluster.service;
+package org.elasticsearch.discovery;
 
-import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
 
-@FunctionalInterface
-public interface ClusterApplier {
-    /**
-     * Method to invoke when a new cluster state is available to be applied
-     *
-     * @param source information where the cluster state came from
-     * @param clusterState the cluster state to apply
-     * @param listener callback that is invoked after cluster state is applied
-     */
-    void onNewClusterState(String source, ClusterState clusterState, ActionListener<ClusterState> listener);
+/**
+ * A listener to be notified when the discovery state changes.
+ */
+public interface DiscoveryStateListener {
+
+    void clusterChanged(ClusterState oldState, ClusterState newState);
 }
