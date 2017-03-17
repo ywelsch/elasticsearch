@@ -109,24 +109,24 @@ public class BootstrapForTesting {
                     String filename = path.getFileName().toString();
                     if (filename.contains("jython") && filename.endsWith(".jar")) {
                         // just enough so it won't fail when it does not exist
-                        perms.add(new FilePermission(path.getParent().toString(), "read,readlink"));
-                        perms.add(new FilePermission(path.getParent().resolve("Lib").toString(), "read,readlink"));
+                        Security.addSingleFilePath(perms, path.getParent(), "read,readlink");
+                        Security.addSingleFilePath(perms, path.getParent().resolve("Lib"), "read,readlink");
                     }
                 }
                 // java.io.tmpdir
                 Security.addPath(perms, "java.io.tmpdir", javaTmpDir, "read,readlink,write,delete");
                 // custom test config file
                 if (Strings.hasLength(System.getProperty("tests.config"))) {
-                    perms.add(new FilePermission(System.getProperty("tests.config"), "read,readlink"));
+                    Security.addPath(perms, "tests.config", PathUtils.get(System.getProperty("tests.config")), "read,readlink");
                 }
                 // jacoco coverage output file
                 final boolean testsCoverage =
                         Booleans.parseBoolean(System.getProperty("tests.coverage", "false"));
                 if (testsCoverage) {
                     Path coverageDir = PathUtils.get(System.getProperty("tests.coverage.dir"));
-                    perms.add(new FilePermission(coverageDir.resolve("jacoco.exec").toString(), "read,write"));
+                    Security.addSingleFilePath(perms, coverageDir.resolve("jacoco.exec"), "read,write");
                     // in case we get fancy and use the -integration goals later:
-                    perms.add(new FilePermission(coverageDir.resolve("jacoco-it.exec").toString(), "read,write"));
+                    Security.addSingleFilePath(perms, coverageDir.resolve("jacoco-it.exec"), "read,write");
                 }
                 // intellij hack: intellij test runner wants setIO and will
                 // screw up all test logging without it!
