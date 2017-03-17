@@ -241,10 +241,10 @@ final class Security {
                 throw new RuntimeException(e);
             }
             // resource itself
-            policy.add(new FilePermission(path.toString(), "read,readlink"));
-            // classes underneath
             if (Files.isDirectory(path)) {
-                policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", "read,readlink"));
+                addPath(policy, "class.path", path, "read,readlink");
+            } else {
+                addSingleFilePath(policy, path, "read,readlink");
             }
         }
     }
@@ -252,7 +252,7 @@ final class Security {
     /**
      * Adds access to all configurable paths.
      */
-    static void addFilePermissions(Permissions policy, Environment environment) {
+    static void addFilePermissions(Permissions policy, Environment environment) throws IOException {
         // read-only dirs
         addPath(policy, Environment.PATH_HOME_SETTING.getKey(), environment.binFile(), "read,readlink");
         addPath(policy, Environment.PATH_HOME_SETTING.getKey(), environment.libFile(), "read,readlink");
@@ -274,7 +274,7 @@ final class Security {
         }
         if (environment.pidFile() != null) {
             // we just need permission to remove the file if its elsewhere.
-            policy.add(new FilePermission(environment.pidFile().toString(), "delete"));
+            addSingleFilePath(policy, environment.pidFile(), "delete");
         }
     }
 
@@ -377,7 +377,7 @@ final class Security {
      * @param path the path itself
      * @param permissions set of file permissions to grant to the path
      */
-    static void addPath(Permissions policy, String configurationName, Path path, String permissions) {
+    static void addPath(Permissions policy, String configurationName, Path path, String permissions) throws IOException {
         // paths may not exist yet, this also checks accessibility
         try {
             ensureDirectoryExists(path);
@@ -388,28 +388,28 @@ final class Security {
         // add each path twice: once for itself, again for files underneath it
         policy.add(new FilePermission(path.toString(), permissions));
         policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
-    }
-
-    /**
-     * Add access to a directory iff it exists already
-     * @param policy current policy to add permissions to
-     * @param configurationName the configuration name associated with the path (for error messages only)
-     * @param path the path itself
-     * @param permissions set of file permissions to grant to the path
-     */
-    static void addPathIfExists(Permissions policy, String configurationName, Path path, String permissions) {
-        if (Files.isDirectory(path)) {
-            // add each path twice: once for itself, again for files underneath it
-            policy.add(new FilePermission(path.toString(), permissions));
-            policy.add(new FilePermission(path.toString() + path.getFileSystem().getSeparator() + "-", permissions));
-            try {
-                path.getFileSystem().provider().checkAccess(path.toRealPath(), AccessMode.READ);
-            } catch (IOException e) {
-                throw new IllegalStateException("Unable to access '" + configurationName + "' (" + path + ")", e);
-            }
+        Path realPath = path.toRealPath();
+        if (path.toString().equals(realPath.toString()) == false) {
+            // Java 9 requires this
+            policy.add(new FilePermission(realPath.toString(), permissions));
+            policy.add(new FilePermission(realPath.toString() + realPath.getFileSystem().getSeparator() + "-", permissions));
         }
     }
 
+    /**
+     * Add access to single file path
+     * @param policy current policy to add permissions to
+     * @param path the path itself
+     * @param permissions set of file permissions to grant to the path
+     */
+    static void addSingleFilePath(Permissions policy, Path path, String permissions) throws IOException {
+        policy.add(new FilePermission(path.toString(), permissions));
+        Path realPath = path.toRealPath();
+        if (path.toString().equals(realPath.toString()) == false) {
+            // Java 9 requires this
+            policy.add(new FilePermission(realPath.toString() + realPath.getFileSystem().getSeparator() + "-", permissions));
+        }
+    }
 
     /**
      * Ensures configured directory {@code path} exists.
