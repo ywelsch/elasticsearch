@@ -145,6 +145,14 @@ public class IndexShardIT extends ESSingleNodeTestCase {
         }
     }
 
+    public void testCreateManyIndices() throws Exception {
+        for (int i = 0; i < 30; i++) {
+            assertAcked(client().admin().indices().prepareCreate("test" + i)
+                .setSettings(SETTING_NUMBER_OF_SHARDS, 1, SETTING_NUMBER_OF_REPLICAS, 0));
+        }
+        ensureGreen();
+    }
+
     public void testMarkAsInactiveTriggersSyncedFlush() throws Exception {
         assertAcked(client().admin().indices().prepareCreate("test")
             .setSettings(SETTING_NUMBER_OF_SHARDS, 1, SETTING_NUMBER_OF_REPLICAS, 0));
