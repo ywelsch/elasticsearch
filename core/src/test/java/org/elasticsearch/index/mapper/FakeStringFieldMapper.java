@@ -27,16 +27,10 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.index.mapper.FieldMapper;
-import org.elasticsearch.index.mapper.MappedFieldType;
-import org.elasticsearch.index.mapper.Mapper;
-import org.elasticsearch.index.mapper.MapperParsingException;
-import org.elasticsearch.index.mapper.ParseContext;
-import org.elasticsearch.index.mapper.StringFieldType;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.index.mapper.TypeParsers.parseTextField;
 
@@ -127,24 +121,24 @@ public class FakeStringFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         String value;
         if (context.externalValueSet()) {
             value = context.externalValue().toString();
         } else {
             value = context.parser().textOrNull();
         }
-        
+
         if (value == null) {
             return;
         }
 
         if (fieldType().indexOptions() != IndexOptions.NONE || fieldType().stored()) {
             Field field = new Field(fieldType().name(), value, fieldType());
-            fields.add(field);
+            fieldConsumer.accept(field);
         }
         if (fieldType().hasDocValues()) {
-            fields.add(new SortedSetDocValuesField(fieldType().name(), new BytesRef(value)));
+            fieldConsumer.accept(new SortedSetDocValuesField(fieldType().name(), new BytesRef(value)));
         }
     }
 

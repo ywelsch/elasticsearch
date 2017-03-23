@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 
 public class TypeFieldMapper extends MetadataFieldMapper {
 
@@ -281,13 +282,13 @@ public class TypeFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (fieldType().indexOptions() == IndexOptions.NONE && !fieldType().stored()) {
             return;
         }
-        fields.add(new Field(fieldType().name(), context.sourceToParse().type(), fieldType()));
+        fieldConsumer.accept(new Field(fieldType().name(), context.sourceToParse().type(), fieldType()));
         if (fieldType().hasDocValues()) {
-            fields.add(new SortedSetDocValuesField(fieldType().name(), new BytesRef(context.sourceToParse().type())));
+            fieldConsumer.accept(new SortedSetDocValuesField(fieldType().name(), new BytesRef(context.sourceToParse().type())));
         }
     }
 

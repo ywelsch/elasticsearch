@@ -20,8 +20,9 @@
 package org.elasticsearch.index.mapper;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.function.Consumer;
 
+import org.apache.lucene.index.IndexableField;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.common.settings.Settings;
@@ -74,6 +75,6 @@ public class MockFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List list) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> list) throws IOException {
     }
 }

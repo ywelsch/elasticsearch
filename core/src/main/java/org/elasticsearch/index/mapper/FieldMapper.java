@@ -44,6 +44,7 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.stream.StreamSupport;
 
 public abstract class FieldMapper extends Mapper implements Cloneable {
@@ -242,6 +243,7 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
     protected final MappedFieldType defaultFieldType;
     protected MultiFields multiFields;
     protected CopyTo copyTo;
+    private final boolean dontSetBoosts;
 
     protected FieldMapper(String simpleName, MappedFieldType fieldType, MappedFieldType defaultFieldType, Settings indexSettings, MultiFields multiFields, CopyTo copyTo) {
         super(simpleName);
@@ -258,6 +260,7 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
         this.defaultFieldType = defaultFieldType;
         this.multiFields = multiFields;
         this.copyTo = copyTo;
+        this.dontSetBoosts = indexCreatedVersion.onOrAfter(Version.V_5_0_0_alpha1);
     }
 
     @Override
@@ -282,17 +285,19 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
      * mappings were not modified.
      */
     public Mapper parse(ParseContext context) throws IOException {
-        final List<IndexableField> fields = new ArrayList<>(2);
         try {
-            parseCreateField(context, fields);
-            for (IndexableField field : fields) {
-                if (!customBoost()
+            if (dontSetBoosts) {
+                parseCreateField(context, context.doc()::add);
+            } else {
+                parseCreateField(context, field -> {
+                    if (!customBoost()
                         // don't set boosts eg. on dv fields
                         && field.fieldType().indexOptions() != IndexOptions.NONE
                         && indexCreatedVersion.before(Version.V_5_0_0_alpha1)) {
-                    ((Field)(field)).setBoost(fieldType().boost());
-                }
-                context.doc().add(field);
+                        ((Field) (field)).setBoost(fieldType().boost());
+                    }
+                    context.doc().add(field);
+                });
             }
         } catch (Exception e) {
             throw new MapperParsingException("failed to parse [" + fieldType().name() + "]", e);
@@ -304,7 +309,7 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
     /**
      * Parse the field value and populate <code>fields</code>.
      */
-    protected abstract void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException;
+    protected abstract void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException;
 
     /**
      * Derived classes can override it to specify that boost value is set by derived classes.

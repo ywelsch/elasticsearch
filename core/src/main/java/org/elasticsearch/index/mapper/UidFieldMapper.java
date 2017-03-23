@@ -31,8 +31,8 @@ import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.fielddata.plain.PagedBytesIndexFieldData;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 public class UidFieldMapper extends MetadataFieldMapper {
 
@@ -127,11 +127,11 @@ public class UidFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         Field uid = new Field(NAME, Uid.createUid(context.sourceToParse().type(), context.sourceToParse().id()), Defaults.FIELD_TYPE);
-        fields.add(uid);
+        fieldConsumer.accept(uid);
         if (fieldType().hasDocValues()) {
-            fields.add(new BinaryDocValuesField(NAME, new BytesRef(uid.stringValue())));
+            fieldConsumer.accept(new BinaryDocValuesField(NAME, new BytesRef(uid.stringValue())));
         }
     }
 

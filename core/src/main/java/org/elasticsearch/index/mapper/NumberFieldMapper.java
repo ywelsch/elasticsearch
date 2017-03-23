@@ -61,6 +61,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /** A {@link FieldMapper} for numeric types: byte, short, int, long, float and double. */
 public class NumberFieldMapper extends FieldMapper {
@@ -220,20 +221,19 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                List<Field> fields = new ArrayList<>();
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
                 if (indexed) {
-                    fields.add(new HalfFloatPoint(name, value.floatValue()));
+                    fieldConsumer.accept(new HalfFloatPoint(name, value.floatValue()));
                 }
                 if (docValued) {
-                    fields.add(new SortedNumericDocValuesField(name,
+                    fieldConsumer.accept(new SortedNumericDocValuesField(name,
                         HalfFloatPoint.halfFloatToSortableShort(value.floatValue())));
                 }
                 if (stored) {
-                    fields.add(new StoredField(name, value.floatValue()));
+                    fieldConsumer.accept(new StoredField(name, value.floatValue()));
                 }
-                return fields;
             }
 
             @Override
@@ -316,20 +316,19 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                List<Field> fields = new ArrayList<>();
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
                 if (indexed) {
-                    fields.add(new FloatPoint(name, value.floatValue()));
+                    fieldConsumer.accept(new FloatPoint(name, value.floatValue()));
                 }
                 if (docValued) {
-                    fields.add(new SortedNumericDocValuesField(name,
+                    fieldConsumer.accept(new SortedNumericDocValuesField(name,
                         NumericUtils.floatToSortableInt(value.floatValue())));
                 }
                 if (stored) {
-                    fields.add(new StoredField(name, value.floatValue()));
+                    fieldConsumer.accept(new StoredField(name, value.floatValue()));
                 }
-                return fields;
             }
 
             @Override
@@ -412,20 +411,19 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                List<Field> fields = new ArrayList<>();
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
                 if (indexed) {
-                    fields.add(new DoublePoint(name, value.doubleValue()));
+                    fieldConsumer.accept(new DoublePoint(name, value.doubleValue()));
                 }
                 if (docValued) {
-                    fields.add(new SortedNumericDocValuesField(name,
+                    fieldConsumer.accept(new SortedNumericDocValuesField(name,
                         NumericUtils.doubleToSortableLong(value.doubleValue())));
                 }
                 if (stored) {
-                    fields.add(new StoredField(name, value.doubleValue()));
+                    fieldConsumer.accept(new StoredField(name, value.doubleValue()));
                 }
-                return fields;
             }
 
             @Override
@@ -493,9 +491,10 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                return INTEGER.createFields(name, value, indexed, docValued, stored);
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
+                INTEGER.createFields(name, value, indexed, docValued, stored, fieldConsumer);
             }
 
             @Override
@@ -555,9 +554,10 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                return INTEGER.createFields(name, value, indexed, docValued, stored);
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
+                INTEGER.createFields(name, value, indexed, docValued, stored, fieldConsumer);
             }
 
             @Override
@@ -667,19 +667,18 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                List<Field> fields = new ArrayList<>();
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
                 if (indexed) {
-                    fields.add(new IntPoint(name, value.intValue()));
+                    fieldConsumer.accept(new IntPoint(name, value.intValue()));
                 }
                 if (docValued) {
-                    fields.add(new SortedNumericDocValuesField(name, value.intValue()));
+                    fieldConsumer.accept(new SortedNumericDocValuesField(name, value.intValue()));
                 }
                 if (stored) {
-                    fields.add(new StoredField(name, value.intValue()));
+                    fieldConsumer.accept(new StoredField(name, value.intValue()));
                 }
-                return fields;
             }
 
             @Override
@@ -797,19 +796,18 @@ public class NumberFieldMapper extends FieldMapper {
             }
 
             @Override
-            public List<Field> createFields(String name, Number value,
-                                            boolean indexed, boolean docValued, boolean stored) {
-                List<Field> fields = new ArrayList<>();
+            public void createFields(String name, Number value,
+                                     boolean indexed, boolean docValued, boolean stored,
+                                     Consumer<IndexableField> fieldConsumer) {
                 if (indexed) {
-                    fields.add(new LongPoint(name, value.longValue()));
+                    fieldConsumer.accept(new LongPoint(name, value.longValue()));
                 }
                 if (docValued) {
-                    fields.add(new SortedNumericDocValuesField(name, value.longValue()));
+                    fieldConsumer.accept(new SortedNumericDocValuesField(name, value.longValue()));
                 }
                 if (stored) {
-                    fields.add(new StoredField(name, value.longValue()));
+                    fieldConsumer.accept(new StoredField(name, value.longValue()));
                 }
-                return fields;
             }
 
             @Override
@@ -855,8 +853,16 @@ public class NumberFieldMapper extends FieldMapper {
                                   boolean hasDocValues);
         abstract Number parse(XContentParser parser, boolean coerce) throws IOException;
         abstract Number parse(Object value, boolean coerce);
-        public abstract List<Field> createFields(String name, Number value, boolean indexed,
-                                                 boolean docValued, boolean stored);
+
+        public List<IndexableField> createFields(String name, Number value, boolean indexed,
+                                                 boolean docValued, boolean stored) {
+            List<IndexableField> fields = new ArrayList<>();
+            createFields(name, value, indexed, docValued, stored, fields::add);
+            return fields;
+        }
+
+        public abstract void createFields(String name, Number value, boolean indexed,
+                                          boolean docValued, boolean stored, Consumer<IndexableField> fieldConsumer);
         abstract FieldStats<? extends Number> stats(IndexReader reader, String fieldName,
                                                     boolean isSearchable, boolean isAggregatable) throws IOException;
         Number valueForSearch(Number value) {
@@ -1024,7 +1030,7 @@ public class NumberFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         final boolean includeInAll = context.includeInAll(this.includeInAll, this);
 
         XContentParser parser = context.parser();
@@ -1074,7 +1080,7 @@ public class NumberFieldMapper extends FieldMapper {
         boolean indexed = fieldType().indexOptions() != IndexOptions.NONE;
         boolean docValued = fieldType().hasDocValues();
         boolean stored = fieldType().stored();
-        fields.addAll(fieldType().type.createFields(fieldType().name(), numericValue, indexed, docValued, stored));
+        fieldType().type.createFields(fieldType().name(), numericValue, indexed, docValued, stored, fieldConsumer);
     }
 
     @Override

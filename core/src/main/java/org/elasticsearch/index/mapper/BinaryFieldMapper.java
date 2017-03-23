@@ -39,8 +39,8 @@ import org.elasticsearch.index.query.QueryShardException;
 
 import java.io.IOException;
 import java.util.Base64;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.index.mapper.TypeParsers.parseField;
 
@@ -138,7 +138,7 @@ public class BinaryFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (!fieldType().stored() && !fieldType().hasDocValues()) {
             return;
         }
@@ -154,7 +154,7 @@ public class BinaryFieldMapper extends FieldMapper {
             return;
         }
         if (fieldType().stored()) {
-            fields.add(new Field(fieldType().name(), value, fieldType()));
+            fieldConsumer.accept(new Field(fieldType().name(), value, fieldType()));
         }
 
         if (fieldType().hasDocValues()) {

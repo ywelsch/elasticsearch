@@ -20,8 +20,8 @@
 package org.elasticsearch.index.mapper.murmur3;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.document.StoredField;
@@ -144,7 +144,7 @@ public class Murmur3FieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields)
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer)
             throws IOException {
         final Object value;
         if (context.externalValueSet()) {
@@ -155,9 +155,9 @@ public class Murmur3FieldMapper extends FieldMapper {
         if (value != null) {
             final BytesRef bytes = new BytesRef(value.toString());
             final long hash = MurmurHash3.hash128(bytes.bytes, bytes.offset, bytes.length, 0, new MurmurHash3.Hash128()).h1;
-            fields.add(new SortedNumericDocValuesField(fieldType().name(), hash));
+            fieldConsumer.accept(new SortedNumericDocValuesField(fieldType().name(), hash));
             if (fieldType().stored()) {
-                fields.add(new StoredField(name(), hash));
+                fieldConsumer.accept(new StoredField(name(), hash));
             }
         }
     }

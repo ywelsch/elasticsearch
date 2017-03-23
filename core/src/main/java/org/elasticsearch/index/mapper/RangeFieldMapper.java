@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.index.mapper.TypeParsers.parseDateTimeFormatter;
 import static org.elasticsearch.index.query.RangeQueryBuilder.GT_FIELD;
@@ -330,7 +331,7 @@ public class RangeFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         final boolean includeInAll = context.includeInAll(this.includeInAll, this);
         Range range;
         if (context.externalValueSet()) {
@@ -388,7 +389,7 @@ public class RangeFieldMapper extends FieldMapper {
         boolean indexed = fieldType.indexOptions() != IndexOptions.NONE;
         boolean docValued = fieldType.hasDocValues();
         boolean stored = fieldType.stored();
-        fields.addAll(fieldType().rangeType.createFields(name(), range, indexed, docValued, stored));
+        fieldType().rangeType.createFields(name(), range, indexed, docValued, stored).forEach(fieldConsumer);
     }
 
     @Override

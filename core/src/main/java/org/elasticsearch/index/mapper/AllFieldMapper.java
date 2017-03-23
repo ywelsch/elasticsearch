@@ -37,8 +37,8 @@ import org.elasticsearch.index.similarity.SimilarityService;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeMapValue;
 import static org.elasticsearch.index.mapper.TypeParsers.parseTextField;
@@ -220,12 +220,12 @@ public class AllFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (!enabledState.enabled) {
             return;
         }
         for (AllEntries.Entry entry : context.allEntries().entries()) {
-            fields.add(new AllField(fieldType().name(), entry.value(), entry.boost(), fieldType()));
+            fieldConsumer.accept(new AllField(fieldType().name(), entry.value(), entry.boost(), fieldType()));
         }
     }
 

@@ -36,8 +36,8 @@ import org.elasticsearch.index.mapper.TypeParsers;
 
 import java.io.IOException;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 public class SizeFieldMapper extends MetadataFieldMapper {
     public static final String NAME = "_size";
@@ -155,7 +155,7 @@ public class SizeFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (!enabledState.enabled) {
             return;
         }
@@ -163,7 +163,7 @@ public class SizeFieldMapper extends MetadataFieldMapper {
         boolean indexed = fieldType().indexOptions() != IndexOptions.NONE;
         boolean docValued = fieldType().hasDocValues();
         boolean stored = fieldType().stored();
-        fields.addAll(NumberFieldMapper.NumberType.INTEGER.createFields(name(), value, indexed, docValued, stored));
+        NumberFieldMapper.NumberType.INTEGER.createFields(name(), value, indexed, docValued, stored, fieldConsumer);
     }
 
     @Override

@@ -43,8 +43,8 @@ import org.joda.time.DateTimeZone;
 
 import java.io.IOException;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.index.mapper.TypeParsers.parseField;
 
@@ -220,7 +220,7 @@ public class BooleanFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (fieldType().indexOptions() == IndexOptions.NONE && !fieldType().stored() && !fieldType().hasDocValues()) {
             return;
         }
@@ -249,10 +249,10 @@ public class BooleanFieldMapper extends FieldMapper {
             return;
         }
         if (fieldType().indexOptions() != IndexOptions.NONE || fieldType().stored()) {
-            fields.add(new Field(fieldType().name(), value ? "T" : "F", fieldType()));
+            fieldConsumer.accept(new Field(fieldType().name(), value ? "T" : "F", fieldType()));
         }
         if (fieldType().hasDocValues()) {
-            fields.add(new SortedNumericDocValuesField(fieldType().name(), value ? 1 : 0));
+            fieldConsumer.accept(new SortedNumericDocValuesField(fieldType().name(), value ? 1 : 0));
         }
     }
 

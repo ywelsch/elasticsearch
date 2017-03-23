@@ -47,6 +47,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 import static org.elasticsearch.common.xcontent.support.XContentMapValues.nodeMapValue;
 
@@ -229,10 +230,10 @@ public class ParentFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         boolean parent = context.docMapper().isParent(context.sourceToParse().type());
         if (parent) {
-            fields.add(new SortedDocValuesField(parentJoinField.fieldType().name(), new BytesRef(context.sourceToParse().id())));
+            fieldConsumer.accept(new SortedDocValuesField(parentJoinField.fieldType().name(), new BytesRef(context.sourceToParse().id())));
         }
 
         if (!active()) {
@@ -243,7 +244,7 @@ public class ParentFieldMapper extends MetadataFieldMapper {
             // we are in the parsing of _parent phase
             String parentId = context.parser().text();
             context.sourceToParse().parent(parentId);
-            fields.add(new SortedDocValuesField(fieldType.name(), new BytesRef(parentId)));
+            fieldConsumer.accept(new SortedDocValuesField(fieldType.name(), new BytesRef(parentId)));
         } else {
             // otherwise, we are running it post processing of the xcontent
             String parsedParentId = context.doc().get(Defaults.NAME);
@@ -254,7 +255,7 @@ public class ParentFieldMapper extends MetadataFieldMapper {
                         throw new MapperParsingException("No parent id provided, not within the document, and not externally");
                     }
                     // we did not add it in the parsing phase, add it now
-                    fields.add(new SortedDocValuesField(fieldType.name(), new BytesRef(parentId)));
+                    fieldConsumer.accept(new SortedDocValuesField(fieldType.name(), new BytesRef(parentId)));
                 } else if (parentId != null && !parsedParentId.equals(Uid.createUid(parentType, parentId))) {
                     throw new MapperParsingException("Parent id mismatch, document value is [" + Uid.createUid(parsedParentId).id() + "], while external value is [" + parentId + "]");
                 }

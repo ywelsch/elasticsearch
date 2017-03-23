@@ -54,6 +54,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
+
 import static org.elasticsearch.index.mapper.TypeParsers.parseDateTimeFormatter;
 
 /** A {@link FieldMapper} for ip addresses. */
@@ -441,7 +443,7 @@ public class DateFieldMapper extends FieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         String dateAsString;
         if (context.externalValueSet()) {
             Object dateAsObject = context.externalValue();
@@ -478,13 +480,13 @@ public class DateFieldMapper extends FieldMapper {
         }
 
         if (fieldType().indexOptions() != IndexOptions.NONE) {
-            fields.add(new LongPoint(fieldType().name(), timestamp));
+            fieldConsumer.accept(new LongPoint(fieldType().name(), timestamp));
         }
         if (fieldType().hasDocValues()) {
-            fields.add(new SortedNumericDocValuesField(fieldType().name(), timestamp));
+            fieldConsumer.accept(new SortedNumericDocValuesField(fieldType().name(), timestamp));
         }
         if (fieldType().stored()) {
-            fields.add(new StoredField(fieldType().name(), timestamp));
+            fieldConsumer.accept(new StoredField(fieldType().name(), timestamp));
         }
     }
 

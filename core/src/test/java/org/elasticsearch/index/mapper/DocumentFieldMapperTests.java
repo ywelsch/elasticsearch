@@ -23,7 +23,6 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
-import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.util.LuceneTestCase;
 import org.elasticsearch.Version;
@@ -35,7 +34,7 @@ import org.elasticsearch.index.analysis.NamedAnalyzer;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.Arrays;
-import java.util.List;
+import java.util.function.Consumer;
 
 public class DocumentFieldMapperTests extends LuceneTestCase {
 
@@ -99,7 +98,7 @@ public class DocumentFieldMapperTests extends LuceneTestCase {
         }
 
         @Override
-        protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+        protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         }
 
         @Override

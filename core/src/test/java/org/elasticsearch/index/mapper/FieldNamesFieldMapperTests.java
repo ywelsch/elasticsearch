@@ -35,10 +35,10 @@ import org.elasticsearch.test.ESSingleNodeTestCase;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public class FieldNamesFieldMapperTests extends ESSingleNodeTestCase {
@@ -217,7 +217,7 @@ public class FieldNamesFieldMapperTests extends ESSingleNodeTestCase {
         }
 
         @Override
-        protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+        protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         }
 
         @Override

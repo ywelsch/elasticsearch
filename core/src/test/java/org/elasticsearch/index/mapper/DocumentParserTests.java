@@ -37,6 +37,8 @@ import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.lucene.all.AllField;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.IndexService;
@@ -59,6 +61,45 @@ public class DocumentParserTests extends ESSingleNodeTestCase {
     @Override
     protected Collection<Class<? extends Plugin>> getPlugins() {
         return pluginList(InternalSettingsPlugin.class);
+    }
+
+    public void testPerformanceParseLong() throws Exception {
+        DocumentMapperParser mapperParser = createIndex("test").mapperService().documentMapperParser();
+        XContentBuilder mappingBuilder = XContentFactory.jsonBuilder().startObject().startObject("type").startObject("properties");
+        for (int i = 0; i < 100; i++) {
+            mappingBuilder.startObject("foo" + i).field("type", "integer").endObject();
+        }
+        String mapping = mappingBuilder.endObject().endObject().endObject().string();
+        DocumentMapper mapper = mapperParser.parse("type", new CompressedXContent(mapping));
+
+        XContentBuilder xContentBuilder = XContentFactory.jsonBuilder()
+            .startObject();
+        for (int i = 0; i < 100; i++) {
+            xContentBuilder.field("foo" + i, i);
+        }
+
+        BytesReference bytes = xContentBuilder.endObject().bytes();
+
+        SourceToParse sourceToParse = SourceToParse.source("test", "type", "1", bytes, XContentType.JSON);
+
+        ParsedDocument doc1 = mapper.parse(sourceToParse);
+        assertNotNull(doc1.rootDoc().getField("foo13"));
+
+        int warmupIters = 10000;
+        int runIters = 200000;
+
+        // warmup
+        for (int i = 0; i < warmupIters; i++) {
+            ParsedDocument doc = mapper.parse(sourceToParse);
+        }
+
+        long startTime = System.nanoTime();
+        for (int i = 0; i < runIters; i++) {
+            ParsedDocument doc = mapper.parse(sourceToParse);
+        }
+        long endTime = System.nanoTime();
+
+        logger.info("Took {}", TimeValue.timeValueNanos(endTime - startTime));
     }
 
     public void testTypeDisabled() throws Exception {

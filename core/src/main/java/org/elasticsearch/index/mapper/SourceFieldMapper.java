@@ -45,6 +45,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class SourceFieldMapper extends MetadataFieldMapper {
@@ -226,7 +227,7 @@ public class SourceFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         if (!enabled) {
             return;
         }
@@ -252,7 +253,7 @@ public class SourceFieldMapper extends MetadataFieldMapper {
             source = bStream.bytes();
         }
         BytesRef ref = source.toBytesRef();
-        fields.add(new StoredField(fieldType().name(), ref.bytes, ref.offset, ref.length));
+        fieldConsumer.accept(new StoredField(fieldType().name(), ref.bytes, ref.offset, ref.length));
     }
 
     @Override

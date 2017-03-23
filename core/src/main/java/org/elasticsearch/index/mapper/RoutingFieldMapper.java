@@ -29,8 +29,8 @@ import org.elasticsearch.common.xcontent.XContentBuilder;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 public class RoutingFieldMapper extends MetadataFieldMapper {
 
@@ -160,11 +160,11 @@ public class RoutingFieldMapper extends MetadataFieldMapper {
     }
 
     @Override
-    protected void parseCreateField(ParseContext context, List<IndexableField> fields) throws IOException {
+    protected void parseCreateField(ParseContext context, Consumer<IndexableField> fieldConsumer) throws IOException {
         String routing = context.sourceToParse().routing();
         if (routing != null) {
             if (fieldType().indexOptions() != IndexOptions.NONE || fieldType().stored()) {
-                fields.add(new Field(fieldType().name(), routing, fieldType()));
+                fieldConsumer.accept(new Field(fieldType().name(), routing, fieldType()));
             }
         }
     }
