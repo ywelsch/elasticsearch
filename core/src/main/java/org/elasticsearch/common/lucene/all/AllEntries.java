@@ -20,6 +20,7 @@
 package org.elasticsearch.common.lucene.all;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class AllEntries {
@@ -47,18 +48,23 @@ public class AllEntries {
         }
     }
 
-    private final List<Entry> entries = new ArrayList<>();
+    private List<Entry> entries;
 
     public void addText(String name, String text, float boost) {
         Entry entry = new Entry(name, text, boost);
+        if (entries == null) {
+            entries = new ArrayList<>();
+        }
         entries.add(entry);
     }
 
     public void clear() {
-        this.entries.clear();
+        if (entries != null) {
+            this.entries.clear();
+        }
     }
 
     public List<Entry> entries() {
-        return this.entries;
+        return entries == null ? Collections.emptyList() : this.entries;
     }
 }

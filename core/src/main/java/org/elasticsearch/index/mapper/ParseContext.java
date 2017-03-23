@@ -29,9 +29,9 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.lucene.all.AllEntries;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentParser;
-import org.elasticsearch.index.mapper.SeqNoFieldMapper;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
@@ -315,7 +315,7 @@ public abstract class ParseContext {
 
         private final AllEntries allEntries;
 
-        private final List<Mapper> dynamicMappers;
+        private List<Mapper> dynamicMappers;
 
         public InternalParseContext(@Nullable Settings indexSettings, DocumentMapperParser docMapperParser, DocumentMapper docMapper,
                 SourceToParse source, XContentParser parser) {
@@ -325,12 +325,11 @@ public abstract class ParseContext {
             this.path = new ContentPath(0);
             this.parser = parser;
             this.document = new Document();
-            this.documents = new ArrayList<>();
+            this.documents = new ArrayList<>(1);
             this.documents.add(document);
             this.version = null;
             this.sourceToParse = source;
             this.allEntries = new AllEntries();
-            this.dynamicMappers = new ArrayList<>();
         }
 
         @Override
@@ -421,12 +420,15 @@ public abstract class ParseContext {
 
         @Override
         public void addDynamicMapper(Mapper mapper) {
+            if (dynamicMappers == null) {
+                dynamicMappers = new ArrayList<>();
+            }
             dynamicMappers.add(mapper);
         }
 
         @Override
         public List<Mapper> getDynamicMappers() {
-            return dynamicMappers;
+            return dynamicMappers == null ? Collections.emptyList() : dynamicMappers;
         }
     }
 
