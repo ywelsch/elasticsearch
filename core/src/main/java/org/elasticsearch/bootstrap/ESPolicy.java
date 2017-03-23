@@ -36,7 +36,7 @@ import java.util.Map;
 import java.util.function.Predicate;
 
 /** custom policy for union of static and dynamic permissions */
-final class ESPolicy extends Policy {
+public final class ESPolicy extends Policy {
 
     /** template policy file, the one used in tests */
     static final String POLICY_RESOURCE = "security.policy";
@@ -49,7 +49,7 @@ final class ESPolicy extends Policy {
     final PermissionCollection dynamic;
     final Map<String,Policy> plugins;
 
-    ESPolicy(PermissionCollection dynamic, Map<String,Policy> plugins, boolean filterBadDefaults) {
+    public ESPolicy(PermissionCollection dynamic, Map<String, Policy> plugins, boolean filterBadDefaults) {
         this.template = Security.readPolicy(getClass().getResource(POLICY_RESOURCE), JarHell.parseClassPath());
         this.untrusted = Security.readPolicy(getClass().getResource(UNTRUSTED_RESOURCE), Collections.emptySet());
         if (filterBadDefaults) {
