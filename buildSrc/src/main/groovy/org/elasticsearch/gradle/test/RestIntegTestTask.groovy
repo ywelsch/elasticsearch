@@ -27,6 +27,7 @@ import org.gradle.api.internal.tasks.options.Option
 import org.gradle.api.plugins.JavaBasePlugin
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskState
+import org.gradle.api.tasks.bundling.Jar
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -63,6 +64,12 @@ public class RestIntegTestTask extends DefaultTask {
 
         // start with the common test configuration
         runner.configure(BuildPlugin.commonTestConfig(project))
+        Jar testJarTask = project.tasks.findByPath('testJars')
+        if (testJarTask != null) {
+            runner.dependsOn(testJarTask)
+            runner.classpath = testJarTask.outputs.files + project.tasks.jar.outputs.files + (runner.classpath - project.sourceSets.test.output - project.sourceSets.main.output)
+        }
+
         // override/add more for rest tests
         runner.parallelism = '1'
         runner.include('**/*IT.class')

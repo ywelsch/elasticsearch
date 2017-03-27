@@ -82,7 +82,13 @@ class BuildPlugin implements Plugin<Project> {
         configureSourcesJar(project)
         configurePomGeneration(project)
 
-        configureTest(project)
+        Task test = configureTest(project)
+        Jar testJarTask = project.tasks.create('testJars', Jar.class)
+        testJarTask.classifier = "test"
+        testJarTask.from(project.sourceSets.test.output)
+        test.dependsOn(testJarTask)
+        test.classpath = testJarTask.outputs.files + project.tasks.jar.outputs.files + (test.classpath - project.sourceSets.test.output - project.sourceSets.main.output)
+        test.testClassesDir project.sourceSets.test.output.classesDir
         configurePrecommit(project)
     }
 
