@@ -21,6 +21,7 @@ package org.elasticsearch.indices.store;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
@@ -283,27 +284,30 @@ public class IndicesStore extends AbstractComponent implements ClusterStateListe
                 return;
             }
 
-            // TODO: this should be done on the applier
-            clusterService.submitStateUpdateTask("indices_store ([" + shardId + "] active fully on other nodes)", new LocalClusterUpdateTask() {
-                @Override
-                public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
+            clusterService.getClusterApplierService().runOnApplierThread("indices_store ([" + shardId + "] active fully on other nodes)",
+                currentState -> {
                     if (clusterStateVersion != currentState.getVersion()) {
                         logger.trace("not deleting shard {}, the update task state version[{}] is not equal to cluster state before shard active api call [{}]", shardId, currentState.getVersion(), clusterStateVersion);
-                        return unchanged();
+                        return;
                     }
                     try {
                         indicesService.deleteShardStore("no longer used", shardId, currentState);
                     } catch (Exception ex) {
                         logger.debug((Supplier<?>) () -> new ParameterizedMessage("{} failed to delete unallocated shard, ignoring", shardId), ex);
                     }
-                    return unchanged();
-                }
+                },
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
 
-                @Override
-                public void onFailure(String source, Exception e) {
-                    logger.error((Supplier<?>) () -> new ParameterizedMessage("{} unexpected error during deletion of unallocated shard", shardId), e);
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        logger.error((Supplier<?>) () -> new ParameterizedMessage("{} unexpected error during deletion of unallocated shard", shardId), e);
+                    }
                 }
-            });
+            );
         }
 
     }

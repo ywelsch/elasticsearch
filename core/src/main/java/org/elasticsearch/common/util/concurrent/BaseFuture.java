@@ -21,7 +21,6 @@ package org.elasticsearch.common.util.concurrent;
 
 import org.elasticsearch.cluster.service.ClusterApplierService;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.Transports;
 

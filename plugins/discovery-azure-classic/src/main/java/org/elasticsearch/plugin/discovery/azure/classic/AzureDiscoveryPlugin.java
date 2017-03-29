@@ -23,7 +23,7 @@ import org.apache.logging.log4j.Logger;
 import org.elasticsearch.cloud.azure.classic.management.AzureComputeService;
 import org.elasticsearch.cloud.azure.classic.management.AzureComputeServiceImpl;
 import org.elasticsearch.cluster.service.ClusterApplier;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.logging.DeprecationLogger;
 import org.elasticsearch.common.logging.Loggers;
@@ -74,11 +74,11 @@ public class AzureDiscoveryPlugin extends Plugin implements DiscoveryPlugin {
     @Override
     public Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                               NamedWriteableRegistry namedWriteableRegistry,
-                                                              DiscoveryService discoveryService, ClusterApplier clusterApplier,
+                                                              MasterService masterService, ClusterApplier clusterApplier,
                                                               UnicastHostsProvider hostsProvider) {
         // this is for backcompat with pre 5.1, where users would set discovery.type to use ec2 hosts provider
         return Collections.singletonMap(AZURE, () ->
-            new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, clusterApplier,
+            new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
                 hostsProvider));
     }
 

@@ -25,6 +25,7 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
@@ -60,15 +61,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static java.util.Collections.singleton;
-import static org.elasticsearch.test.ClusterServiceUtils.createDiscoveryService;
 import static org.elasticsearch.test.ClusterServiceUtils.setState;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 
 public class ZenFaultDetectionTests extends ESTestCase {
     protected ThreadPool threadPool;
-    protected DiscoveryService clusterServiceA;
-    protected DiscoveryService clusterServiceB;
+    protected MasterService clusterServiceA;
+    protected MasterService clusterServiceB;
     private CircuitBreakerService circuitBreakerService;
 
     protected static final Version version0 = Version.fromId(/*0*/99);
@@ -97,8 +97,8 @@ public class ZenFaultDetectionTests extends ESTestCase {
         settingsB = Settings.builder().put("node.name", "TS_B").put(settings).build();
         serviceB = build(settingsB, version1);
         nodeB = serviceB.getLocalDiscoNode();
-        clusterServiceA = ClusterServiceUtils.createDiscoveryService(threadPool, nodeA);
-        clusterServiceB = ClusterServiceUtils.createDiscoveryService(threadPool, nodeB);
+        clusterServiceA = ClusterServiceUtils.createMasterService(threadPool, nodeA);
+        clusterServiceB = ClusterServiceUtils.createMasterService(threadPool, nodeB);
 
         // wait till all nodes are properly connected and the event has been sent, so tests in this class
         // will not get this callback called on the connections done in this setup

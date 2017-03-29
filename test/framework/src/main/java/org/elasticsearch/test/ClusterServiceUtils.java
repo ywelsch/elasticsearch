@@ -25,7 +25,6 @@ import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
-import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
@@ -35,7 +34,7 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery.AckListener;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Arrays;
@@ -49,16 +48,16 @@ import static junit.framework.TestCase.fail;
 
 public class ClusterServiceUtils {
 
-    public static DiscoveryService createDiscoveryService(ThreadPool threadPool) {
+    public static MasterService createMasterService(ThreadPool threadPool) {
         DiscoveryNode discoveryNode = new DiscoveryNode("node", ESTestCase.buildNewFakeTransportAddress(), Collections.emptyMap(),
             new HashSet<>(Arrays.asList(DiscoveryNode.Role.values())),Version.CURRENT);
-        return createDiscoveryService(threadPool, discoveryNode);
+        return createMasterService(threadPool, discoveryNode);
     }
 
-    public static DiscoveryService createDiscoveryService(ThreadPool threadPool, DiscoveryNode localNode) {
-        DiscoveryService discoveryService = new DiscoveryService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
+    public static MasterService createMasterService(ThreadPool threadPool, DiscoveryNode localNode) {
+        MasterService masterService = new MasterService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
-        discoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
+        masterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
                 // skip
@@ -69,12 +68,12 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
-        discoveryService.setClusterStatePublisher((event, ackListener) -> {});
-        discoveryService.start();
-        final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(discoveryService.state().nodes());
-        nodes.masterNodeId(discoveryService.localNode().getId());
-        setState(discoveryService, ClusterState.builder(discoveryService.state()).nodes(nodes).build());
-        return discoveryService;
+        masterService.setClusterStatePublisher((event, ackListener) -> {});
+        masterService.start();
+        final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(masterService.state().nodes());
+        nodes.masterNodeId(masterService.localNode().getId());
+        setState(masterService, ClusterState.builder(masterService.state()).nodes(nodes).build());
+        return masterService;
     }
 
     public static void setState(ClusterApplierService executor, ClusterState clusterState) {
@@ -104,7 +103,7 @@ public class ClusterServiceUtils {
         }
     }
 
-    public static void setState(DiscoveryService executor, ClusterState clusterState) {
+    public static void setState(MasterService executor, ClusterState clusterState) {
         CountDownLatch latch = new CountDownLatch(1);
         executor.submitStateUpdateTask("test setting state", new ClusterStateUpdateTask() {
             @Override
@@ -151,7 +150,7 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
-        clusterService.getDiscoveryService().setClusterStatePublisher(
+        clusterService.getMasterService().setClusterStatePublisher(
             createClusterStatePublisher(clusterService.getClusterApplierService()));
         clusterService.start();
         final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(clusterService.state().nodes());
@@ -184,6 +183,6 @@ public class ClusterServiceUtils {
     }
 
     public static void setState(ClusterService clusterService, ClusterState clusterState) {
-        setState(clusterService.getDiscoveryService(), clusterState);
+        setState(clusterService.getMasterService(), clusterState);
     }
 }

@@ -20,7 +20,6 @@
 package org.elasticsearch.cluster.routing;
 
 import org.elasticsearch.Version;
-import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
@@ -33,7 +32,7 @@ import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.junit.After;
@@ -64,18 +63,18 @@ public class DelayedAllocationServiceTests extends ESAllocationTestCase {
     private TestDelayAllocationService delayedAllocationService;
     private MockAllocationService allocationService;
     private ClusterService clusterService;
-    private DiscoveryService discoveryService;
+    private MasterService masterService;
     private ThreadPool threadPool;
 
     @Before
     public void createDelayedAllocationService() {
         threadPool = new TestThreadPool(getTestName());
         clusterService = mock(ClusterService.class);
-        discoveryService = mock(DiscoveryService.class);
-        when(clusterService.getDiscoveryService()).thenReturn(discoveryService);
+        masterService = mock(MasterService.class);
+        when(clusterService.getMasterService()).thenReturn(masterService);
         allocationService = createAllocationService(Settings.EMPTY, new DelayedShardsMockGatewayAllocator());
         delayedAllocationService = new TestDelayAllocationService(Settings.EMPTY, threadPool, clusterService, allocationService);
-        verify(discoveryService).addListener(delayedAllocationService);
+        verify(masterService).addListener(delayedAllocationService);
     }
 
     @After

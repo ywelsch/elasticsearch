@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.elasticsearch.discovery;
+package org.elasticsearch.cluster.service;
 
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
@@ -50,6 +50,8 @@ import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
 import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
+import org.elasticsearch.discovery.Discovery;
+import org.elasticsearch.discovery.DiscoveryStateListener;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
@@ -68,9 +70,9 @@ import java.util.stream.Collectors;
 import static org.elasticsearch.cluster.service.ClusterService.CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING;
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
 
-public class DiscoveryService extends AbstractLifecycleComponent {
+public class MasterService extends AbstractLifecycleComponent {
 
-    public static final String DISCOVERY_UPDATE_THREAD_NAME = "discoveryService#updateTask";
+    public static final String MASTER_UPDATE_THREAD_NAME = "masterService#updateTask";
 
     private BiConsumer<ClusterChangedEvent, Discovery.AckListener> clusterStatePublisher;
 
@@ -87,7 +89,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
     protected volatile BatchingClusterTaskExecutor<PublishingClusterStateTaskListener> batchingClusterTaskExecutor;
 
-    public DiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+    public MasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
         this.clusterSettings = clusterSettings;
@@ -120,8 +122,8 @@ public class DiscoveryService extends AbstractLifecycleComponent {
     protected synchronized void doStart() {
         Objects.requireNonNull(clusterStatePublisher, "please set a cluster state publisher before starting");
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
-        PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(DISCOVERY_UPDATE_THREAD_NAME,
-            daemonThreadFactory(settings, DISCOVERY_UPDATE_THREAD_NAME), threadPool.getThreadContext());
+        PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(MASTER_UPDATE_THREAD_NAME,
+            daemonThreadFactory(settings, MASTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
         batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<PublishingClusterStateTaskListener>(logger, threadExecutor, threadPool) {
             @Override
             protected void onTimeout(String source, PublishingClusterStateTaskListener listener, TimeValue timeout) {
@@ -157,16 +159,15 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         return this.clusterStateSupplier.get();
     }
 
-    public static boolean assertDiscoveryUpdateThread() {
-        assert Thread.currentThread().getName().contains(DISCOVERY_UPDATE_THREAD_NAME) :
-            "not called from the discovery state update thread";
+    public static boolean assertMasterUpdateThread() {
+        assert Thread.currentThread().getName().contains(MASTER_UPDATE_THREAD_NAME) :
+            "not called from the master service thread";
         return true;
     }
 
-    public static boolean assertNotDiscoveryUpdateThread(String reason) {
-        assert Thread.currentThread().getName().contains(DISCOVERY_UPDATE_THREAD_NAME) == false :
-            "Expected current thread [" + Thread.currentThread() + "] to not be the discovery state update thread. Reason: [" +
-                reason + "]";
+    public static boolean assertNotMasterUpdateThread(String reason) {
+        assert Thread.currentThread().getName().contains(MASTER_UPDATE_THREAD_NAME) == false :
+            "Expected current thread [" + Thread.currentThread() + "] to not be the master service thread. Reason: [" + reason + "]";
         return true;
     }
 
@@ -268,15 +269,11 @@ public class DiscoveryService extends AbstractLifecycleComponent {
             }
         }
 
-        final Discovery.AckListener ackListener = newClusterState.nodes().isLocalNodeElectedMaster() ?
-            taskOutputs.createAckListener(threadPool, newClusterState) :
-            null;
-
         nodeConnectionsService.connectToNodes(newClusterState.nodes());
 
         logger.debug("publishing cluster state version [{}]", newClusterState.version());
         try {
-            clusterStatePublisher.accept(clusterChangedEvent, ackListener);
+            clusterStatePublisher.accept(clusterChangedEvent, taskOutputs.createAckListener(threadPool, newClusterState));
         } catch (Discovery.FailedToCommitClusterStateException t) {
             final long version = newClusterState.version();
             logger.warn(
@@ -624,8 +621,9 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         try {
             List<T> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);
-            if (previousClusterState.nodes().isLocalNodeElectedMaster() &&
+            if (previousClusterState != clusterTasksResult.resultingState &&
                 (clusterTasksResult.resultingState.nodes().isLocalNodeElectedMaster() == false)) {
+                assert false : "cluster state update cannot remove master";
                 throw new IllegalArgumentException("cluster state update cannot remove master");
             }
         } catch (Exception e) {

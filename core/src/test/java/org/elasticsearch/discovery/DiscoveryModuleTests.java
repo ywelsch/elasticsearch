@@ -21,6 +21,7 @@ package org.elasticsearch.discovery;
 import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.ClusterSettings;
@@ -51,7 +52,7 @@ public class DiscoveryModuleTests extends ESTestCase {
 
     private TransportService transportService;
     private NamedWriteableRegistry namedWriteableRegistry;
-    private DiscoveryService discoveryService;
+    private MasterService masterService;
     private ClusterApplier clusterApplier;
     private ThreadPool threadPool;
 
@@ -69,7 +70,7 @@ public class DiscoveryModuleTests extends ESTestCase {
         @Override
         default Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                                    NamedWriteableRegistry namedWriteableRegistry,
-                                                                   DiscoveryService discoveryService, ClusterApplier clusterApplier,
+                                                                   MasterService masterService, ClusterApplier clusterApplier,
                                                                    UnicastHostsProvider hostsProvider) {
             return impl();
         }
@@ -78,10 +79,10 @@ public class DiscoveryModuleTests extends ESTestCase {
     @Before
     public void setupDummyServices() {
         transportService = MockTransportService.createNewService(Settings.EMPTY, Version.CURRENT, null, null);
-        discoveryService = mock(DiscoveryService.class);
+        masterService = mock(MasterService.class);
         namedWriteableRegistry = new NamedWriteableRegistry(Collections.emptyList());
         ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
-        when(discoveryService.getClusterSettings()).thenReturn(clusterSettings);
+        when(masterService.getClusterSettings()).thenReturn(clusterSettings);
         clusterApplier = mock(ClusterApplier.class);
         threadPool = mock(ThreadPool.class);
     }
@@ -92,7 +93,7 @@ public class DiscoveryModuleTests extends ESTestCase {
     }
 
     private DiscoveryModule newModule(Settings settings, List<DiscoveryPlugin> plugins) {
-        return new DiscoveryModule(settings, threadPool, transportService, namedWriteableRegistry, null, discoveryService,
+        return new DiscoveryModule(settings, threadPool, transportService, namedWriteableRegistry, null, masterService,
             clusterApplier, plugins);
     }
 

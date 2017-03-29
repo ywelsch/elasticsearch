@@ -38,7 +38,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoveryModule;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.discovery.gce.GceUnicastHostsProvider;
 import org.elasticsearch.discovery.zen.UnicastHostsProvider;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
@@ -84,11 +84,11 @@ public class GceDiscoveryPlugin extends Plugin implements DiscoveryPlugin, Close
     @Override
     public Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                               NamedWriteableRegistry namedWriteableRegistry,
-                                                              DiscoveryService discoveryService, ClusterApplier clusterApplier,
+                                                              MasterService masterService, ClusterApplier clusterApplier,
                                                               UnicastHostsProvider hostsProvider) {
         // this is for backcompat with pre 5.1, where users would set discovery.type to use ec2 hosts provider
         return Collections.singletonMap(GCE, () ->
-            new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, clusterApplier,
+            new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
                 hostsProvider));
     }
 

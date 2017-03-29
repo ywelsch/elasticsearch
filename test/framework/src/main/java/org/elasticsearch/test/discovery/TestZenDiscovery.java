@@ -25,7 +25,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import org.elasticsearch.cluster.service.ClusterApplier;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
@@ -57,10 +57,10 @@ public class TestZenDiscovery extends ZenDiscovery {
         @Override
         public Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                                   NamedWriteableRegistry namedWriteableRegistry,
-                                                                  DiscoveryService discoveryService,
+                                                                  MasterService masterService,
                                                                   ClusterApplier clusterApplier, UnicastHostsProvider hostsProvider) {
             return Collections.singletonMap("test-zen",
-                () -> new TestZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService,
+                () -> new TestZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService,
                     clusterApplier, hostsProvider));
         }
 
@@ -76,9 +76,9 @@ public class TestZenDiscovery extends ZenDiscovery {
     }
 
     private TestZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
-                             NamedWriteableRegistry namedWriteableRegistry, DiscoveryService discoveryService,
+                             NamedWriteableRegistry namedWriteableRegistry, MasterService masterService,
                              ClusterApplier clusterApplier, UnicastHostsProvider hostsProvider) {
-        super(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, clusterApplier, hostsProvider);
+        super(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier, hostsProvider);
     }
 
     @Override

@@ -51,7 +51,6 @@ import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
 import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
 import org.elasticsearch.common.util.iterable.Iterables;
-import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collection;
@@ -68,6 +67,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -287,6 +287,26 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
                 throw e;
             }
         }
+    }
+
+    public void runOnApplierThread(final String source, Consumer<ClusterState> clusterStateConsumer,
+                                   final ActionListener<ClusterState> listener) {
+        submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.NORMAL),
+            (currentState, tasks) -> {
+                clusterStateConsumer.accept(currentState);
+                return ClusterTasksResult.builder().successes(tasks).build(currentState);
+            },
+            new ClusterStateTaskListener() {
+                @Override
+                public void onFailure(String source, Exception e) {
+                    listener.onFailure(e);
+                }
+
+                @Override
+                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                    listener.onResponse(newState);
+                }
+            });
     }
 
     @Override

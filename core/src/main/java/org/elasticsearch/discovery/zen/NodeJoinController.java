@@ -38,7 +38,7 @@ import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.discovery.DiscoverySettings;
 
 import java.util.ArrayList;
@@ -56,7 +56,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class NodeJoinController extends AbstractComponent {
 
-    private final DiscoveryService discoveryService;
+    private final MasterService masterService;
     private final AllocationService allocationService;
     private final ElectMasterService electMaster;
     private final JoinTaskExecutor joinTaskExecutor = new JoinTaskExecutor();
@@ -66,10 +66,10 @@ public class NodeJoinController extends AbstractComponent {
     private ElectionContext electionContext = null;
 
 
-    public NodeJoinController(DiscoveryService discoveryService, AllocationService allocationService, ElectMasterService electMaster,
+    public NodeJoinController(MasterService masterService, AllocationService allocationService, ElectMasterService electMaster,
                               Settings settings) {
         super(settings);
-        this.discoveryService = discoveryService;
+        this.masterService = masterService;
         this.allocationService = allocationService;
         this.electMaster = electMaster;
     }
@@ -177,7 +177,7 @@ public class NodeJoinController extends AbstractComponent {
             electionContext.addIncomingJoin(node, callback);
             checkPendingJoinsAndElectIfNeeded();
         } else {
-            discoveryService.submitStateUpdateTask("zen-disco-node-join",
+            masterService.submitStateUpdateTask("zen-disco-node-join",
                 node, ClusterStateTaskConfig.build(Priority.URGENT),
                 joinTaskExecutor, new JoinTaskListener(callback, logger));
         }
@@ -280,7 +280,7 @@ public class NodeJoinController extends AbstractComponent {
 
             tasks.put(BECOME_MASTER_TASK, (source1, e) -> {}); // noop listener, the election finished listener determines result
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
-            discoveryService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
+            masterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
 
         public synchronized void closeAndProcessPending(String reason) {
@@ -288,7 +288,7 @@ public class NodeJoinController extends AbstractComponent {
             Map<DiscoveryNode, PublishingClusterStateTaskListener> tasks = getPendingAsTasks();
             final String source = "zen-disco-election-stop [" + reason + "]";
             tasks.put(FINISH_ELECTION_TASK, electionFinishedListener);
-            discoveryService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
+            masterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
 
         private void innerClose() {
@@ -308,7 +308,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onElectedAsMaster(ClusterState state) {
-            assert DiscoveryService.assertDiscoveryUpdateThread();
+            assert MasterService.assertMasterUpdateThread();
             assert state.nodes().isLocalNodeElectedMaster() : "onElectedAsMaster called but local node is not master";
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
@@ -317,7 +317,7 @@ public class NodeJoinController extends AbstractComponent {
         }
 
         private void onFailure(Throwable t) {
-            assert DiscoveryService.assertDiscoveryUpdateThread();
+            assert MasterService.assertMasterUpdateThread();
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
                 callback.onFailure(t);

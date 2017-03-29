@@ -30,7 +30,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.discovery.DiscoveryStateListener;
 import org.elasticsearch.threadpool.ThreadPool;
 
@@ -133,7 +133,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
         this.threadPool = threadPool;
         this.clusterService = clusterService;
         this.allocationService = allocationService;
-        clusterService.getDiscoveryService().addListener(this);
+        clusterService.getMasterService().addListener(this);
     }
 
     @Override
@@ -146,7 +146,7 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
 
     @Override
     protected void doClose() {
-        clusterService.getDiscoveryService().removeListener(this);
+        clusterService.getMasterService().removeListener(this);
         removeTaskAndCancel();
     }
 
@@ -215,6 +215,6 @@ public class DelayedAllocationService extends AbstractLifecycleComponent impleme
 
     // protected so that it can be overridden (and disabled) by unit tests
     protected void assertDiscoveryStateThread() {
-        assert DiscoveryService.assertDiscoveryUpdateThread();
+        assert MasterService.assertMasterUpdateThread();
     }
 }

@@ -420,7 +420,7 @@ public class Node implements Closeable {
             }
 
             final DiscoveryModule discoveryModule = new DiscoveryModule(this.settings, threadPool, transportService, namedWriteableRegistry,
-                networkService, clusterService.getDiscoveryService(), clusterService.getClusterApplierService(),
+                networkService, clusterService.getMasterService(), clusterService.getClusterApplierService(),
                 pluginsService.filterPlugins(DiscoveryPlugin.class));
             NodeService nodeService = new NodeService(settings, threadPool, monitorService, discoveryModule.getDiscovery(),
                 transportService, indicesService, pluginsService, circuitBreakerService, scriptModule.getScriptService(),
@@ -587,7 +587,7 @@ public class Node implements Closeable {
         injector.getInstance(ResourceWatcherService.class).start();
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
-        clusterService.getDiscoveryService().setClusterStatePublisher(discovery::publish);
+        clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
 
         // start before the cluster service since it adds/removes initial Cluster state blocks
         final TribeService tribeService = injector.getInstance(TribeService.class);
@@ -601,7 +601,7 @@ public class Node implements Closeable {
             .flatMap(p -> p.getBootstrapChecks().stream()).collect(Collectors.toList()));
 
         clusterService.addStateApplier(transportService.getTaskManager());
-        clusterService.getDiscoveryService().setClusterStateSupplier(discovery::state);
+        clusterService.getMasterService().setClusterStateSupplier(discovery::state);
         clusterService.setInitialState(discovery.getInitialState());
         clusterService.start();
         // start after cluster service so the local disco is known

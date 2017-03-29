@@ -54,7 +54,7 @@ import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery;
-import org.elasticsearch.discovery.DiscoveryService;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.DiscoveryStats;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -108,7 +108,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     public static final String DISCOVERY_REJOIN_ACTION_NAME = "internal:discovery/zen/rejoin";
 
     private final TransportService transportService;
-    private final DiscoveryService discoveryService;
+    private final MasterService masterService;
     private AllocationService allocationService;
     private final ClusterName clusterName;
     private final DiscoverySettings discoverySettings;
@@ -152,13 +152,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private volatile ClusterState initialState;
 
     public ZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
-                        NamedWriteableRegistry namedWriteableRegistry, DiscoveryService discoveryService, ClusterApplier clusterApplier,
+                        NamedWriteableRegistry namedWriteableRegistry, MasterService masterService, ClusterApplier clusterApplier,
                         UnicastHostsProvider hostsProvider) {
         super(settings);
-        this.discoveryService = discoveryService;
+        this.masterService = masterService;
         this.clusterApplier = clusterApplier;
         this.transportService = transportService;
-        this.discoverySettings = new DiscoverySettings(settings, discoveryService.getClusterSettings());
+        this.discoverySettings = new DiscoverySettings(settings, masterService.getClusterSettings());
         this.zenPing = newZenPing(settings, threadPool, transportService, hostsProvider);
         this.electMaster = new ElectMasterService(settings);
         this.pingTimeout = PING_TIMEOUT_SETTING.get(settings);
@@ -177,7 +177,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         logger.debug("using ping_timeout [{}], join.timeout [{}], master_election.ignore_non_master [{}]",
                 this.pingTimeout, joinTimeout, masterElectionIgnoreNonMasters);
 
-        discoveryService.getClusterSettings().addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
+        masterService.getClusterSettings().addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
             this::handleMinimumMasterNodesChanged, (value) -> {
                 final ClusterState clusterState = state();
                 int masterNodes = clusterState.nodes().getMasterNodes().size();
@@ -188,7 +188,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 }
         });
 
-        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, discoveryService, clusterName);
+        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, masterService, clusterName);
         this.masterFD.addListener(new MasterNodeFailureListener());
         this.nodesFD = new NodesFaultDetection(settings, threadPool, transportService, clusterName);
         this.nodesFD.addListener(new NodeFaultDetectionListener());
@@ -231,11 +231,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         synchronized (stateMutex) {
             initialState = getInitialState();
             state.set(initialState);
-            nodesFD.setLocalNode(discoveryService.localNode());
+            nodesFD.setLocalNode(masterService.localNode());
             joinThreadControl.start();
         }
         zenPing.start(this);
-        this.nodeJoinController = new NodeJoinController(discoveryService, allocationService, electMaster, settings);
+        this.nodeJoinController = new NodeJoinController(masterService, allocationService, electMaster, settings);
         this.nodeRemovalExecutor = new NodeRemovalClusterStateTaskExecutor(allocationService, electMaster, this::submitRejoin, logger);
     }
 
@@ -243,7 +243,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     public void startInitialJoin() {
         // start the join thread from a cluster state update. See {@link JoinThreadControl} for details.
         synchronized (stateMutex) {
-            // do the join on a different thread, the DiscoveryService waits for 30s anyhow till it is discovered
+            // do the join on a different thread, the MasterService waits for 30s anyhow till it is discovered
             joinThreadControl.startNewThreadIfNotRunning();
         }
     }
@@ -288,12 +288,12 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     public DiscoveryNode localNode() {
-        return discoveryService.localNode();
+        return masterService.localNode();
     }
 
     @Override
     public String nodeDescription() {
-        return clusterName.value() + "/" + discoveryService.localNode().getId();
+        return clusterName.value() + "/" + masterService.localNode().getId();
     }
 
     /** start of {@link PingContextProvider } implementation */
@@ -455,7 +455,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             return;
         }
 
-        if (discoveryService.localNode().equals(masterNode)) {
+        if (masterService.localNode().equals(masterNode)) {
             final int requiredJoins = Math.max(0, electMaster.minimumMasterNodes() - 1); // we count as one
             logger.debug("elected as master, waiting for incoming joins ([{}] needed)", requiredJoins);
             nodeJoinController.waitToBeElectedAsMaster(requiredJoins, masterElectionWaitForJoinsTimeout,
@@ -523,7 +523,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
-                membership.sendJoinRequestBlocking(masterNode, discoveryService.localNode(), joinTimeout);
+                membership.sendJoinRequestBlocking(masterNode, masterService.localNode(), joinTimeout);
                 return true;
             } catch (Exception e) {
                 final Throwable unwrap = ExceptionsHelper.unwrapCause(e);
@@ -650,7 +650,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     private void removeNode(final DiscoveryNode node, final String source, final String reason) {
-        discoveryService.submitStateUpdateTask(
+        masterService.submitStateUpdateTask(
                 source + "(" + node + "), reason(" + reason + ")",
                 new NodeRemovalClusterStateTaskExecutor.Task(node, reason),
                 ClusterStateTaskConfig.build(Priority.IMMEDIATE),
@@ -926,7 +926,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             logger.trace("full ping responses:{}", sb);
         }
 
-        final DiscoveryNode localNode = discoveryService.localNode();
+        final DiscoveryNode localNode = masterService.localNode();
 
         // add our selves
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)
@@ -1007,7 +1007,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         if (clusterState.nodes().getMasterNodeId() != null) {
             // remove block if it already exists before adding new one
             assert clusterState.blocks().hasGlobalBlock(discoverySettings.getNoMasterBlock().id()) == false :
-                "NO_MASTER_BLOCK should only be added by DiscoveryService";
+                "NO_MASTER_BLOCK should only be added by MasterService";
             ClusterBlocks clusterBlocks = ClusterBlocks.builder().blocks(clusterState.blocks())
                 .addGlobalBlock(discoverySettings.getNoMasterBlock())
                 .build();

@@ -23,14 +23,12 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateApplier;
 import org.elasticsearch.cluster.ClusterStateListener;
-import org.elasticsearch.cluster.ClusterStateObserver;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.TimeoutClusterStateListener;
-import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.OperationRouting;
 import org.elasticsearch.common.Nullable;
@@ -40,16 +38,14 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collections;
 import java.util.Map;
-import java.util.function.Supplier;
 
 public class ClusterService extends AbstractLifecycleComponent {
 
-    private final DiscoveryService discoveryService;
+    private final MasterService masterService;
 
     private final ClusterApplierService clusterApplierService;
 
@@ -66,7 +62,7 @@ public class ClusterService extends AbstractLifecycleComponent {
     public ClusterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
         this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool);
-        this.discoveryService = new DiscoveryService(settings, clusterSettings, threadPool);
+        this.masterService = new MasterService(settings, clusterSettings, threadPool);
         this.operationRouting = new OperationRouting(settings, clusterSettings);
         this.clusterSettings = clusterSettings;
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
@@ -75,12 +71,12 @@ public class ClusterService extends AbstractLifecycleComponent {
     }
 
     public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
-        discoveryService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
+        masterService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
         clusterApplierService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
     }
 
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
-        discoveryService.setNodeConnectionsService(nodeConnectionsService);
+        masterService.setNodeConnectionsService(nodeConnectionsService);
         clusterApplierService.setNodeConnectionsService(nodeConnectionsService);
     }
 
@@ -91,18 +87,18 @@ public class ClusterService extends AbstractLifecycleComponent {
     @Override
     protected synchronized void doStart() {
         clusterApplierService.start();
-        discoveryService.start();
+        masterService.start();
     }
 
     @Override
     protected synchronized void doStop() {
-        discoveryService.stop();
+        masterService.stop();
         clusterApplierService.stop();
     }
 
     @Override
     protected synchronized void doClose() {
-        discoveryService.close();
+        masterService.close();
         clusterApplierService.close();
     }
 
@@ -110,7 +106,7 @@ public class ClusterService extends AbstractLifecycleComponent {
      * The local node.
      */
     public DiscoveryNode localNode() {
-        return discoveryService.localNode();
+        return masterService.localNode();
     }
 
     public OperationRouting operationRouting() {
@@ -254,11 +250,11 @@ public class ClusterService extends AbstractLifecycleComponent {
     public <T> void submitStateUpdateTasks(final String source,
                                            final Map<T, PublishingClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
                                            final ClusterStateTaskExecutor<T> executor) {
-        discoveryService.submitStateUpdateTasks(source, tasks, config, executor);
+        masterService.submitStateUpdateTasks(source, tasks, config, executor);
     }
 
-    public DiscoveryService getDiscoveryService() {
-        return discoveryService;
+    public MasterService getMasterService() {
+        return masterService;
     }
 
     public ClusterApplierService getClusterApplierService() {
@@ -267,7 +263,7 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     public static boolean assertClusterOrDiscoveryStateThread() {
         assert Thread.currentThread().getName().contains(ClusterApplierService.CLUSTER_UPDATE_THREAD_NAME) ||
-            Thread.currentThread().getName().contains(DiscoveryService.DISCOVERY_UPDATE_THREAD_NAME) :
+            Thread.currentThread().getName().contains(MasterService.MASTER_UPDATE_THREAD_NAME) :
             "not called from the master/cluster state update thread";
         return true;
     }

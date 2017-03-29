@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.elasticsearch.discovery;
+package org.elasticsearch.cluster.service;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -33,7 +33,6 @@ import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.cluster.service.AbstractClusterTaskExecutorTestCase;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.logging.Loggers;
@@ -42,6 +41,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.BaseFuture;
 import org.elasticsearch.common.util.set.Sets;
+import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.test.MockLogAppender;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -72,20 +72,20 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasKey;
 
-public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<DiscoveryServiceTests.TimedDiscoveryService> {
+public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<MasterServiceTests.TimedMasterService> {
 
     @Override
-    protected TimedDiscoveryService createClusterTaskExecutor() throws InterruptedException {
+    protected TimedMasterService createClusterTaskExecutor() throws InterruptedException {
         return createTimedClusterService(true);
     }
 
-    TimedDiscoveryService createTimedClusterService(boolean makeMaster) throws InterruptedException {
+    TimedMasterService createTimedClusterService(boolean makeMaster) throws InterruptedException {
         DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
             emptySet(), Version.CURRENT);
-        TimedDiscoveryService timedDiscoveryService = new TimedDiscoveryService(Settings.builder().put("cluster.name",
-            DiscoveryServiceTests.class.getSimpleName()).build(),
+        TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
+            MasterServiceTests.class.getSimpleName()).build(),
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode);
-        timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
+        timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
                 // skip
@@ -96,20 +96,20 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
                 // skip
             }
         });
-        timedDiscoveryService.setClusterStatePublisher((event, ackListener) -> {});
-        timedDiscoveryService.start();
-        ClusterState state = timedDiscoveryService.state();
+        timedMasterService.setClusterStatePublisher((event, ackListener) -> {});
+        timedMasterService.start();
+        ClusterState state = timedMasterService.state();
         final DiscoveryNodes nodes = state.nodes();
         final DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(nodes)
             .masterNodeId(makeMaster ? nodes.getLocalNodeId() : null);
         state = ClusterState.builder(state).blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK)
             .nodes(nodesBuilder).build();
-        setState(timedDiscoveryService, state);
-        return timedDiscoveryService;
+        setState(timedMasterService, state);
+        return timedMasterService;
     }
 
     public void testMasterAwareExecution() throws Exception {
-        TimedDiscoveryService nonMaster = createTimedClusterService(false);
+        TimedMasterService nonMaster = createTimedClusterService(false);
 
         final boolean[] taskFailed = {false};
         final CountDownLatch latch1 = new CountDownLatch(1);
@@ -673,11 +673,11 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
     public void testDisconnectFromNewlyAddedNodesIfClusterStatePublishingFails() throws InterruptedException {
         DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
             emptySet(), Version.CURRENT);
-        TimedDiscoveryService timedDiscoveryService = new TimedDiscoveryService(Settings.builder().put("cluster.name",
-            DiscoveryServiceTests.class.getSimpleName()).build(),
+        TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
+            MasterServiceTests.class.getSimpleName()).build(),
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode);
         Set<DiscoveryNode> currentNodes = new HashSet<>();
-        timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
+        timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
                 discoveryNodes.forEach(currentNodes::add);
@@ -691,27 +691,27 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
             }
         });
         AtomicBoolean failToCommit = new AtomicBoolean();
-        timedDiscoveryService.setClusterStatePublisher((event, ackListener) -> {
+        timedMasterService.setClusterStatePublisher((event, ackListener) -> {
             if (failToCommit.get()) {
                 throw new Discovery.FailedToCommitClusterStateException("just to test this");
             }
         });
-        timedDiscoveryService.start();
-        ClusterState state = timedDiscoveryService.state();
+        timedMasterService.start();
+        ClusterState state = timedMasterService.state();
         final DiscoveryNodes nodes = state.nodes();
         final DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(nodes)
             .masterNodeId(nodes.getLocalNodeId());
         state = ClusterState.builder(state).blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK)
             .nodes(nodesBuilder).build();
-        setState(timedDiscoveryService, state);
+        setState(timedMasterService, state);
 
-        assertThat(currentNodes, equalTo(Sets.newHashSet(timedDiscoveryService.state().getNodes())));
+        assertThat(currentNodes, equalTo(Sets.newHashSet(timedMasterService.state().getNodes())));
 
         final CountDownLatch latch = new CountDownLatch(1);
 
         // try to add node when cluster state publishing fails
         failToCommit.set(true);
-        timedDiscoveryService.submitStateUpdateTask("test", new ClusterStateUpdateTask() {
+        timedMasterService.submitStateUpdateTask("test", new ClusterStateUpdateTask() {
             @Override
             public ClusterState execute(ClusterState currentState) throws Exception {
                 DiscoveryNode newNode = new DiscoveryNode("node2", buildNewFakeTransportAddress(), emptyMap(),
@@ -731,16 +731,16 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
         });
 
         latch.await();
-        assertThat(currentNodes, equalTo(Sets.newHashSet(timedDiscoveryService.state().getNodes())));
-        timedDiscoveryService.close();
+        assertThat(currentNodes, equalTo(Sets.newHashSet(timedMasterService.state().getNodes())));
+        timedMasterService.close();
     }
 
-    static class TimedDiscoveryService extends DiscoveryService {
+    static class TimedMasterService extends MasterService {
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedDiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                                     Supplier<DiscoveryNode> localNodeSupplier) {
+        public TimedMasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
+                                  Supplier<DiscoveryNode> localNodeSupplier) {
             super(settings, clusterSettings, threadPool);
         }
 

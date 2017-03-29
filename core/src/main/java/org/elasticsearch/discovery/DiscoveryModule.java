@@ -20,6 +20,7 @@
 package org.elasticsearch.discovery;
 
 import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Setting;
@@ -53,7 +54,7 @@ public class DiscoveryModule {
     private final Discovery discovery;
 
     public DiscoveryModule(Settings settings, ThreadPool threadPool, TransportService transportService,
-                           NamedWriteableRegistry namedWriteableRegistry, NetworkService networkService, DiscoveryService discoveryService,
+                           NamedWriteableRegistry namedWriteableRegistry, NetworkService networkService, MasterService masterService,
                            ClusterApplier clusterApplier, List<DiscoveryPlugin> plugins) {
         final UnicastHostsProvider hostsProvider;
 
@@ -78,12 +79,12 @@ public class DiscoveryModule {
 
         Map<String, Supplier<Discovery>> discoveryTypes = new HashMap<>();
         discoveryTypes.put("zen",
-            () -> new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, clusterApplier,
+            () -> new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
                 hostsProvider));
         discoveryTypes.put("tribe", () -> new TribeDiscovery(settings, transportService));
         for (DiscoveryPlugin plugin : plugins) {
             plugin.getDiscoveryTypes(threadPool, transportService, namedWriteableRegistry,
-                discoveryService, clusterApplier, hostsProvider).entrySet().forEach(entry -> {
+                masterService, clusterApplier, hostsProvider).entrySet().forEach(entry -> {
                 if (discoveryTypes.put(entry.getKey(), entry.getValue()) != null) {
                     throw new IllegalArgumentException("Cannot register discovery type [" + entry.getKey() + "] twice");
                 }
