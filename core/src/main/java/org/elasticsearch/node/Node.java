@@ -329,8 +329,7 @@ public class Node implements Closeable {
             resourcesToClose.add(resourceWatcherService);
             final NetworkService networkService = new NetworkService(settings,
                 getCustomNameResolvers(pluginsService.filterPlugins(DiscoveryPlugin.class)));
-            final ClusterService clusterService = new ClusterService(settings, settingsModule.getClusterSettings(), threadPool,
-                localNodeFactory::getNode);
+            final ClusterService clusterService = new ClusterService(settings, settingsModule.getClusterSettings(), threadPool);
             clusterService.addListener(scriptModule.getScriptService());
             resourcesToClose.add(clusterService);
             final IngestService ingestService = new IngestService(settings, threadPool, this.environment,
@@ -588,8 +587,8 @@ public class Node implements Closeable {
         injector.getInstance(ResourceWatcherService.class).start();
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
-        clusterService.addInitialStateBlock(discovery.getDiscoverySettings().getNoMasterBlock());
         clusterService.getDiscoveryService().setClusterStatePublisher(discovery::publish);
+        clusterService.setInitialState(discovery.getInitialState());
 
         // start before the cluster service since it adds/removes initial Cluster state blocks
         final TribeService tribeService = injector.getInstance(TribeService.class);
@@ -603,6 +602,7 @@ public class Node implements Closeable {
             .flatMap(p -> p.getBootstrapChecks().stream()).collect(Collectors.toList()));
 
         clusterService.addStateApplier(transportService.getTaskManager());
+        clusterService.getDiscoveryService().setClusterStateSupplier(discovery::state);
         clusterService.start();
         assert localNodeFactory.getNode() != null;
         assert transportService.getLocalNode().equals(localNodeFactory.getNode())

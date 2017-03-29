@@ -19,39 +19,56 @@
 package org.elasticsearch.discovery;
 
 import org.elasticsearch.cluster.ClusterChangedEvent;
+import org.elasticsearch.cluster.ClusterName;
+import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen.ElectMasterService;
+import org.elasticsearch.transport.TransportService;
+
+import java.util.Objects;
+
+import static org.elasticsearch.tribe.TribeService.BLOCKS_METADATA_SETTING;
+import static org.elasticsearch.tribe.TribeService.BLOCKS_WRITE_SETTING;
+import static org.elasticsearch.tribe.TribeService.TRIBE_METADATA_BLOCK;
+import static org.elasticsearch.tribe.TribeService.TRIBE_WRITE_BLOCK;
 
 /**
  * A {@link Discovery} implementation that is used by {@link org.elasticsearch.tribe.TribeService}. This implementation
  * doesn't support any clustering features. Most notably {@link #startInitialJoin()} does nothing and
  * {@link #publish(ClusterChangedEvent, AckListener)} is not supported.
  */
+// TODO: rename to TribeDiscovery (it's only used by tribe and has tribe-specific blocks
 public class NoneDiscovery extends AbstractLifecycleComponent implements Discovery {
 
-    private final DiscoveryService discoveryService;
+    private final TransportService transportService;
     private final DiscoverySettings discoverySettings;
+    private final ClusterName clusterName;
+
+    private volatile ClusterState initialState;
 
     @Inject
-    public NoneDiscovery(Settings settings, DiscoveryService discoveryService, ClusterSettings clusterSettings) {
+    public NoneDiscovery(Settings settings, TransportService transportService, ClusterSettings clusterSettings) {
         super(settings);
-        this.discoveryService = discoveryService;
+        this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
+        this.transportService = transportService;
         this.discoverySettings = new DiscoverySettings(settings, clusterSettings);
     }
 
     @Override
     public DiscoveryNode localNode() {
-        return discoveryService.localNode();
+        return transportService.getLocalNode();
     }
 
     @Override
     public String nodeDescription() {
-        return discoveryService.getClusterName().value() + "/" + discoveryService.localNode().getId();
+        return clusterName.value() + "/" + localNode().getId();
     }
 
     @Override
@@ -62,6 +79,28 @@ public class NoneDiscovery extends AbstractLifecycleComponent implements Discove
     @Override
     public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public synchronized ClusterState getInitialState() {
+        if (initialState == null) {
+            ClusterBlocks.Builder clusterBlocks = ClusterBlocks.builder().addGlobalBlock(discoverySettings.getNoMasterBlock());
+            if (BLOCKS_WRITE_SETTING.get(settings)) {
+                clusterBlocks.addGlobalBlock(TRIBE_WRITE_BLOCK);
+            }
+            if (BLOCKS_METADATA_SETTING.get(settings)) {
+                clusterBlocks.addGlobalBlock(TRIBE_METADATA_BLOCK);
+            }
+            initialState = ClusterState.builder(clusterName)
+                .nodes(DiscoveryNodes.builder().add(localNode()).localNodeId(localNode().getId()).build())
+                .blocks(clusterBlocks).build();
+        }
+        return initialState;
+    }
+
+    @Override
+    public ClusterState state() {
+        return getInitialState();
     }
 
     @Override

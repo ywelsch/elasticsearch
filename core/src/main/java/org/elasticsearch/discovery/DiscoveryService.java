@@ -24,17 +24,13 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.cluster.AckedClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
-import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.Builder;
-import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
-import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
-import org.elasticsearch.cluster.block.ClusterBlock;
-import org.elasticsearch.cluster.block.ClusterBlocks;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -66,9 +62,7 @@ import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
-import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.cluster.service.ClusterService.CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING;
@@ -84,38 +78,20 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
     private final Collection<DiscoveryStateListener> stateListeners = new CopyOnWriteArrayList<>();
 
-    private final AtomicReference<ClusterState> state;
-
-    private final ClusterBlocks.Builder initialBlocks;
+    private java.util.function.Supplier<ClusterState> clusterStateSupplier;
 
     private NodeConnectionsService nodeConnectionsService;
 
     protected final ClusterSettings clusterSettings;
-    protected final ClusterName clusterName;
     protected final ThreadPool threadPool;
 
     protected volatile BatchingClusterTaskExecutor<PublishingClusterStateTaskListener> batchingClusterTaskExecutor;
 
-
-
-    private final java.util.function.Supplier<DiscoveryNode> localNodeSupplier;
-
-    public DiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                            java.util.function.Supplier<DiscoveryNode> localNodeSupplier) {
+    public DiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
-        this.localNodeSupplier = localNodeSupplier;
-        // will be replaced on doStart.
-        this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
-        this.state = new AtomicReference<>(ClusterState.builder(clusterName).build());
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
         this.clusterSettings = clusterSettings;
         this.threadPool = threadPool;
-
-        initialBlocks = ClusterBlocks.builder();
-    }
-
-    public ClusterName getClusterName() {
-        return clusterName;
     }
 
     public ClusterSettings getClusterSettings() {
@@ -131,53 +107,19 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         clusterStatePublisher = publisher;
     }
 
-    private void updateState(UnaryOperator<ClusterState> updateFunction) {
-        this.state.getAndUpdate(updateFunction);
-    }
-
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
         assert this.nodeConnectionsService == null : "nodeConnectionsService is already set";
         this.nodeConnectionsService = nodeConnectionsService;
     }
 
-    /**
-     * Adds an initial block to be set on the first cluster state created.
-     */
-    public synchronized void addInitialStateBlock(ClusterBlock block) throws IllegalStateException {
-        if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
-        }
-        initialBlocks.addGlobalBlock(block);
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(ClusterBlock block) throws IllegalStateException {
-        removeInitialStateBlock(block.id());
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(int blockId) throws IllegalStateException {
-        if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
-        }
-        initialBlocks.removeGlobalBlock(blockId);
+    public synchronized void setClusterStateSupplier(java.util.function.Supplier<ClusterState> clusterStateSupplier) {
+        this.clusterStateSupplier = clusterStateSupplier;
     }
 
     @Override
     protected synchronized void doStart() {
         Objects.requireNonNull(clusterStatePublisher, "please set a cluster state publisher before starting");
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
-        DiscoveryNode localNode = localNodeSupplier.get();
-        assert localNode != null;
-        updateState(state -> {
-            assert state.nodes().getLocalNodeId() == null : "local node is already set";
-            DiscoveryNodes nodes = DiscoveryNodes.builder(state.nodes()).add(localNode).localNodeId(localNode.getId()).build();
-            return ClusterState.builder(state).nodes(nodes).blocks(initialBlocks).build();
-        });
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(DISCOVERY_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, DISCOVERY_UPDATE_THREAD_NAME), threadPool.getThreadContext());
         batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<PublishingClusterStateTaskListener>(logger, threadExecutor, threadPool) {
@@ -212,7 +154,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
      * The current cluster state.
      */
     public ClusterState state() {
-        return this.state.get();
+        return this.clusterStateSupplier.get();
     }
 
     public static boolean assertDiscoveryUpdateThread() {
@@ -260,20 +202,7 @@ public class DiscoveryService extends AbstractLifecycleComponent {
                 logger.debug("cluster state updated, version [{}], source [{}]", newClusterState.version(), taskInputs.summary);
             }
             try {
-                if (newClusterState.nodes().isLocalNodeElectedMaster()) {
-                    publishChanges(taskInputs, taskOutputs);
-                } else {
-                    state.set(newClusterState);
-                    stateListeners.forEach(listener -> {
-                        try {
-                            logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
-                            listener.clusterChanged(previousClusterState, newClusterState);
-                        } catch (Exception ex) {
-                            logger.warn("failed to notify DiscoveryStateListener", ex);
-                        }
-                    });
-                    taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
-                }
+                publishChanges(taskInputs, taskOutputs);
                 TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
                 logger.debug("processing [{}]: took [{}] done publishing updated cluster_state (version: {}, uuid: {})", taskInputs.summary,
                     executionTime, newClusterState.version(),
@@ -300,15 +229,15 @@ public class DiscoveryService extends AbstractLifecycleComponent {
 
     public <T> TaskOutputs<T> calculateTaskOutputs(TaskInputs<T> taskInputs, ClusterState previousClusterState, long startTimeNS) {
         ClusterTasksResult<T> clusterTasksResult = executeTasks(taskInputs, startTimeNS, previousClusterState);
-        ClusterState newClusterState = patchVersionsAndNoMasterBlocks(previousClusterState, clusterTasksResult);
+        ClusterState newClusterState = patchVersions(previousClusterState, clusterTasksResult);
         return new TaskOutputs(taskInputs, previousClusterState, newClusterState, getNonFailedTasks(taskInputs, clusterTasksResult),
             clusterTasksResult.executionResults);
     }
 
-    private ClusterState patchVersionsAndNoMasterBlocks(ClusterState previousClusterState, ClusterTasksResult<?> executionResult) {
+    private ClusterState patchVersions(ClusterState previousClusterState, ClusterTasksResult<?> executionResult) {
         ClusterState newClusterState = executionResult.resultingState;
 
-        if (newClusterState.nodes().isLocalNodeElectedMaster() && previousClusterState != newClusterState) {
+        if (previousClusterState != newClusterState) {
             // only the master controls the version numbers
             Builder builder = ClusterState.builder(newClusterState).incrementVersion();
             if (previousClusterState.routingTable() != newClusterState.routingTable()) {
@@ -360,8 +289,6 @@ public class DiscoveryService extends AbstractLifecycleComponent {
             taskOutputs.publishingFailed(t);
             return;
         }
-
-        state.set(newClusterState);
 
         stateListeners.forEach(listener -> {
             try {
@@ -697,6 +624,9 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         try {
             List<T> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);
+            if (clusterTasksResult.resultingState.nodes().isLocalNodeElectedMaster()) {
+                throw new IllegalArgumentException("cluster state update cannot remove master");
+            }
         } catch (Exception e) {
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
             if (logger.isTraceEnabled()) {

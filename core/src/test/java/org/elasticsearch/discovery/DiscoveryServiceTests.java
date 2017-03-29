@@ -741,7 +741,7 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
 
         public TimedDiscoveryService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
                                      Supplier<DiscoveryNode> localNodeSupplier) {
-            super(settings, clusterSettings, threadPool, localNodeSupplier);
+            super(settings, clusterSettings, threadPool);
         }
 
         @Override

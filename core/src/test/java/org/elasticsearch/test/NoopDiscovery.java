@@ -19,6 +19,7 @@
 package org.elasticsearch.test;
 
 import org.elasticsearch.cluster.ClusterChangedEvent;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.common.component.Lifecycle;
@@ -48,6 +49,16 @@ public class NoopDiscovery implements Discovery {
     @Override
     public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {
 
+    }
+
+    @Override
+    public ClusterState getInitialState() {
+        return null;
+    }
+
+    @Override
+    public ClusterState state() {
+        return null;
     }
 
     @Override

@@ -23,7 +23,6 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
@@ -32,13 +31,11 @@ import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.TimeoutClusterStateListener;
-import org.elasticsearch.cluster.block.ClusterBlock;
-import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
-import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.BatchingClusterTaskExecutor.BatchingUpdateTask;
 import org.elasticsearch.cluster.service.SimpleTaskExecutor.SourcePrioritizedRunnable;
@@ -108,16 +105,10 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
     private final AtomicReference<ClusterState> state;
 
-    private final ClusterBlocks.Builder initialBlocks;
-
-    private final java.util.function.Supplier<DiscoveryNode> localNodeSupplier;
-
     private NodeConnectionsService nodeConnectionsService;
 
-    public ClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                                 java.util.function.Supplier<DiscoveryNode> localNodeSupplier) {
+    public ClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
-        this.localNodeSupplier = localNodeSupplier;
         this.clusterSettings = clusterSettings;
         this.threadPool = threadPool;
         // will be replaced on doStart.
@@ -126,8 +117,6 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
 
         localNodeMasterListeners = new LocalNodeMasterListeners(threadPool);
-
-        initialBlocks = ClusterBlocks.builder();
     }
 
     public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
@@ -143,44 +132,17 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         this.nodeConnectionsService = nodeConnectionsService;
     }
 
-    /**
-     * Adds an initial block to be set on the first cluster state created.
-     */
-    public synchronized void addInitialStateBlock(ClusterBlock block) throws IllegalStateException {
+    public void setInitialState(ClusterState initialState) {
         if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
+            throw new IllegalStateException("can't set initial state when started");
         }
-        initialBlocks.addGlobalBlock(block);
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(ClusterBlock block) throws IllegalStateException {
-        removeInitialStateBlock(block.id());
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(int blockId) throws IllegalStateException {
-        if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
-        }
-        initialBlocks.removeGlobalBlock(blockId);
+        state.set(initialState);
     }
 
     @Override
     protected synchronized void doStart() {
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
         addListener(localNodeMasterListeners);
-        DiscoveryNode localNode = localNodeSupplier.get();
-        assert localNode != null;
-        updateState(state -> {
-            assert state.nodes().getLocalNodeId() == null : "local node is already set";
-            DiscoveryNodes nodes = DiscoveryNodes.builder(state.nodes()).add(localNode).localNodeId(localNode.getId()).build();
-            return ClusterState.builder(state).nodes(nodes).blocks(initialBlocks).build();
-        });
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(CLUSTER_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, CLUSTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
         batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<ClusterStateTaskListener>(logger, threadExecutor, threadPool) {

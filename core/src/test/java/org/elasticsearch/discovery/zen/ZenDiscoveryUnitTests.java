@@ -187,7 +187,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             DiscoveryService masterDiscoveryService = createDiscoveryService(threadPool, masterNode);
             toClose.addFirst(masterDiscoveryService);
             // TODO: clustername shouldn't be stored twice in cluster service, but for now, work around it
-            state = ClusterState.builder(masterDiscoveryService.getClusterName()).nodes(state.nodes()).build();
+            state = ClusterState.builder(masterDiscoveryService.state().getClusterName()).nodes(state.nodes()).build();
             setState(masterDiscoveryService, state);
             ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterDiscoveryService, threadPool);
             toClose.addFirst(masterZen);
@@ -198,7 +198,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             toClose.addFirst(otherTransport);
 
             DiscoveryNode otherNode = otherTransport.getLocalNode();
-            final ClusterState otherState = ClusterState.builder(masterDiscoveryService.getClusterName())
+            final ClusterState otherState = ClusterState.builder(masterDiscoveryService.state().getClusterName())
                 .nodes(DiscoveryNodes.builder().add(otherNode).localNodeId(otherNode.getId())).build();
             DiscoveryService otherDiscoveryService = createDiscoveryService(threadPool, masterNode);
             toClose.addFirst(otherDiscoveryService);
@@ -254,7 +254,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             // build the zen discovery and discovery service
             DiscoveryService masterDiscoveryService = createDiscoveryService(threadPool, masterNode);
             toClose.addFirst(masterDiscoveryService);
-            state = ClusterState.builder(masterDiscoveryService.getClusterName()).nodes(state.nodes()).build();
+            state = ClusterState.builder(masterDiscoveryService.state().getClusterName()).nodes(state.nodes()).build();
             setState(masterDiscoveryService, state);
             ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterDiscoveryService, threadPool);
             toClose.addFirst(masterZen);

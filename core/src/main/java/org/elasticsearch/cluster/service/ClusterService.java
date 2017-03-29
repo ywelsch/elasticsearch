@@ -63,11 +63,10 @@ public class ClusterService extends AbstractLifecycleComponent {
 
     private final ClusterSettings clusterSettings;
 
-    public ClusterService(Settings settings,
-                          ClusterSettings clusterSettings, ThreadPool threadPool, Supplier<DiscoveryNode> localNodeSupplier) {
+    public ClusterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
-        this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool, localNodeSupplier);
-        this.discoveryService = new DiscoveryService(settings, clusterSettings, threadPool, localNodeSupplier);
+        this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool);
+        this.discoveryService = new DiscoveryService(settings, clusterSettings, threadPool);
         this.operationRouting = new OperationRouting(settings, clusterSettings);
         this.clusterSettings = clusterSettings;
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
@@ -85,33 +84,8 @@ public class ClusterService extends AbstractLifecycleComponent {
         clusterApplierService.setNodeConnectionsService(nodeConnectionsService);
     }
 
-    /**
-     * Adds an initial block to be set on the first cluster state created.
-     */
-    public synchronized void addInitialStateBlock(ClusterBlock block) throws IllegalStateException {
-        if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
-        }
-        discoveryService.addInitialStateBlock(block);
-        clusterApplierService.addInitialStateBlock(block);
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(ClusterBlock block) throws IllegalStateException {
-        removeInitialStateBlock(block.id());
-    }
-
-    /**
-     * Remove an initial block to be set on the first cluster state created.
-     */
-    public synchronized void removeInitialStateBlock(int blockId) throws IllegalStateException {
-        if (lifecycle.started()) {
-            throw new IllegalStateException("can't set initial block when started");
-        }
-        discoveryService.removeInitialStateBlock(blockId);
-        clusterApplierService.removeInitialStateBlock(blockId);
+    public void setInitialState(ClusterState initialState) {
+        clusterApplierService.setInitialState(initialState);
     }
 
     @Override

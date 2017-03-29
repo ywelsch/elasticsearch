@@ -399,7 +399,7 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
 
         public TimedClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
                                           Supplier<DiscoveryNode> localNodeSupplier) {
-            super(settings, clusterSettings, threadPool, localNodeSupplier);
+            super(settings, clusterSettings, threadPool);
         }
 
         @Override

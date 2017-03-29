@@ -80,7 +80,7 @@ public class DiscoveryModule {
         discoveryTypes.put("zen",
             () -> new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, discoveryService, clusterApplier,
                 hostsProvider));
-        discoveryTypes.put("none", () -> new NoneDiscovery(settings, discoveryService, discoveryService.getClusterSettings()));
+        discoveryTypes.put("none", () -> new NoneDiscovery(settings, transportService, discoveryService.getClusterSettings()));
         for (DiscoveryPlugin plugin : plugins) {
             plugin.getDiscoveryTypes(threadPool, transportService, namedWriteableRegistry,
                 discoveryService, clusterApplier, hostsProvider).entrySet().forEach(entry -> {

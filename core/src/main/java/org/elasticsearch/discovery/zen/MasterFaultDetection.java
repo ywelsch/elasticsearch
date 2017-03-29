@@ -79,7 +79,7 @@ public class MasterFaultDetection extends FaultDetection {
 
     public MasterFaultDetection(Settings settings, ThreadPool threadPool, TransportService transportService,
                                 DiscoveryService discoveryService) {
-        super(settings, threadPool, transportService, discoveryService.getClusterName());
+        super(settings, threadPool, transportService, discoveryService.state().getClusterName());
         this.discoveryService = discoveryService;
 
         logger.debug("[master] uses ping_interval [{}], ping_timeout [{}], ping_retries [{}]", pingInterval, pingRetryTimeout,
