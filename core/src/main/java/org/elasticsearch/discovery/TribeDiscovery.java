@@ -32,8 +32,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen.ElectMasterService;
 import org.elasticsearch.transport.TransportService;
 
-import java.util.Objects;
-
 import static org.elasticsearch.tribe.TribeService.BLOCKS_METADATA_SETTING;
 import static org.elasticsearch.tribe.TribeService.BLOCKS_WRITE_SETTING;
 import static org.elasticsearch.tribe.TribeService.TRIBE_METADATA_BLOCK;
@@ -44,8 +42,7 @@ import static org.elasticsearch.tribe.TribeService.TRIBE_WRITE_BLOCK;
  * doesn't support any clustering features. Most notably {@link #startInitialJoin()} does nothing and
  * {@link #publish(ClusterChangedEvent, AckListener)} is not supported.
  */
-// TODO: rename to TribeDiscovery (it's only used by tribe and has tribe-specific blocks
-public class NoneDiscovery extends AbstractLifecycleComponent implements Discovery {
+public class TribeDiscovery extends AbstractLifecycleComponent implements Discovery {
 
     private final TransportService transportService;
     private final DiscoverySettings discoverySettings;
@@ -54,7 +51,7 @@ public class NoneDiscovery extends AbstractLifecycleComponent implements Discove
     private volatile ClusterState initialState;
 
     @Inject
-    public NoneDiscovery(Settings settings, TransportService transportService, ClusterSettings clusterSettings) {
+    public TribeDiscovery(Settings settings, TransportService transportService, ClusterSettings clusterSettings) {
         super(settings);
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
         this.transportService = transportService;
@@ -84,7 +81,7 @@ public class NoneDiscovery extends AbstractLifecycleComponent implements Discove
     @Override
     public synchronized ClusterState getInitialState() {
         if (initialState == null) {
-            ClusterBlocks.Builder clusterBlocks = ClusterBlocks.builder().addGlobalBlock(discoverySettings.getNoMasterBlock());
+            ClusterBlocks.Builder clusterBlocks = ClusterBlocks.builder(); // don't add master / state recovery block
             if (BLOCKS_WRITE_SETTING.get(settings)) {
                 clusterBlocks.addGlobalBlock(TRIBE_WRITE_BLOCK);
             }
