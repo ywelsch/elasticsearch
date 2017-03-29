@@ -283,6 +283,7 @@ public class IndicesStore extends AbstractComponent implements ClusterStateListe
                 return;
             }
 
+            // TODO: this should be done on the applier
             clusterService.submitStateUpdateTask("indices_store ([" + shardId + "] active fully on other nodes)", new LocalClusterUpdateTask() {
                 @Override
                 public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {

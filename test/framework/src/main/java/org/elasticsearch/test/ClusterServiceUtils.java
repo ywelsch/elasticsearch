@@ -24,6 +24,7 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -105,11 +106,11 @@ public class ClusterServiceUtils {
 
     public static void setState(DiscoveryService executor, ClusterState clusterState) {
         CountDownLatch latch = new CountDownLatch(1);
-        executor.submitStateUpdateTask("test setting state", new LocalClusterUpdateTask() {
+        executor.submitStateUpdateTask("test setting state", new ClusterStateUpdateTask() {
             @Override
-            public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
+            public ClusterState execute(ClusterState currentState) throws Exception {
                 // make sure we increment versions as listener may depend on it for change
-                return newState(ClusterState.builder(clusterState).version(currentState.version() + 1).build());
+                return ClusterState.builder(clusterState).build();
             }
 
             @Override
@@ -155,7 +156,8 @@ public class ClusterServiceUtils {
         clusterService.start();
         final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(clusterService.state().nodes());
         nodes.masterNodeId(clusterService.localNode().getId());
-        setState(clusterService, ClusterState.builder(clusterService.state()).nodes(nodes));
+        ClusterState initialState = ClusterState.builder(clusterService.state()).nodes(nodes).build();
+        setState(clusterService, initialState);
         return clusterService;
     }
 

@@ -57,13 +57,6 @@ public abstract class LocalClusterUpdateTask implements ClusterStateTaskConfig, 
         return new ClusterTasksResult<>(null, null);
     }
 
-    /**
-     * locally apply cluster state received from a master
-     */
-    public static ClusterTasksResult<LocalClusterUpdateTask> newState(ClusterState clusterState) {
-        return new ClusterTasksResult<>(clusterState, null);
-    }
-
     @Override
     public String describeTasks(List<LocalClusterUpdateTask> tasks) {
         return ""; // one of task, source is enough

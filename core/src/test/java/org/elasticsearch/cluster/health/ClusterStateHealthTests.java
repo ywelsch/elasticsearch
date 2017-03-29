@@ -21,6 +21,7 @@ package org.elasticsearch.cluster.health;
 import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.elasticsearch.action.admin.cluster.health.TransportClusterHealthAction;
@@ -31,6 +32,7 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.LocalClusterUpdateTask;
+import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
@@ -131,18 +133,22 @@ public class ClusterStateHealthTests extends ESTestCase {
         });
 
         logger.info("--> submit task to restore master");
-        clusterService.submitStateUpdateTask("restore master", new LocalClusterUpdateTask() {
-            @Override
-            public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
-                return newState(ClusterState.builder(currentState).nodes(
-                    DiscoveryNodes.builder(currentState.nodes()).masterNodeId(currentState.nodes().getLocalNodeId())).build());
-            }
+        ClusterState currentState = clusterService.getClusterApplierService().state();
+        clusterService.getClusterApplierService().onNewClusterState("restore master",
+            ClusterState.builder(currentState)
+                .nodes(DiscoveryNodes.builder(currentState.nodes()).masterNodeId(currentState.nodes().getLocalNodeId())).build(),
+            new ActionListener<ClusterState>() {
+                @Override
+                public void onResponse(ClusterState clusterState) {
 
-            @Override
-            public void onFailure(String source, Exception e) {
-                logger.warn("unexpected failure", e);
-            }
-        });
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+
+                }
+            });
+        ;
 
         logger.info("--> waiting for listener to be called and cluster state being blocked");
         listenerCalled.await();
