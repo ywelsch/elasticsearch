@@ -412,7 +412,6 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         return new DiscoveryStats(queueStats);
     }
 
-    @Override
     public DiscoverySettings getDiscoverySettings() {
         return discoverySettings;
     }

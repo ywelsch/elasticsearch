@@ -27,7 +27,6 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen.ElectMasterService;
 import org.elasticsearch.transport.TransportService;
@@ -45,17 +44,15 @@ import static org.elasticsearch.tribe.TribeService.TRIBE_WRITE_BLOCK;
 public class TribeDiscovery extends AbstractLifecycleComponent implements Discovery {
 
     private final TransportService transportService;
-    private final DiscoverySettings discoverySettings;
     private final ClusterName clusterName;
 
     private volatile ClusterState initialState;
 
     @Inject
-    public TribeDiscovery(Settings settings, TransportService transportService, ClusterSettings clusterSettings) {
+    public TribeDiscovery(Settings settings, TransportService transportService) {
         super(settings);
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
         this.transportService = transportService;
-        this.discoverySettings = new DiscoverySettings(settings, clusterSettings);
     }
 
     @Override
@@ -103,11 +100,6 @@ public class TribeDiscovery extends AbstractLifecycleComponent implements Discov
     @Override
     public DiscoveryStats stats() {
         return null;
-    }
-
-    @Override
-    public DiscoverySettings getDiscoverySettings() {
-        return discoverySettings;
     }
 
     @Override

@@ -30,7 +30,6 @@ import org.elasticsearch.discovery.DiscoveryStats;
 
 public class NoopDiscovery implements Discovery {
 
-
     @Override
     public DiscoveryNode localNode() {
         return null;
@@ -63,11 +62,6 @@ public class NoopDiscovery implements Discovery {
 
     @Override
     public DiscoveryStats stats() {
-        return null;
-    }
-
-    @Override
-    public DiscoverySettings getDiscoverySettings() {
         return null;
     }
 
