@@ -302,7 +302,7 @@ public class BatchingClusterTaskExecutorTests extends ESTestCase {
 
     // test that for a single thread, tasks are executed in the order
     // that they are submitted
-    public void testClusterStateUpdateTasksAreExecutedInOrder() throws BrokenBarrierException, InterruptedException {
+    public void testTasksAreExecutedInOrder() throws BrokenBarrierException, InterruptedException {
 
 
         int numberOfThreads = randomIntBetween(2, 8);

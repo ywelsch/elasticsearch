@@ -18,29 +18,20 @@
  */
 package org.elasticsearch.cluster.service;
 
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.Logger;
 import org.elasticsearch.Version;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
-import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.DiscoverySettings;
-import org.elasticsearch.test.MockLogAppender;
-import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
@@ -59,7 +50,7 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
             emptySet(), Version.CURRENT);
         TimedClusterApplierService timedClusterApplierService = new TimedClusterApplierService(Settings.builder().put("cluster.name",
             "ClusterApplierServiceTests").build(), new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
-            threadPool, () -> localNode);
+            threadPool);
         timedClusterApplierService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
@@ -71,14 +62,13 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
                 // skip
             }
         });
+        timedClusterApplierService.setInitialState(ClusterState.builder(new ClusterName("ClusterApplierServiceTests"))
+            .nodes(DiscoveryNodes.builder()
+                .add(localNode)
+                .localNodeId(localNode.getId())
+                .masterNodeId(makeMaster ? localNode.getId() : null))
+            .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build());
         timedClusterApplierService.start();
-        ClusterState state = timedClusterApplierService.state();
-        final DiscoveryNodes nodes = state.nodes();
-        final DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(nodes)
-            .masterNodeId(makeMaster ? nodes.getLocalNodeId() : null);
-        state = ClusterState.builder(state).blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK)
-            .nodes(nodesBuilder).build();
-        setState(timedClusterApplierService, state);
         return timedClusterApplierService;
     }
 
@@ -397,8 +387,7 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                                          Supplier<DiscoveryNode> localNodeSupplier) {
+        public TimedClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
             super(settings, clusterSettings, threadPool);
         }
 

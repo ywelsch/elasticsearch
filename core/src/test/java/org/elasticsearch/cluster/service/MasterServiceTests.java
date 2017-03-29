@@ -23,6 +23,7 @@ import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterChangedEvent;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
@@ -84,7 +85,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             emptySet(), Version.CURRENT);
         TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
             MasterServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode);
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
         timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
@@ -96,15 +97,16 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
                 // skip
             }
         });
-        timedMasterService.setClusterStatePublisher((event, ackListener) -> {});
+        ClusterState initialClusterState = ClusterState.builder(new ClusterName(MasterServiceTests.class.getSimpleName()))
+            .nodes(DiscoveryNodes.builder()
+                .add(localNode)
+                .localNodeId(localNode.getId())
+                .masterNodeId(makeMaster ? localNode.getId() : null))
+            .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
+        AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
+        timedMasterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
+        timedMasterService.setClusterStateSupplier(clusterStateRef::get);
         timedMasterService.start();
-        ClusterState state = timedMasterService.state();
-        final DiscoveryNodes nodes = state.nodes();
-        final DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(nodes)
-            .masterNodeId(makeMaster ? nodes.getLocalNodeId() : null);
-        state = ClusterState.builder(state).blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK)
-            .nodes(nodesBuilder).build();
-        setState(timedMasterService, state);
         return timedMasterService;
     }
 
@@ -194,7 +196,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
         assertTrue(published.get());
     }
 
-    @TestLogging("org.elasticsearch.discovery:TRACE") // To ensure that we log cluster state events on TRACE level
+    @TestLogging("org.elasticsearch.cluster.service:TRACE") // To ensure that we log cluster state events on TRACE level
     public void testClusterStateUpdateLogging() throws Exception {
         MockLogAppender mockAppender = new MockLogAppender();
         mockAppender.start();
@@ -217,7 +219,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
                 Level.DEBUG,
                 "*processing [test3]: took [3s] done publishing updated cluster_state (version: *, uuid: *)"));
 
-        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.discovery");
+        Logger clusterLogger = Loggers.getLogger(clusterTaskExecutor.getClass().getPackage().getName());
         Loggers.addAppender(clusterLogger, mockAppender);
         try {
             final CountDownLatch latch = new CountDownLatch(4);
@@ -501,12 +503,9 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             "testBlockingCallInClusterStateTaskListenerFails",
             new Object(),
             ClusterStateTaskConfig.build(Priority.NORMAL),
-            new ClusterStateTaskExecutor<Object>() {
-                @Override
-                public ClusterTasksResult<Object> execute(ClusterState currentState, List<Object> tasks) throws Exception {
-                    ClusterState newClusterState = ClusterState.builder(currentState).build();
-                    return ClusterTasksResult.builder().successes(tasks).build(newClusterState);
-                }
+            (currentState, tasks) -> {
+                ClusterState newClusterState = ClusterState.builder(currentState).build();
+                return ClusterStateTaskExecutor.ClusterTasksResult.builder().successes(tasks).build(newClusterState);
             },
             new PublishingClusterStateTaskListener() {
                 @Override
@@ -538,7 +537,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             containsString("Reason: [Blocking operation]"));
     }
 
-    @TestLogging("org.elasticsearch.discovery:WARN") // To ensure that we log cluster state events on WARN level
+    @TestLogging("org.elasticsearch.cluster.service:WARN") // To ensure that we log cluster state events on WARN level
     public void testLongClusterStateUpdateLogging() throws Exception {
         MockLogAppender mockAppender = new MockLogAppender();
         mockAppender.start();
@@ -567,7 +566,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
                 Level.WARN,
                 "*cluster state update task [test4] took [34s] above the warn threshold of *"));
 
-        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.discovery");
+        Logger clusterLogger = Loggers.getLogger(clusterTaskExecutor.getClass().getPackage().getName());
         Loggers.addAppender(clusterLogger, mockAppender);
         try {
             final CountDownLatch latch = new CountDownLatch(5);
@@ -675,7 +674,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             emptySet(), Version.CURRENT);
         TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
             MasterServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode);
+            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
         Set<DiscoveryNode> currentNodes = new HashSet<>();
         timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
@@ -691,20 +690,23 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             }
         });
         AtomicBoolean failToCommit = new AtomicBoolean();
+        ClusterState initialClusterState = ClusterState.builder(new ClusterName(MasterServiceTests.class.getSimpleName()))
+            .nodes(DiscoveryNodes.builder()
+                .add(localNode)
+                .localNodeId(localNode.getId())
+                .masterNodeId(localNode.getId()))
+            .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
+        AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
+        timedMasterService.setClusterStateSupplier(clusterStateRef::get);
         timedMasterService.setClusterStatePublisher((event, ackListener) -> {
             if (failToCommit.get()) {
                 throw new Discovery.FailedToCommitClusterStateException("just to test this");
+            } else {
+                clusterStateRef.set(event.state());
             }
         });
+        currentNodes.add(localNode);
         timedMasterService.start();
-        ClusterState state = timedMasterService.state();
-        final DiscoveryNodes nodes = state.nodes();
-        final DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(nodes)
-            .masterNodeId(nodes.getLocalNodeId());
-        state = ClusterState.builder(state).blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK)
-            .nodes(nodesBuilder).build();
-        setState(timedMasterService, state);
-
         assertThat(currentNodes, equalTo(Sets.newHashSet(timedMasterService.state().getNodes())));
 
         final CountDownLatch latch = new CountDownLatch(1);
@@ -739,8 +741,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedMasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool,
-                                  Supplier<DiscoveryNode> localNodeSupplier) {
+        public TimedMasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
             super(settings, clusterSettings, threadPool);
         }
 
