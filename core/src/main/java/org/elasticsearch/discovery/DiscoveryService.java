@@ -624,7 +624,8 @@ public class DiscoveryService extends AbstractLifecycleComponent {
         try {
             List<T> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);
-            if (clusterTasksResult.resultingState.nodes().isLocalNodeElectedMaster()) {
+            if (previousClusterState.nodes().isLocalNodeElectedMaster() &&
+                (clusterTasksResult.resultingState.nodes().isLocalNodeElectedMaster() == false)) {
                 throw new IllegalArgumentException("cluster state update cannot remove master");
             }
         } catch (Exception e) {

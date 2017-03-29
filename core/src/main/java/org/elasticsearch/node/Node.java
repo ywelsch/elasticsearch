@@ -588,7 +588,6 @@ public class Node implements Closeable {
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
         clusterService.getDiscoveryService().setClusterStatePublisher(discovery::publish);
-        clusterService.setInitialState(discovery.getInitialState());
 
         // start before the cluster service since it adds/removes initial Cluster state blocks
         final TribeService tribeService = injector.getInstance(TribeService.class);
@@ -603,14 +602,15 @@ public class Node implements Closeable {
 
         clusterService.addStateApplier(transportService.getTaskManager());
         clusterService.getDiscoveryService().setClusterStateSupplier(discovery::state);
+        clusterService.setInitialState(discovery.getInitialState());
         clusterService.start();
+        // start after cluster service so the local disco is known
+        discovery.start();
         assert localNodeFactory.getNode() != null;
         assert transportService.getLocalNode().equals(localNodeFactory.getNode())
             : "transportService has a different local node than the factory provided";
         assert clusterService.localNode().equals(localNodeFactory.getNode())
             : "clusterService has a different local node than the factory provided";
-        // start after cluster service so the local disco is known
-        discovery.start();
         transportService.acceptIncomingRequests();
         discovery.startInitialJoin();
         // tribe nodes don't have a master so we shouldn't register an observer         s

@@ -292,7 +292,6 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     @Override
     public void onNewClusterState(final String source, final ClusterState clusterState,
                                   final ActionListener<ClusterState> listener) {
-        assert DiscoveryService.assertDiscoveryUpdateThread();
         clusterStateToApply.set(clusterState);
         submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.HIGH), clusterStateTaskExecutor,
             new ClusterStateTaskListener() {

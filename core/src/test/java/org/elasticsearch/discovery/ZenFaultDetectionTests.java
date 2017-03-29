@@ -39,6 +39,7 @@ import org.elasticsearch.discovery.zen.NodesFaultDetection;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.indices.breaker.HierarchyCircuitBreakerService;
 import org.elasticsearch.node.Node;
+import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.threadpool.TestThreadPool;
@@ -96,8 +97,8 @@ public class ZenFaultDetectionTests extends ESTestCase {
         settingsB = Settings.builder().put("node.name", "TS_B").put(settings).build();
         serviceB = build(settingsB, version1);
         nodeB = serviceB.getLocalDiscoNode();
-        clusterServiceA = createClusterService(settingsA, threadPool, nodeA);
-        clusterServiceB = createClusterService(settingsB, threadPool, nodeB);
+        clusterServiceA = ClusterServiceUtils.createDiscoveryService(threadPool, nodeA);
+        clusterServiceB = ClusterServiceUtils.createDiscoveryService(threadPool, nodeB);
 
         // wait till all nodes are properly connected and the event has been sent, so tests in this class
         // will not get this callback called on the connections done in this setup
@@ -242,7 +243,7 @@ public class ZenFaultDetectionTests extends ESTestCase {
         final ClusterState state = ClusterState.builder(clusterName).nodes(buildNodesForA(false)).build();
         setState(clusterServiceA, state);
         MasterFaultDetection masterFD = new MasterFaultDetection(settings.build(), threadPool, serviceA,
-            clusterServiceA);
+            clusterServiceA, clusterName);
         masterFD.restart(nodeB, "test");
 
         final String[] failureReason = new String[1];
@@ -288,14 +289,14 @@ public class ZenFaultDetectionTests extends ESTestCase {
         serviceB.addTracer(pingProbeB);
 
         MasterFaultDetection masterFDNodeA = new MasterFaultDetection(Settings.builder().put(settingsA).put(settings).build(),
-            threadPool, serviceA, clusterServiceA);
+            threadPool, serviceA, clusterServiceA, clusterName);
         masterFDNodeA.restart(nodeB, "test");
 
         final ClusterState stateNodeB = ClusterState.builder(clusterName).nodes(buildNodesForB(true)).build();
         setState(clusterServiceB, stateNodeB);
 
         MasterFaultDetection masterFDNodeB = new MasterFaultDetection(Settings.builder().put(settingsB).put(settings).build(),
-            threadPool, serviceB, clusterServiceB);
+            threadPool, serviceB, clusterServiceB, clusterName);
         masterFDNodeB.restart(nodeB, "test");
 
         // let's do a few pings

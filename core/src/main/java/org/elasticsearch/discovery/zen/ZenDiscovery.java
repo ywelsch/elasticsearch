@@ -33,11 +33,8 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
-import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
-import org.elasticsearch.cluster.LocalClusterUpdateTask;
 import org.elasticsearch.cluster.NotMasterException;
-import org.elasticsearch.cluster.block.ClusterBlock;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
@@ -45,11 +42,9 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterApplier;
-import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.component.Lifecycle;
-import org.elasticsearch.common.inject.internal.Nullable;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -58,8 +53,8 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.discovery.Discovery;
+import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.DiscoveryStats;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -74,7 +69,6 @@ import org.elasticsearch.transport.TransportService;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -194,7 +188,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 }
         });
 
-        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, discoveryService);
+        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, discoveryService, clusterName);
         this.masterFD.addListener(new MasterNodeFailureListener());
         this.nodesFD = new NodesFaultDetection(settings, threadPool, transportService, clusterName);
         this.nodesFD.addListener(new NodeFaultDetectionListener());
@@ -208,8 +202,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         new NewPendingClusterStateListener(),
                         discoverySettings,
                         clusterName);
-        this.membership = new MembershipAction(settings, transportService, this::localNode, new MembershipListener());
-        this.joinThreadControl = new JoinThreadControl(threadPool);
+        this.membership = new MembershipAction(settings, transportService, new MembershipListener());
+        this.joinThreadControl = new JoinThreadControl();
 
         initialBlocks = ClusterBlocks.builder();
         initialBlocks.addGlobalBlock(STATE_NOT_RECOVERED_BLOCK);
@@ -347,7 +341,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         final long timeLeftInNanos = Math.max(0, publishTimeout.nanos() - (System.nanoTime() - publishingStartInNanos));
 
         // apply to itself
-        PlainListenableActionFuture<ClusterState> future = new PlainListenableActionFuture<>(joinThreadControl.threadPool);
+        PlainListenableActionFuture<ClusterState> future = new PlainListenableActionFuture<>(threadPool);
         future.addListener(new ActionListener<ClusterState>() {
             @Override
             public void onResponse(ClusterState clusterState) {
@@ -469,13 +463,17 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     new NodeJoinController.ElectionCallback() {
                         @Override
                         public void onElectedAsMaster(ClusterState state) {
-                            joinThreadControl.markThreadAsDone(currentThread);
+                            synchronized (stateMutex) {
+                                joinThreadControl.markThreadAsDone(currentThread);
+                            }
                         }
 
                         @Override
                         public void onFailure(Throwable t) {
                             logger.trace("failed while waiting for nodes to join, rejoining", t);
-                            joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
+                            synchronized (stateMutex) {
+                                joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
+                            }
                         }
                     }
 
@@ -488,11 +486,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             final boolean success = joinElectedMaster(masterNode);
 
             synchronized (stateMutex) {
-                if (success == false) {
-                    // failed to join. Try again...
-                    joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
-                } else {
-                    DiscoveryNode currentMasterNode = state.get().getNodes().getMasterNode();
+                if (success ) {
+                    DiscoveryNode currentMasterNode = state().getNodes().getMasterNode();
                     if (currentMasterNode == null) {
                         // Post 1.3.0, the master should publish a new cluster state before acking our join request. we now should have
                         // a valid master.
@@ -500,12 +495,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
                     } else if (currentMasterNode.equals(masterNode) == false) {
                         // update cluster state
-                        joinThreadControl.stopRunningThreadAndRejoin(state.get(), "master_switched_while_finalizing_join");
+                        joinThreadControl.stopRunningThreadAndRejoin(state(), "master_switched_while_finalizing_join");
                     }
 
-                    // Note: we do not have to start master fault detection here because it's set at {@link #processNextPendingClusterState }
-                    // when the first cluster state arrives.
                     joinThreadControl.markThreadAsDone(currentThread);
+                } else {
+                    // failed to join. Try again...
+                    joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
                 }
             }
         }
@@ -803,6 +799,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
                 adaptedNewClusterState = builder.build();
             }
+
+            state.set(adaptedNewClusterState);
         }
 
         if (currentState == adaptedNewClusterState) {
@@ -845,18 +843,6 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         } catch (InterruptedException e) {
             logger.warn((Supplier<?>) () -> new ParameterizedMessage("interrupted while applying cluster state locally [{}]", reason), e);
         }
-
-//        PlainActionFuture<ClusterState> future = new PlainActionFuture<>();
-//        clusterApplier.onNewClusterState(reason, adaptedNewClusterState, future);
-//        try {
-//            future.get();
-//        } catch (ExecutionException | InterruptedException e) {
-//            logger.warn(
-//                (Supplier<?>) () -> new ParameterizedMessage(
-//                    "failed to apply cluster state while {} [{}]",
-//                    reason, adaptedNewClusterState.version()),
-//                e);
-//        }
     }
 
     /**

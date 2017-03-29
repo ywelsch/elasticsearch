@@ -87,12 +87,12 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool, () -> localNode);
         timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
-            public void connectToNodes(Iterable<DiscoveryNode> discoveryNodes) {
+            public void connectToNodes(DiscoveryNodes discoveryNodes) {
                 // skip
             }
 
             @Override
-            public void disconnectFromNodesExcept(Iterable<DiscoveryNode> nodesToKeep) {
+            public void disconnectFromNodesExcept(DiscoveryNodes nodesToKeep) {
                 // skip
             }
         });
@@ -679,12 +679,12 @@ public class DiscoveryServiceTests extends AbstractClusterTaskExecutorTestCase<D
         Set<DiscoveryNode> currentNodes = new HashSet<>();
         timedDiscoveryService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
-            public void connectToNodes(Iterable<DiscoveryNode> discoveryNodes) {
+            public void connectToNodes(DiscoveryNodes discoveryNodes) {
                 discoveryNodes.forEach(currentNodes::add);
             }
 
             @Override
-            public void disconnectFromNodesExcept(Iterable<DiscoveryNode> nodesToKeep) {
+            public void disconnectFromNodesExcept(DiscoveryNodes nodesToKeep) {
                 Set<DiscoveryNode> nodeSet = new HashSet<>();
                 nodesToKeep.iterator().forEachRemaining(nodeSet::add);
                 currentNodes.removeIf(node -> nodeSet.contains(node) == false);
