@@ -291,8 +291,8 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
     public void runOnApplierThread(final String source, Consumer<ClusterState> clusterStateConsumer,
                                    final ActionListener<ClusterState> listener) {
-        submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.NORMAL),
-            (currentState, tasks) -> {
+        submitStateUpdateTask(source, new String(""), ClusterStateTaskConfig.build(Priority.NORMAL),
+            (ClusterStateTaskExecutor<Object>) (currentState, tasks) -> {
                 clusterStateConsumer.accept(currentState);
                 return ClusterTasksResult.builder().successes(tasks).build(currentState);
             },
@@ -313,7 +313,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     public void onNewClusterState(final String source, final ClusterState clusterState,
                                   final ActionListener<ClusterState> listener) {
         clusterStateToApply.set(clusterState);
-        submitStateUpdateTask(source, new Object(), ClusterStateTaskConfig.build(Priority.HIGH), clusterStateTaskExecutor,
+        submitStateUpdateTask(source, new String(""), ClusterStateTaskConfig.build(Priority.HIGH), clusterStateTaskExecutor,
             new ClusterStateTaskListener() {
                 @Override
                 public void onFailure(String source, Exception e) {

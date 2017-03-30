@@ -29,6 +29,7 @@ import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.MasterService;
+import org.elasticsearch.cluster.service.RunOnMaster;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -64,7 +65,8 @@ public class MasterFaultDetection extends FaultDetection {
 
     }
 
-    private final MasterService masterService;
+    private final RunOnMaster masterService;
+    private final java.util.function.Supplier<ClusterState> clusterStateSupplier;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 
     private volatile MasterPinger masterPinger;
@@ -78,8 +80,10 @@ public class MasterFaultDetection extends FaultDetection {
     private final AtomicBoolean notifiedMasterFailure = new AtomicBoolean();
 
     public MasterFaultDetection(Settings settings, ThreadPool threadPool, TransportService transportService,
-                                MasterService masterService, ClusterName clusterName) {
+                                java.util.function.Supplier<ClusterState> clusterStateSupplier, RunOnMaster masterService,
+                                ClusterName clusterName) {
         super(settings, threadPool, transportService, clusterName);
+        this.clusterStateSupplier = clusterStateSupplier;
         this.masterService = masterService;
 
         logger.debug("[master] uses ping_interval [{}], ping_timeout [{}], ping_retries [{}]", pingInterval, pingRetryTimeout,
@@ -215,7 +219,8 @@ public class MasterFaultDetection extends FaultDetection {
                 return;
             }
 
-            final MasterPingRequest request = new MasterPingRequest(masterService.localNode(), masterToPing, clusterName);
+            final MasterPingRequest request = new MasterPingRequest(
+                clusterStateSupplier.get().nodes().getLocalNode(), masterToPing, clusterName);
             final TransportRequestOptions options = TransportRequestOptions.builder().withType(TransportRequestOptions.Type.PING)
                 .withTimeout(pingRetryTimeout).build();
             transportService.sendRequest(masterToPing, MASTER_PING_ACTION_NAME, request, options,
@@ -323,7 +328,7 @@ public class MasterFaultDetection extends FaultDetection {
 
         @Override
         public void messageReceived(final MasterPingRequest request, final TransportChannel channel) throws Exception {
-            final DiscoveryNodes nodes = masterService.state().nodes();
+            final DiscoveryNodes nodes = clusterStateSupplier.get().nodes();
             // check if we are really the same master as the one we seemed to be think we are
             // this can happen if the master got "kill -9" and then another node started using the same port
             if (!request.masterNode.equals(nodes.getLocalNode())) {

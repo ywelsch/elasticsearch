@@ -188,7 +188,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 }
         });
 
-        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, masterService, clusterName);
+        this.masterFD = new MasterFaultDetection(settings, threadPool, transportService, this::state, masterService, clusterName);
         this.masterFD.addListener(new MasterNodeFailureListener());
         this.nodesFD = new NodesFaultDetection(settings, threadPool, transportService, clusterName);
         this.nodesFD.addListener(new NodeFaultDetectionListener());
@@ -287,6 +287,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     @Override
+    public ClusterState state() {
+        return state.get();
+    }
+
+    @Override
     public DiscoveryNode localNode() {
         return masterService.localNode();
     }
@@ -303,17 +308,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     @Override
-    public ClusterState state() {
-        return state.get();
-    }
-
-    @Override
     public ClusterState clusterState() {
         return state.get();
     }
 
     /** end of {@link PingContextProvider } implementation */
-
 
     @Override
     public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {

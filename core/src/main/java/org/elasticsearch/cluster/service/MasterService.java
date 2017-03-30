@@ -70,7 +70,7 @@ import java.util.stream.Collectors;
 import static org.elasticsearch.cluster.service.ClusterService.CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING;
 import static org.elasticsearch.common.util.concurrent.EsExecutors.daemonThreadFactory;
 
-public class MasterService extends AbstractLifecycleComponent {
+public class MasterService extends AbstractLifecycleComponent implements RunOnMaster {
 
     public static final String MASTER_UPDATE_THREAD_NAME = "masterService#updateTask";
 
@@ -701,59 +701,6 @@ public class MasterService extends AbstractLifecycleComponent {
         return (executor, toExecute, tasksSummary) -> runTasks(new TaskInputs<>(executor, toExecute, tasksSummary));
     }
 
-    /**
-     * Submits a cluster state update task; unlike {@link #submitStateUpdateTask(String, Object, ClusterStateTaskConfig,
-     * ClusterStateTaskExecutor, PublishingClusterStateTaskListener)}, submitted updates will not be batched.
-     *
-     * @param source     the source of the cluster state update task
-     * @param updateTask the full context for the cluster state update
-     *                   task
-     *
-     */
-    public <T extends ClusterStateTaskConfig & ClusterStateTaskExecutor<T> & PublishingClusterStateTaskListener> void submitStateUpdateTask(
-        final String source, final T updateTask) {
-        submitStateUpdateTask(source, updateTask, updateTask, updateTask, updateTask);
-    }
-
-    /**
-     * Submits a cluster state update task; submitted updates will be
-     * batched across the same instance of executor. The exact batching
-     * semantics depend on the underlying implementation but a rough
-     * guideline is that if the update task is submitted while there
-     * are pending update tasks for the same executor, these update
-     * tasks will all be executed on the executor in a single batch
-     *
-     * @param source   the source of the cluster state update task
-     * @param task     the state needed for the cluster state update task
-     * @param config   the cluster state update task configuration
-     * @param executor the cluster state update task executor; tasks
-     *                 that share the same executor will be executed
-     *                 batches on this executor
-     * @param listener callback after the cluster state update task
-     *                 completes
-     * @param <T>      the type of the cluster state update task state
-     *
-     */
-    public <T> void submitStateUpdateTask(final String source, final T task,
-                                          final ClusterStateTaskConfig config,
-                                          final ClusterStateTaskExecutor<T> executor,
-                                          final PublishingClusterStateTaskListener listener) {
-        submitStateUpdateTasks(source, Collections.singletonMap(task, listener), config, executor);
-    }
-
-    /**
-     * Submits a batch of cluster state update tasks; submitted updates are guaranteed to be processed together,
-     * potentially with more tasks of the same executor.
-     *
-     * @param source   the source of the cluster state update task
-     * @param tasks    a map of update tasks and their corresponding listeners
-     * @param config   the cluster state update task configuration
-     * @param executor the cluster state update task executor; tasks
-     *                 that share the same executor will be executed
-     *                 batches on this executor
-     * @param <T>      the type of the cluster state update task state
-     *
-     */
     public <T> void submitStateUpdateTasks(final String source,
                                            final Map<T, PublishingClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
                                            final ClusterStateTaskExecutor<T> executor) {

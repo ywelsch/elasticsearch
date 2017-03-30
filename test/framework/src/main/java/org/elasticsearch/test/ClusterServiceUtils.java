@@ -23,9 +23,11 @@ import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.cluster.ClusterChangedEvent;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.NodeConnectionsService;
+import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterApplier;
@@ -42,6 +44,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
 import static junit.framework.TestCase.fail;
@@ -55,7 +58,7 @@ public class ClusterServiceUtils {
     }
 
     public static MasterService createMasterService(ThreadPool threadPool, DiscoveryNode localNode) {
-        MasterService masterService = new MasterService(Settings.builder().put("cluster.name", "ClusterServiceTests").build(),
+        MasterService masterService = new MasterService(Settings.EMPTY,
             new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
         masterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
@@ -68,11 +71,16 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
-        masterService.setClusterStatePublisher((event, ackListener) -> {});
+        ClusterState initialClusterState = ClusterState.builder(new ClusterName(ClusterServiceUtils.class.getSimpleName()))
+            .nodes(DiscoveryNodes.builder()
+                .add(localNode)
+                .localNodeId(localNode.getId())
+                .masterNodeId(localNode.getId()))
+            .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
+        AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
+        masterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
+        masterService.setClusterStateSupplier(clusterStateRef::get);
         masterService.start();
-        final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(masterService.state().nodes());
-        nodes.masterNodeId(masterService.localNode().getId());
-        setState(masterService, ClusterState.builder(masterService.state()).nodes(nodes).build());
         return masterService;
     }
 

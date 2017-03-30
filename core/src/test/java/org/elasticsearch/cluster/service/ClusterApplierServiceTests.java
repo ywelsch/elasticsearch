@@ -18,7 +18,10 @@
  */
 package org.elasticsearch.cluster.service;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.Logger;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
@@ -26,12 +29,18 @@ import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.test.MockLogAppender;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.emptySet;
@@ -72,236 +81,175 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
         return timedClusterApplierService;
     }
 
-//    @TestLogging("org.elasticsearch.cluster.service:TRACE") // To ensure that we log cluster state events on TRACE level
-//    public void testClusterStateUpdateLogging() throws Exception {
-//        MockLogAppender mockAppender = new MockLogAppender();
-//        mockAppender.start();
-//        mockAppender.addExpectation(
-//                new MockLogAppender.SeenEventExpectation(
-//                        "test1",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.DEBUG,
-//                        "*processing [test1]: took [1s] no change in cluster_state"));
-//        mockAppender.addExpectation(
-//                new MockLogAppender.SeenEventExpectation(
-//                        "test2",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.TRACE,
-//                        "*failed to execute cluster state update in [2s]*"));
-//
-//        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.cluster.service");
-//        Loggers.addAppender(clusterLogger, mockAppender);
-//        try {
-//            final CountDownLatch latch = new CountDownLatch(4);
-//            clusterTaskExecutor.currentTimeOverride = System.nanoTime();
-//            clusterTaskExecutor.submitStateUpdateTask("test1", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) throws Exception {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(1).nanos();
-//                    return currentState;
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            clusterTaskExecutor.submitStateUpdateTask("test2", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(2).nanos();
-//                    throw new IllegalArgumentException("Testing handling of exceptions in the cluster state task");
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    fail();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    latch.countDown();
-//                }
-//            });
-//            clusterTaskExecutor.submitStateUpdateTask("test3", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(3).nanos();
-//                    return ClusterState.builder(currentState).incrementVersion().build();
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            // Additional update task to make sure all previous logging made it to the loggerName
-//            // We don't check logging for this on since there is no guarantee that it will occur before our check
-//            clusterTaskExecutor.submitStateUpdateTask("test4", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) {
-//                    return currentState;
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            latch.await();
-//        } finally {
-//            Loggers.removeAppender(clusterLogger, mockAppender);
-//            mockAppender.stop();
-//        }
-//        mockAppender.assertAllExpectationsMatched();
-//    }
-//
-//    @TestLogging("org.elasticsearch.cluster.service:WARN") // To ensure that we log cluster state events on WARN level
-//    public void testLongClusterStateUpdateLogging() throws Exception {
-//        MockLogAppender mockAppender = new MockLogAppender();
-//        mockAppender.start();
-//        mockAppender.addExpectation(
-//                new MockLogAppender.UnseenEventExpectation(
-//                        "test1 shouldn't see because setting is too low",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.WARN,
-//                        "*cluster state update task [test1] took [*] above the warn threshold of *"));
-//        mockAppender.addExpectation(
-//                new MockLogAppender.SeenEventExpectation(
-//                        "test2",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.WARN,
-//                        "*cluster state update task [test2] took [32s] above the warn threshold of *"));
-//        mockAppender.addExpectation(
-//                new MockLogAppender.SeenEventExpectation(
-//                        "test3",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.WARN,
-//                        "*cluster state update task [test3] took [33s] above the warn threshold of *"));
-//        mockAppender.addExpectation(
-//                new MockLogAppender.SeenEventExpectation(
-//                        "test4",
-//                        clusterTaskExecutor.getClass().getName(),
-//                        Level.WARN,
-//                        "*cluster state update task [test4] took [34s] above the warn threshold of *"));
-//
-//        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.cluster.service");
-//        Loggers.addAppender(clusterLogger, mockAppender);
-//        try {
-//            final CountDownLatch latch = new CountDownLatch(5);
-//            final CountDownLatch processedFirstTask = new CountDownLatch(1);
-//            clusterTaskExecutor.currentTimeOverride = System.nanoTime();
-//            clusterTaskExecutor.submitStateUpdateTask("test1", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) throws Exception {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(1).nanos();
-//                    return currentState;
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                    processedFirstTask.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//
-//            processedFirstTask.await();
-//            clusterTaskExecutor.submitStateUpdateTask("test2", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) throws Exception {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(32).nanos();
-//                    throw new IllegalArgumentException("Testing handling of exceptions in the cluster state task");
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    fail();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    latch.countDown();
-//                }
-//            });
-//            clusterTaskExecutor.submitStateUpdateTask("test3", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) throws Exception {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(33).nanos();
-//                    return ClusterState.builder(currentState).incrementVersion().build();
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            clusterTaskExecutor.submitStateUpdateTask("test4", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) throws Exception {
-//                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(34).nanos();
-//                    return currentState;
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            // Additional update task to make sure all previous logging made it to the loggerName
-//            // We don't check logging for this on since there is no guarantee that it will occur before our check
-//            clusterTaskExecutor.submitStateUpdateTask("test5", new ClusterStateUpdateTask() {
-//                @Override
-//                public ClusterState execute(ClusterState currentState) {
-//                    return currentState;
-//                }
-//
-//                @Override
-//                public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                    latch.countDown();
-//                }
-//
-//                @Override
-//                public void onFailure(String source, Exception e) {
-//                    fail();
-//                }
-//            });
-//            latch.await();
-//        } finally {
-//            Loggers.removeAppender(clusterLogger, mockAppender);
-//            mockAppender.stop();
-//        }
-//        mockAppender.assertAllExpectationsMatched();
-//    }
+    @TestLogging("org.elasticsearch.cluster.service:TRACE") // To ensure that we log cluster state events on TRACE level
+    public void testClusterStateUpdateLogging() throws Exception {
+        MockLogAppender mockAppender = new MockLogAppender();
+        mockAppender.start();
+        mockAppender.addExpectation(
+                new MockLogAppender.SeenEventExpectation(
+                        "test1",
+                        clusterTaskExecutor.getClass().getName(),
+                        Level.DEBUG,
+                        "*processing [test1]: took [1s] no change in cluster_state"));
+        mockAppender.addExpectation(
+                new MockLogAppender.SeenEventExpectation(
+                        "test2",
+                        clusterTaskExecutor.getClass().getName(),
+                        Level.TRACE,
+                        "*failed to execute cluster state applier in [2s]*"));
+
+        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.cluster.service");
+        Loggers.addAppender(clusterLogger, mockAppender);
+        try {
+            final CountDownLatch latch = new CountDownLatch(3);
+            clusterTaskExecutor.currentTimeOverride = System.nanoTime();
+            clusterTaskExecutor.runOnApplierThread("test1",
+                currentState -> clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(1).nanos(),
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        fail();
+                    }
+            });
+            clusterTaskExecutor.runOnApplierThread("test2",
+                currentState -> {
+                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(2).nanos();
+                    throw new IllegalArgumentException("Testing handling of exceptions in the cluster state task");
+                },
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        fail();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        latch.countDown();
+                    }
+                });
+            // Additional update task to make sure all previous logging made it to the loggerName
+            // We don't check logging for this on since there is no guarantee that it will occur before our check
+            clusterTaskExecutor.runOnApplierThread("test3",
+                currentState -> {},
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        fail();
+                    }
+                });
+            latch.await();
+        } finally {
+            Loggers.removeAppender(clusterLogger, mockAppender);
+            mockAppender.stop();
+        }
+        mockAppender.assertAllExpectationsMatched();
+    }
+
+    @TestLogging("org.elasticsearch.cluster.service:WARN") // To ensure that we log cluster state events on WARN level
+    public void testLongClusterStateUpdateLogging() throws Exception {
+        MockLogAppender mockAppender = new MockLogAppender();
+        mockAppender.start();
+        mockAppender.addExpectation(
+                new MockLogAppender.UnseenEventExpectation(
+                        "test1 shouldn't see because setting is too low",
+                        clusterTaskExecutor.getClass().getName(),
+                        Level.WARN,
+                        "*cluster state applier task [test1] took [*] above the warn threshold of *"));
+        mockAppender.addExpectation(
+                new MockLogAppender.SeenEventExpectation(
+                        "test2",
+                        clusterTaskExecutor.getClass().getName(),
+                        Level.WARN,
+                        "*cluster state applier task [test2] took [32s] above the warn threshold of *"));
+        mockAppender.addExpectation(
+                new MockLogAppender.SeenEventExpectation(
+                        "test4",
+                        clusterTaskExecutor.getClass().getName(),
+                        Level.WARN,
+                        "*cluster state applier task [test3] took [34s] above the warn threshold of *"));
+
+        Logger clusterLogger = Loggers.getLogger("org.elasticsearch.cluster.service");
+        Loggers.addAppender(clusterLogger, mockAppender);
+        try {
+            final CountDownLatch latch = new CountDownLatch(4);
+            final CountDownLatch processedFirstTask = new CountDownLatch(1);
+            clusterTaskExecutor.currentTimeOverride = System.nanoTime();
+            clusterTaskExecutor.runOnApplierThread("test1",
+                currentState -> clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(1).nanos(),
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                        processedFirstTask.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        fail();
+                    }
+                });
+            processedFirstTask.await();
+            clusterTaskExecutor.runOnApplierThread("test2",
+                currentState -> {
+                    clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(32).nanos();
+                    throw new IllegalArgumentException("Testing handling of exceptions in the cluster state task");
+                },
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        fail();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        latch.countDown();
+                    }
+                });
+            clusterTaskExecutor.runOnApplierThread("test3",
+                currentState -> clusterTaskExecutor.currentTimeOverride += TimeValue.timeValueSeconds(34).nanos(),
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        fail();
+                    }
+                });
+            // Additional update task to make sure all previous logging made it to the loggerName
+            // We don't check logging for this on since there is no guarantee that it will occur before our check
+            clusterTaskExecutor.runOnApplierThread("test4",
+                currentState -> {},
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        fail();
+                    }
+                });
+            latch.await();
+        } finally {
+            Loggers.removeAppender(clusterLogger, mockAppender);
+            mockAppender.stop();
+        }
+        mockAppender.assertAllExpectationsMatched();
+    }
 
     public void testLocalNodeMasterListenerCallbacks() throws Exception {
         TimedClusterApplierService timedClusterApplierService = createTimedClusterService(false);
@@ -345,43 +293,41 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
         timedClusterApplierService.close();
     }
 
-//    public void testClusterStateApplierCantSampleClusterState() throws InterruptedException {
-//        AtomicReference<Throwable> error = new AtomicReference<>();
-//        AtomicBoolean applierCalled = new AtomicBoolean();
-//        clusterTaskExecutor.addStateApplier(event -> {
-//            try {
-//                applierCalled.set(true);
-//                clusterTaskExecutor.state();
-//                error.set(new AssertionError("successfully sampled state"));
-//            } catch (AssertionError e) {
-//                if (e.getMessage().contains("should not be called by a cluster state applier") == false) {
-//                    error.set(e);
-//                }
-//            }
-//        });
-//
-//        CountDownLatch latch = new CountDownLatch(1);
-//        clusterTaskExecutor.submitStateUpdateTask("test", new ClusterStateUpdateTask() {
-//            @Override
-//            public ClusterState execute(ClusterState currentState) throws Exception {
-//                return ClusterState.builder(currentState).build();
-//            }
-//
-//            @Override
-//            public void onFailure(String source, Exception e) {
-//                error.compareAndSet(null, e);
-//            }
-//
-//            @Override
-//            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                latch.countDown();
-//            }
-//        });
-//
-//        latch.await();
-//        assertNull(error.get());
-//        assertTrue(applierCalled.get());
-//    }
+    public void testClusterStateApplierCantSampleClusterState() throws InterruptedException {
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        AtomicBoolean applierCalled = new AtomicBoolean();
+        clusterTaskExecutor.addStateApplier(event -> {
+            try {
+                applierCalled.set(true);
+                clusterTaskExecutor.state();
+                error.set(new AssertionError("successfully sampled state"));
+            } catch (AssertionError e) {
+                if (e.getMessage().contains("should not be called by a cluster state applier") == false) {
+                    error.set(e);
+                }
+            }
+        });
+
+        CountDownLatch latch = new CountDownLatch(1);
+        clusterTaskExecutor.onNewClusterState("test", ClusterState.builder(clusterTaskExecutor.state()).build(),
+            new ActionListener<ClusterState>() {
+
+                @Override
+                public void onResponse(ClusterState clusterState) {
+                    latch.countDown();
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    error.compareAndSet(null, e);
+                }
+            }
+        );
+
+        latch.await();
+        assertNull(error.get());
+        assertTrue(applierCalled.get());
+    }
 
     static class TimedClusterApplierService extends ClusterApplierService {
 
