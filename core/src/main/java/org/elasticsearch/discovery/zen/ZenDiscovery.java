@@ -341,24 +341,31 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         final long timeLeftInNanos = Math.max(0, publishTimeout.nanos() - (System.nanoTime() - publishingStartInNanos));
 
         // apply to itself
-        PlainListenableActionFuture<ClusterState> future = new PlainListenableActionFuture<>(threadPool);
-        future.addListener(new ActionListener<ClusterState>() {
+        CountDownLatch latch = new CountDownLatch(1);
+        ActionListener<ClusterState> listener = new ActionListener<ClusterState>() {
             @Override
             public void onResponse(ClusterState clusterState) {
+                latch.countDown();
                 sendingController.getPublishResponseHandler().onResponse(localNode);
             }
 
             @Override
             public void onFailure(Exception e) {
+                latch.countDown();
+                logger.warn(
+                    (org.apache.logging.log4j.util.Supplier<?>) () -> new ParameterizedMessage(
+                        "failed while applying cluster state locally [{}]",
+                        clusterChangedEvent.source()),
+                    e);
                 sendingController.getPublishResponseHandler().onFailure(localNode, e);
             }
-        });
+        };
 
 
         // set state locally
         synchronized (stateMutex) {
             this.state.set(clusterChangedEvent.state());
-            clusterApplier.onNewClusterState("apply-locally-on-master", clusterChangedEvent.state(), future);
+            clusterApplier.onNewClusterState("apply-locally-on-master", clusterChangedEvent.state(), listener);
         }
 
         try {
@@ -375,11 +382,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         } finally {
             // indefinitely wait for cluster state to be applied locally
             try {
-                future.get();
-            } catch (ExecutionException | InterruptedException e) {
-                logger.warn(
+                latch.await();
+            } catch (InterruptedException e) {
+                logger.info(
                     (org.apache.logging.log4j.util.Supplier<?>) () -> new ParameterizedMessage(
-                        "failed while applying cluster state locally [{}]",
+                        "interrupted while applying cluster state locally [{}]",
                         clusterChangedEvent.source()),
                     e);
             }
