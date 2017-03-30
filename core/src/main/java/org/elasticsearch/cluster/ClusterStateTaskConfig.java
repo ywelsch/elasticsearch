@@ -29,7 +29,8 @@ public interface ClusterStateTaskConfig {
     /**
      * The timeout for this cluster state update task configuration. If
      * the cluster state update task isn't processed within this
-     * timeout, the associated {@link PublishingClusterStateTaskListener#onFailure(String, Exception)}
+     * timeout, the associated
+     * {@link PublishingClusterStateTaskListener#onFailure(String, Exception)}
      * is invoked.
      *
      * @return the timeout, or null if one is not set

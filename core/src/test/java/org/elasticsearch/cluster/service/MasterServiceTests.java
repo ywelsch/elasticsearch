@@ -353,7 +353,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
             private AtomicInteger batches = new AtomicInteger();
             private AtomicInteger published = new AtomicInteger();
 
-            public TaskExecutor(List<Set<Task>> taskGroups) {
+            TaskExecutor(List<Set<Task>> taskGroups) {
                 this.taskGroups = taskGroups;
             }
 
@@ -739,7 +739,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedMasterService(Settings settings, ThreadPool threadPool) {
+        TimedMasterService(Settings settings, ThreadPool threadPool) {
             super(settings, threadPool);
         }
 

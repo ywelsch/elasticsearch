@@ -63,7 +63,7 @@ public class BatchingClusterTaskExecutorTests extends ESTestCase {
         };
     }
 
-    static abstract class SingleTask implements Executor<SingleTask>, FailureListener, ClusterStateTaskConfig {
+    abstract static class SingleTask implements Executor<SingleTask>, FailureListener, ClusterStateTaskConfig {
 
         @Override
         public void execute(List<SingleTask> tasks) {
@@ -491,7 +491,7 @@ public class BatchingClusterTaskExecutorTests extends ESTestCase {
         private final CountDownLatch latch = new CountDownLatch(1);
         private final Priority priority;
 
-        public BlockingTask(Priority priority) {
+        BlockingTask(Priority priority) {
             super();
             this.priority = priority;
         }

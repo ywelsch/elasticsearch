@@ -24,7 +24,7 @@ import org.elasticsearch.cluster.ClusterState;
 /**
  * A listener to be notified when the discovery state changes.
  */
-public interface DiscoveryStateListener {
+public interface MasterServiceListener {
 
     void clusterChanged(ClusterState oldState, ClusterState newState);
 }

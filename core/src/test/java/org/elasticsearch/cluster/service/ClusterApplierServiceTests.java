@@ -333,7 +333,7 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+        TimedClusterApplierService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
             super(settings, clusterSettings, threadPool);
         }
 

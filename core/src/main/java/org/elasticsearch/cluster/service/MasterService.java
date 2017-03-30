@@ -36,13 +36,10 @@ import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
-import org.elasticsearch.cluster.service.BatchingClusterTaskExecutor;
 import org.elasticsearch.cluster.service.BatchingClusterTaskExecutor.BatchingUpdateTask;
-import org.elasticsearch.cluster.service.PendingClusterTask;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.CountDown;
@@ -51,12 +48,11 @@ import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
 import org.elasticsearch.common.util.concurrent.FutureUtils;
 import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
 import org.elasticsearch.discovery.Discovery;
-import org.elasticsearch.discovery.DiscoveryStateListener;
+import org.elasticsearch.discovery.MasterServiceListener;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -78,7 +74,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
 
     private TimeValue slowTaskLoggingThreshold;
 
-    private final Collection<DiscoveryStateListener> stateListeners = new CopyOnWriteArrayList<>();
+    private final Collection<MasterServiceListener> stateListeners = new CopyOnWriteArrayList<>();
 
     private java.util.function.Supplier<ClusterState> clusterStateSupplier;
 
@@ -285,7 +281,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
                 logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
                 listener.clusterChanged(previousClusterState, newClusterState);
             } catch (Exception ex) {
-                logger.warn("failed to notify DiscoveryStateListener", ex);
+                logger.warn("failed to notify MasterServiceListener", ex);
             }
         });
 
@@ -312,7 +308,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         public final List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
         public final Map<Object, ClusterStateTaskExecutor.TaskResult> executionResults;
 
-        public TaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState,
+        TaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState,
                            ClusterState newClusterState,
                            List<BatchingUpdateTask<T, PublishingClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
                            Map<Object, ClusterStateTaskExecutor.TaskResult> executionResults) {
@@ -389,14 +385,14 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
     /**
      * Add a listener for updated cluster states
      */
-    public void addListener(DiscoveryStateListener listener) {
+    public void addListener(MasterServiceListener listener) {
         stateListeners.add(listener);
     }
 
     /**
      * Removes a listener for updated cluster states.
      */
-    public void removeListener(DiscoveryStateListener listener) {
+    public void removeListener(MasterServiceListener listener) {
         stateListeners.remove(listener);
     }
 
@@ -435,7 +431,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         private final PublishingClusterStateTaskListener listener;
         private final Logger logger;
 
-        public SafeClusterStateTaskListener(PublishingClusterStateTaskListener listener, Logger logger) {
+        SafeClusterStateTaskListener(PublishingClusterStateTaskListener listener, Logger logger) {
             this.listener = listener;
             this.logger = logger;
         }
@@ -482,7 +478,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         private final AckedClusterStateTaskListener listener;
         private final Logger logger;
 
-        public SafeAckedClusterStateTaskListener(AckedClusterStateTaskListener listener, Logger logger) {
+        SafeAckedClusterStateTaskListener(AckedClusterStateTaskListener listener, Logger logger) {
             super(listener, logger);
             this.listener = listener;
             this.logger = logger;

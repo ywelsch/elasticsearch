@@ -498,7 +498,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         public final List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks;
         public final Map<T, ClusterStateTaskExecutor.TaskResult> executionResults;
 
-        public TaskOutputs(TaskInputs<T> taskInputs, ClusterState previousClusterState,
+        TaskOutputs(TaskInputs<T> taskInputs, ClusterState previousClusterState,
                            ClusterState newClusterState,
                            List<BatchingUpdateTask<T, ClusterStateTaskListener, ClusterStateTaskExecutor<T>>> nonFailedTasks,
                            Map<T, ClusterStateTaskExecutor.TaskResult> executionResults) {
@@ -541,7 +541,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         private final ClusterStateTaskListener listener;
         private final Logger logger;
 
-        public SafeClusterStateTaskListener(ClusterStateTaskListener listener, Logger logger) {
+        SafeClusterStateTaskListener(ClusterStateTaskListener listener, Logger logger) {
             this.listener = listener;
             this.logger = logger;
         }

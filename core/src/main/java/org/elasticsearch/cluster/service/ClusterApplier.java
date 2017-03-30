@@ -31,5 +31,6 @@ public interface ClusterApplier {
      * @param clusterState the cluster state to apply
      * @param listener callback that is invoked after cluster state is applied
      */
-    void onNewClusterState(String source, ClusterState clusterState, ActionListener<ClusterState> listener);
+    void onNewClusterState(String source, ClusterState clusterState,
+                           ActionListener<ClusterState> listener);
 }
