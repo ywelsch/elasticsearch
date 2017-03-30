@@ -62,7 +62,7 @@ public class ClusterService extends AbstractLifecycleComponent implements RunOnM
     public ClusterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
         super(settings);
         this.clusterApplierService = new ClusterApplierService(settings, clusterSettings, threadPool);
-        this.masterService = new MasterService(settings, clusterSettings, threadPool);
+        this.masterService = new MasterService(settings, threadPool);
         this.operationRouting = new OperationRouting(settings, clusterSettings);
         this.clusterSettings = clusterSettings;
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);

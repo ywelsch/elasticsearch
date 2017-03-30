@@ -57,9 +57,8 @@ public class ClusterServiceUtils {
         return createMasterService(threadPool, discoveryNode);
     }
 
-    public static MasterService createMasterService(ThreadPool threadPool, DiscoveryNode localNode) {
-        MasterService masterService = new MasterService(Settings.EMPTY,
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
+    public static MasterService createMasterService(ThreadPool threadPool, ClusterState initialClusterState) {
+        MasterService masterService = new MasterService(Settings.EMPTY, threadPool);
         masterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
@@ -71,17 +70,21 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
+        AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
+        masterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
+        masterService.setClusterStateSupplier(clusterStateRef::get);
+        masterService.start();
+        return masterService;
+    }
+
+    public static MasterService createMasterService(ThreadPool threadPool, DiscoveryNode localNode) {
         ClusterState initialClusterState = ClusterState.builder(new ClusterName(ClusterServiceUtils.class.getSimpleName()))
             .nodes(DiscoveryNodes.builder()
                 .add(localNode)
                 .localNodeId(localNode.getId())
                 .masterNodeId(localNode.getId()))
             .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
-        AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
-        masterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
-        masterService.setClusterStateSupplier(clusterStateRef::get);
-        masterService.start();
-        return masterService;
+        return createMasterService(threadPool, initialClusterState);
     }
 
     public static void setState(ClusterApplierService executor, ClusterState clusterState) {

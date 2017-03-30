@@ -26,6 +26,9 @@ import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterStateTaskConfig;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -38,7 +41,9 @@ import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.cluster.routing.TestShardRouting;
 import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.service.MasterService;
+import org.elasticsearch.cluster.service.RunOnMaster;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.zen.PublishClusterStateActionTests.AssertingAckListener;
@@ -53,6 +58,7 @@ import org.elasticsearch.transport.TransportChannel;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseOptions;
 import org.elasticsearch.transport.TransportService;
+import org.junit.Ignore;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -63,6 +69,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -187,8 +194,12 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             toClose.addFirst(masterMasterService);
             // TODO: clustername shouldn't be stored twice in cluster service, but for now, work around it
             state = ClusterState.builder(masterMasterService.state().getClusterName()).nodes(state.nodes()).build();
-            setState(masterMasterService, state);
-            ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterMasterService, threadPool);
+            Settings settingsWithClusterName = Settings.builder().put(settings).put(
+                ClusterName.CLUSTER_NAME_SETTING.getKey(), masterMasterService.state().getClusterName().value()).build();
+            ZenDiscovery masterZen = buildZenDiscovery(
+                settingsWithClusterName,
+                masterTransport, masterMasterService, threadPool);
+            masterZen.setState(state);
             toClose.addFirst(masterZen);
             masterTransport.acceptIncomingRequests();
 
@@ -199,10 +210,10 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             DiscoveryNode otherNode = otherTransport.getLocalNode();
             final ClusterState otherState = ClusterState.builder(masterMasterService.state().getClusterName())
                 .nodes(DiscoveryNodes.builder().add(otherNode).localNodeId(otherNode.getId())).build();
-            MasterService otherMasterService = ClusterServiceUtils.createMasterService(threadPool, masterNode);
+            MasterService otherMasterService = ClusterServiceUtils.createMasterService(threadPool, otherNode);
             toClose.addFirst(otherMasterService);
-            setState(otherMasterService, otherState);
-            ZenDiscovery otherZen = buildZenDiscovery(settings, otherTransport, otherMasterService, threadPool);
+            ZenDiscovery otherZen = buildZenDiscovery(settingsWithClusterName, otherTransport, otherMasterService, threadPool);
+            otherZen.setState(otherState);
             toClose.addFirst(otherZen);
             otherTransport.acceptIncomingRequests();
 
@@ -221,7 +232,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
                 AssertingAckListener listener = new AssertingAckListener(newState.nodes().getSize() - 1);
                 expectedFDNodes = masterZen.getFaultDetectionNodes();
                 masterZen.publish(clusterChangedEvent, listener);
-                listener.await(1, TimeUnit.HOURS);
+                listener.await(10, TimeUnit.SECONDS);
                 // publish was a success, update expected FD nodes based on new cluster state
                 expectedFDNodes = fdNodesForState(newState, masterNode);
             } catch (Discovery.FailedToCommitClusterStateException e) {
@@ -254,8 +265,8 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             MasterService masterMasterService = ClusterServiceUtils.createMasterService(threadPool, masterNode);
             toClose.addFirst(masterMasterService);
             state = ClusterState.builder(masterMasterService.state().getClusterName()).nodes(state.nodes()).build();
-            setState(masterMasterService, state);
             ZenDiscovery masterZen = buildZenDiscovery(settings, masterTransport, masterMasterService, threadPool);
+            masterZen.setState(state);
             toClose.addFirst(masterZen);
             masterTransport.acceptIncomingRequests();
 
@@ -288,10 +299,11 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
         }
     }
 
-    private ZenDiscovery buildZenDiscovery(Settings settings, TransportService service, MasterService masterService,
+    private ZenDiscovery buildZenDiscovery(Settings settings, TransportService service, RunOnMaster masterService,
                                            ThreadPool threadPool) {
+        ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
         ZenDiscovery zenDiscovery = new ZenDiscovery(settings, threadPool, service, new NamedWriteableRegistry(ClusterModule.getNamedWriteables()),
-            masterService, (source, clusterState, listener) -> {}, Collections::emptyList);
+            masterService, (source, clusterState, listener) -> listener.onResponse(clusterState), clusterSettings, Collections::emptyList);
         zenDiscovery.start();
         return zenDiscovery;
     }

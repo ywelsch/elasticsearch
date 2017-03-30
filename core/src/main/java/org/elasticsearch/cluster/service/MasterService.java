@@ -84,22 +84,15 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
 
     private NodeConnectionsService nodeConnectionsService;
 
-    protected final ClusterSettings clusterSettings;
     protected final ThreadPool threadPool;
 
     protected volatile BatchingClusterTaskExecutor<PublishingClusterStateTaskListener> batchingClusterTaskExecutor;
 
-    public MasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+    public MasterService(Settings settings, ThreadPool threadPool) {
         super(settings);
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
-        this.clusterSettings = clusterSettings;
         this.threadPool = threadPool;
     }
-
-    public ClusterSettings getClusterSettings() {
-        return clusterSettings;
-    }
-
 
     public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
         this.slowTaskLoggingThreshold = slowTaskLoggingThreshold;

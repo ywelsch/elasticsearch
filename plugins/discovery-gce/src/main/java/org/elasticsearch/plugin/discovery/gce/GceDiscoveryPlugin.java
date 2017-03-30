@@ -30,10 +30,12 @@ import org.elasticsearch.cloud.gce.GceMetadataService;
 import org.elasticsearch.cloud.gce.network.GceNameResolver;
 import org.elasticsearch.cloud.gce.util.Access;
 import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.RunOnMaster;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.logging.DeprecationLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.network.NetworkService;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
@@ -84,12 +86,12 @@ public class GceDiscoveryPlugin extends Plugin implements DiscoveryPlugin, Close
     @Override
     public Map<String, Supplier<Discovery>> getDiscoveryTypes(ThreadPool threadPool, TransportService transportService,
                                                               NamedWriteableRegistry namedWriteableRegistry,
-                                                              MasterService masterService, ClusterApplier clusterApplier,
-                                                              UnicastHostsProvider hostsProvider) {
+                                                              RunOnMaster masterService, ClusterApplier clusterApplier,
+                                                              ClusterSettings clusterSettings, UnicastHostsProvider hostsProvider) {
         // this is for backcompat with pre 5.1, where users would set discovery.type to use ec2 hosts provider
         return Collections.singletonMap(GCE, () ->
             new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
-                hostsProvider));
+                clusterSettings, hostsProvider));
     }
 
     @Override

@@ -33,6 +33,7 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
+import org.elasticsearch.cluster.service.RunOnMaster;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
@@ -56,7 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class NodeJoinController extends AbstractComponent {
 
-    private final MasterService masterService;
+    private final RunOnMaster masterService;
     private final AllocationService allocationService;
     private final ElectMasterService electMaster;
     private final JoinTaskExecutor joinTaskExecutor = new JoinTaskExecutor();
@@ -66,7 +67,7 @@ public class NodeJoinController extends AbstractComponent {
     private ElectionContext electionContext = null;
 
 
-    public NodeJoinController(MasterService masterService, AllocationService allocationService, ElectMasterService electMaster,
+    public NodeJoinController(RunOnMaster masterService, AllocationService allocationService, ElectMasterService electMaster,
                               Settings settings) {
         super(settings);
         this.masterService = masterService;

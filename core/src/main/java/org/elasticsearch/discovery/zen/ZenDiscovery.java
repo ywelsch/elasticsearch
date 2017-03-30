@@ -42,6 +42,7 @@ import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.RunOnMaster;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.component.Lifecycle;
@@ -49,6 +50,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.lease.Releasables;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
@@ -108,7 +110,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     public static final String DISCOVERY_REJOIN_ACTION_NAME = "internal:discovery/zen/rejoin";
 
     private final TransportService transportService;
-    private final MasterService masterService;
+    private final RunOnMaster masterService;
     private AllocationService allocationService;
     private final ClusterName clusterName;
     private final DiscoverySettings discoverySettings;
@@ -152,13 +154,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private volatile ClusterState initialState;
 
     public ZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
-                        NamedWriteableRegistry namedWriteableRegistry, MasterService masterService, ClusterApplier clusterApplier,
-                        UnicastHostsProvider hostsProvider) {
+                        NamedWriteableRegistry namedWriteableRegistry, RunOnMaster masterService, ClusterApplier clusterApplier,
+                        ClusterSettings clusterSettings, UnicastHostsProvider hostsProvider) {
         super(settings);
         this.masterService = masterService;
         this.clusterApplier = clusterApplier;
         this.transportService = transportService;
-        this.discoverySettings = new DiscoverySettings(settings, masterService.getClusterSettings());
+        this.discoverySettings = new DiscoverySettings(settings, clusterSettings);
         this.zenPing = newZenPing(settings, threadPool, transportService, hostsProvider);
         this.electMaster = new ElectMasterService(settings);
         this.pingTimeout = PING_TIMEOUT_SETTING.get(settings);
@@ -177,7 +179,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         logger.debug("using ping_timeout [{}], join.timeout [{}], master_election.ignore_non_master [{}]",
                 this.pingTimeout, joinTimeout, masterElectionIgnoreNonMasters);
 
-        masterService.getClusterSettings().addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
+        clusterSettings.addSettingsUpdateConsumer(ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING,
             this::handleMinimumMasterNodesChanged, (value) -> {
                 final ClusterState clusterState = state();
                 int masterNodes = clusterState.nodes().getMasterNodes().size();
@@ -231,7 +233,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         synchronized (stateMutex) {
             initialState = getInitialState();
             state.set(initialState);
-            nodesFD.setLocalNode(masterService.localNode());
+            nodesFD.setLocalNode(localNode);
             joinThreadControl.start();
         }
         zenPing.start(this);
@@ -293,12 +295,12 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     public DiscoveryNode localNode() {
-        return masterService.localNode();
+        return nodes().getLocalNode();
     }
 
     @Override
     public String nodeDescription() {
-        return clusterName.value() + "/" + masterService.localNode().getId();
+        return clusterName.value() + "/" + localNode().getId();
     }
 
     /** start of {@link PingContextProvider } implementation */
@@ -461,7 +463,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             return;
         }
 
-        if (masterService.localNode().equals(masterNode)) {
+        if (localNode().equals(masterNode)) {
             final int requiredJoins = Math.max(0, electMaster.minimumMasterNodes() - 1); // we count as one
             logger.debug("elected as master, waiting for incoming joins ([{}] needed)", requiredJoins);
             nodeJoinController.waitToBeElectedAsMaster(requiredJoins, masterElectionWaitForJoinsTimeout,
@@ -529,7 +531,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
-                membership.sendJoinRequestBlocking(masterNode, masterService.localNode(), joinTimeout);
+                membership.sendJoinRequestBlocking(masterNode, localNode(), joinTimeout);
                 return true;
             } catch (Exception e) {
                 final Throwable unwrap = ExceptionsHelper.unwrapCause(e);
@@ -561,6 +563,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private void submitRejoin(String source) {
         synchronized (stateMutex) {
             rejoin(state.get(), source);
+        }
+    }
+
+    // visible for testing
+    void setState(ClusterState clusterState) {
+        synchronized (stateMutex) {
+            state.set(clusterState);
         }
     }
 
@@ -932,7 +941,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             logger.trace("full ping responses:{}", sb);
         }
 
-        final DiscoveryNode localNode = masterService.localNode();
+        final DiscoveryNode localNode = localNode();
 
         // add our selves
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)

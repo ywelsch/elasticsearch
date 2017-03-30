@@ -84,8 +84,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
         DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
             emptySet(), Version.CURRENT);
         TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
-            MasterServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
+            MasterServiceTests.class.getSimpleName()).build(), threadPool);
         timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
             public void connectToNodes(DiscoveryNodes discoveryNodes) {
@@ -673,8 +672,7 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
         DiscoveryNode localNode = new DiscoveryNode("node1", buildNewFakeTransportAddress(), emptyMap(),
             emptySet(), Version.CURRENT);
         TimedMasterService timedMasterService = new TimedMasterService(Settings.builder().put("cluster.name",
-            MasterServiceTests.class.getSimpleName()).build(),
-            new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS), threadPool);
+            MasterServiceTests.class.getSimpleName()).build(), threadPool);
         Set<DiscoveryNode> currentNodes = new HashSet<>();
         timedMasterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
             @Override
@@ -741,8 +739,8 @@ public class MasterServiceTests extends AbstractClusterTaskExecutorTestCase<Mast
 
         public volatile Long currentTimeOverride = null;
 
-        public TimedMasterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
-            super(settings, clusterSettings, threadPool);
+        public TimedMasterService(Settings settings, ThreadPool threadPool) {
+            super(settings, threadPool);
         }
 
         @Override
