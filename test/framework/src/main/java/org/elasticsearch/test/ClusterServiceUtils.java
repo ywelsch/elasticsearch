@@ -21,6 +21,7 @@ package org.elasticsearch.test;
 import org.apache.logging.log4j.core.util.Throwables;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterName;
@@ -50,12 +51,6 @@ import java.util.function.BiConsumer;
 import static junit.framework.TestCase.fail;
 
 public class ClusterServiceUtils {
-
-    public static MasterService createMasterService(ThreadPool threadPool) {
-        DiscoveryNode discoveryNode = new DiscoveryNode("node", ESTestCase.buildNewFakeTransportAddress(), Collections.emptyMap(),
-            new HashSet<>(Arrays.asList(DiscoveryNode.Role.values())),Version.CURRENT);
-        return createMasterService(threadPool, discoveryNode);
-    }
 
     public static MasterService createMasterService(ThreadPool threadPool, ClusterState initialClusterState) {
         MasterService masterService = new MasterService(Settings.EMPTY, threadPool);
@@ -89,24 +84,8 @@ public class ClusterServiceUtils {
 
     public static void setState(ClusterApplierService executor, ClusterState clusterState) {
         PlainActionFuture plainActionFuture = new PlainActionFuture();
-        executor.onNewClusterState("test setting state", clusterState, plainActionFuture);
-//        {
-//            @Override
-//            public ClusterTasksResult<LocalClusterUpdateTask> execute(ClusterState currentState) throws Exception {
-//                // make sure we increment versions as listener may depend on it for change
-//                return newState(ClusterState.builder(clusterState).version(currentState.version() + 1).build());
-//            }
-//
-//            @Override
-//            public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
-//                latch.countDown();
-//            }
-//
-//            @Override
-//            public void onFailure(String source, Exception e) {
-//                fail("unexpected exception" + e);
-//            }
-//        });
+        executor.onNewClusterState("test setting state", ClusterState.builder(clusterState).version(clusterState.version() + 1).build(),
+            plainActionFuture);
         try {
             plainActionFuture.get();
         } catch (InterruptedException | ExecutionException e) {
@@ -161,24 +140,45 @@ public class ClusterServiceUtils {
                 // skip
             }
         });
+        ClusterState initialClusterState = ClusterState.builder(new ClusterName(ClusterServiceUtils.class.getSimpleName()))
+            .nodes(DiscoveryNodes.builder()
+                .add(localNode)
+                .localNodeId(localNode.getId())
+                .masterNodeId(localNode.getId()))
+            .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
+        clusterService.getClusterApplierService().setInitialState(initialClusterState);
         clusterService.getMasterService().setClusterStatePublisher(
             createClusterStatePublisher(clusterService.getClusterApplierService()));
+        clusterService.getMasterService().setClusterStateSupplier(clusterService.getClusterApplierService()::state);
         clusterService.start();
-        final DiscoveryNodes.Builder nodes = DiscoveryNodes.builder(clusterService.state().nodes());
-        nodes.masterNodeId(clusterService.localNode().getId());
-        ClusterState initialState = ClusterState.builder(clusterService.state()).nodes(nodes).build();
-        setState(clusterService, initialState);
         return clusterService;
     }
 
     public static BiConsumer<ClusterChangedEvent, AckListener> createClusterStatePublisher(ClusterApplier clusterApplier) {
         return (event, ackListener) -> {
-            PlainActionFuture<ClusterState> future = new PlainActionFuture<>();
-            clusterApplier.onNewClusterState("mock_publish_to_self[" + event.source() + "]", event.state(), future);
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<Exception> ex = new AtomicReference<>();
+            clusterApplier.onNewClusterState("mock_publish_to_self[" + event.source() + "]", event.state(),
+                new ActionListener<ClusterState>() {
+                    @Override
+                    public void onResponse(ClusterState clusterState) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        ex.set(e);
+                        latch.countDown();
+                    }
+                }
+            );
             try {
-                future.get();
-            } catch (ExecutionException | InterruptedException e) {
+                latch.await();
+            } catch (InterruptedException e) {
                 Throwables.rethrow(e);
+            }
+            if (ex.get() != null) {
+                Throwables.rethrow(ex.get());
             }
         };
     }
@@ -193,7 +193,10 @@ public class ClusterServiceUtils {
         setState(clusterService, clusterStateBuilder.build());
     }
 
+    /**
+     * Sets the state on the cluster applier service
+     */
     public static void setState(ClusterService clusterService, ClusterState clusterState) {
-        setState(clusterService.getMasterService(), clusterState);
+        setState(clusterService.getClusterApplierService(), clusterState);
     }
 }
