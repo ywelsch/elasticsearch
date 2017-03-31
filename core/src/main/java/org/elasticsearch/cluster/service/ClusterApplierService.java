@@ -290,7 +290,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     }
 
     public void runOnApplierThread(final String source, Consumer<ClusterState> clusterStateConsumer,
-                                   final ActionListener<ClusterState> listener) {
+                                   final ActionListener<ClusterState> listener, Priority priority) {
         submitStateUpdateTask(source, new String(""), ClusterStateTaskConfig.build(Priority.NORMAL),
             (ClusterStateTaskExecutor<Object>) (currentState, tasks) -> {
                 clusterStateConsumer.accept(currentState);
@@ -307,6 +307,11 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
                     listener.onResponse(newState);
                 }
             });
+    }
+
+    public void runOnApplierThread(final String source, Consumer<ClusterState> clusterStateConsumer,
+                                   final ActionListener<ClusterState> listener) {
+        runOnApplierThread(source, clusterStateConsumer, listener, Priority.NORMAL);
     }
 
     @Override
