@@ -137,8 +137,11 @@ public class PublishClusterStateAction extends AbstractComponent {
             nodes = clusterChangedEvent.state().nodes();
             nodesToPublishTo = new HashSet<>(nodes.getSize());
             final int totalMasterNodes = nodes.getMasterNodes().size();
+            DiscoveryNode localNode = nodes.getLocalNode();
             for (final DiscoveryNode node : nodes) {
-                nodesToPublishTo.add(node);
+                if (node.equals(localNode) == false) {
+                    nodesToPublishTo.add(node);
+                }
             }
             sendFullVersion = !discoverySettings.getPublishDiff() || clusterChangedEvent.previousState() == null;
             serializedStates = new HashMap<>();
@@ -183,13 +186,7 @@ public class PublishClusterStateAction extends AbstractComponent {
         final ClusterState previousState = clusterChangedEvent.previousState();
         final TimeValue publishTimeout = discoverySettings.getPublishTimeout();
 
-        DiscoveryNode localNode = clusterChangedEvent.state().nodes().getLocalNode();
-
         for (final DiscoveryNode node : nodesToPublishTo) {
-            if (node.equals(localNode)) {
-                // don't serialize cluster state when applying it locally
-                continue;
-            }
             // try and serialize the cluster state once (or per version), so we don't serialize it
             // per node when we send it over the wire, compress it while we are at it...
             // we don't send full version if node didn't exist in the previous version of cluster state
@@ -200,10 +197,7 @@ public class PublishClusterStateAction extends AbstractComponent {
             }
         }
 
-        sendingController.onNodeSendAck(localNode); // local node can ack right away
         sendingController.waitForCommit(discoverySettings.getCommitTimeout());
-
-
     }
 
     public void waitAllNodesStateApplied(ClusterState clusterState, long timeLeftInNanos, SendingController sendingController) {
@@ -559,8 +553,8 @@ public class PublishClusterStateAction extends AbstractComponent {
             this.clusterState = clusterState;
             this.localNode = clusterState.nodes().getLocalNode();
             this.publishResponseHandler = publishResponseHandler;
-            this.neededMastersToCommit = Math.max(1, minMasterNodes);
-            this.pendingMasterNodes = totalMasterNodes;
+            this.neededMastersToCommit = Math.max(0, minMasterNodes - 1);
+            this.pendingMasterNodes = totalMasterNodes - 1;
             if (this.neededMastersToCommit > this.pendingMasterNodes) {
                 throw new FailedToCommitClusterStateException("not enough masters to ack sent cluster state." +
                     "[{}] needed , have [{}]", neededMastersToCommit, pendingMasterNodes);

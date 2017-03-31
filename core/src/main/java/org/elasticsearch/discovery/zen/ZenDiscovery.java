@@ -341,37 +341,34 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         final DiscoveryNode localNode = clusterChangedEvent.state().getNodes().getLocalNode();
         final long timeLeftInNanos = Math.max(0, publishTimeout.nanos() - (System.nanoTime() - publishingStartInNanos));
 
-        // apply to itself
         CountDownLatch latch = new CountDownLatch(1);
-        ActionListener<ClusterState> listener = new ActionListener<ClusterState>() {
-            @Override
-            public void onResponse(ClusterState clusterState) {
-                latch.countDown();
-                sendingController.getPublishResponseHandler().onResponse(localNode);
-            }
-
-            @Override
-            public void onFailure(Exception e) {
-                latch.countDown();
-                logger.warn(
-                    (org.apache.logging.log4j.util.Supplier<?>) () -> new ParameterizedMessage(
-                        "failed while applying cluster state locally [{}]",
-                        clusterChangedEvent.source()),
-                    e);
-                sendingController.getPublishResponseHandler().onFailure(localNode, e);
-            }
-        };
-
-
-        // set state locally
-        synchronized (stateMutex) {
-            this.state.set(clusterChangedEvent.state());
-            clusterApplier.onNewClusterState("apply-locally-on-master", clusterChangedEvent.state(), listener);
-        }
-
         try {
             // notify other nodes to apply state and wait for nodes to apply cluster state up to specified timeout
             publishClusterState.waitAllNodesStateApplied(clusterChangedEvent.state(), timeLeftInNanos, sendingController);
+
+            // set state locally (only after all nodes have applied state, to keep BWC) and apply to itself
+            ActionListener<ClusterState> listener = new ActionListener<ClusterState>() {
+                @Override
+                public void onResponse(ClusterState clusterState) {
+                    latch.countDown();
+                    ackListener.onNodeAck(localNode, null);
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    latch.countDown();
+                    ackListener.onNodeAck(localNode, e);
+                    logger.warn(
+                        (org.apache.logging.log4j.util.Supplier<?>) () -> new ParameterizedMessage(
+                            "failed while applying cluster state locally [{}]",
+                            clusterChangedEvent.source()),
+                        e);
+                }
+            };
+            synchronized (stateMutex) {
+                this.state.set(clusterChangedEvent.state());
+                clusterApplier.onNewClusterState("apply-locally-on-master", clusterChangedEvent.state(), listener);
+            }
 
             // update the set of nodes to ping after the new cluster state has been published
             nodesFD.updateNodesAndPing(clusterChangedEvent.state());
@@ -743,10 +740,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     void processNextPendingClusterState(String reason) {
-        ClusterState newClusterState = publishClusterState.pendingStatesQueue().getNextClusterStateToProcess();
+        final ClusterState newClusterState;
         final ClusterState adaptedNewClusterState;
         final ClusterState currentState;
         synchronized (stateMutex) {
+            newClusterState = publishClusterState.pendingStatesQueue().getNextClusterStateToProcess();
             currentState = state.get();
             // all pending states have been processed
             if (newClusterState == null) {
