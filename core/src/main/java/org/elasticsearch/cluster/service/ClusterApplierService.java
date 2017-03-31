@@ -375,7 +375,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
                 if (className.equals(ClusterStateObserver.class.getName())) {
                     // people may start an observer from an applier
                     return true;
-                } else if (className.equals(ClusterService.class.getName())
+                } else if (className.equals(ClusterApplierService.class.getName())
                     && methodName.equals("callClusterStateAppliers")) {
                     throw new AssertionError("should not be called by a cluster state applier. reason [" + reason + "]");
                 }

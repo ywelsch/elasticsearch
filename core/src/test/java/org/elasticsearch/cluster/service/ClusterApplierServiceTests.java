@@ -24,6 +24,7 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterStateObserver;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.block.ClusterBlocks;
@@ -323,6 +324,54 @@ public class ClusterApplierServiceTests extends AbstractClusterTaskExecutorTestC
                 }
             }
         );
+
+        latch.await();
+        assertNull(error.get());
+        assertTrue(applierCalled.get());
+    }
+
+    public void testClusterStateApplierCanCreateAnObserver() throws InterruptedException {
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        AtomicBoolean applierCalled = new AtomicBoolean();
+        clusterTaskExecutor.addStateApplier(event -> {
+            try {
+                applierCalled.set(true);
+                ClusterStateObserver observer = new ClusterStateObserver(event.state(),
+                    clusterTaskExecutor, null, logger, threadPool.getThreadContext());
+                observer.waitForNextChange(new ClusterStateObserver.Listener() {
+                    @Override
+                    public void onNewClusterState(ClusterState state) {
+
+                    }
+
+                    @Override
+                    public void onClusterServiceClose() {
+
+                    }
+
+                    @Override
+                    public void onTimeout(TimeValue timeout) {
+
+                    }
+                });
+            } catch (AssertionError e) {
+                error.set(e);
+            }
+        });
+
+        CountDownLatch latch = new CountDownLatch(1);
+        clusterTaskExecutor.onNewClusterState("test", ClusterState.builder(clusterTaskExecutor.state()).build(),
+            new ActionListener<ClusterState>() {
+                @Override
+                public void onResponse(ClusterState clusterState) {
+                    latch.countDown();
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    error.compareAndSet(null, e);
+                }
+        });
 
         latch.await();
         assertNull(error.get());
