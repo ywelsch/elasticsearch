@@ -313,7 +313,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {
-        assert !clusterChangedEvent.state().getNodes().isLocalNodeElectedMaster() : "Shouldn't publish state when not master";
+        assert clusterChangedEvent.state().getNodes().isLocalNodeElectedMaster() : "Shouldn't publish state when not master " + clusterChangedEvent.source();
 
         // state got changed locally (maybe because another master published to us)
         synchronized (stateMutex) {

@@ -25,9 +25,9 @@ import org.elasticsearch.cluster.ClusterStateApplier;
 import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
-import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.LocalNodeMasterListener;
 import org.elasticsearch.cluster.NodeConnectionsService;
+import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.TimeoutClusterStateListener;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.OperationRouting;
@@ -40,7 +40,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.util.Collections;
 import java.util.Map;
 
 public class ClusterService extends AbstractLifecycleComponent implements RunOnMaster {
@@ -70,7 +69,7 @@ public class ClusterService extends AbstractLifecycleComponent implements RunOnM
             this::setSlowTaskLoggingThreshold);
     }
 
-    public void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
+    private void setSlowTaskLoggingThreshold(TimeValue slowTaskLoggingThreshold) {
         masterService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
         clusterApplierService.setSlowTaskLoggingThreshold(slowTaskLoggingThreshold);
     }
@@ -106,7 +105,11 @@ public class ClusterService extends AbstractLifecycleComponent implements RunOnM
      * The local node.
      */
     public DiscoveryNode localNode() {
-        return masterService.localNode();
+        DiscoveryNode localNode = masterService.state().getNodes().getLocalNode();
+        if (localNode == null) {
+            throw new IllegalStateException("No local node found. Is the node started?");
+        }
+        return localNode;
     }
 
     public OperationRouting operationRouting() {

@@ -83,7 +83,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     private final ClusterSettings clusterSettings;
     protected final ThreadPool threadPool;
 
-    private TimeValue slowTaskLoggingThreshold;
+    private volatile TimeValue slowTaskLoggingThreshold;
 
     protected volatile BatchingClusterTaskExecutor<ClusterStateTaskListener> batchingClusterTaskExecutor;
 
@@ -292,7 +292,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
     public void runOnApplierThread(final String source, Consumer<ClusterState> clusterStateConsumer,
                                    final ActionListener<ClusterState> listener, Priority priority) {
-        submitStateUpdateTask(source, new String(""), ClusterStateTaskConfig.build(Priority.NORMAL),
+        submitStateUpdateTask(source, new String(""), ClusterStateTaskConfig.build(priority),
             (ClusterStateTaskExecutor<Object>) (currentState, tasks) -> {
                 clusterStateConsumer.accept(currentState);
                 return ClusterTasksResult.builder().successes(tasks).build(currentState);
@@ -345,7 +345,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
             if (clusterState == null) {
                 return ClusterTasksResult.builder().successes(tasks).build(currentState);
             } else {
-                clusterStateToApply.compareAndSet(clusterState, null); // set to null if no other update has come in
+                clusterStateToApply.compareAndSet(clusterState, null); // set to null if no other update has come in in the meantime
                 return ClusterTasksResult.builder().successes(tasks).build(clusterState);
             }
         }

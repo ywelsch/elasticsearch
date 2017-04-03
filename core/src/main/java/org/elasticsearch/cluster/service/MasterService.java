@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
 import org.elasticsearch.cluster.NodeConnectionsService;
+import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
@@ -72,7 +73,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
 
     private BiConsumer<ClusterChangedEvent, Discovery.AckListener> clusterStatePublisher;
 
-    private TimeValue slowTaskLoggingThreshold;
+    private volatile TimeValue slowTaskLoggingThreshold;
 
     private final Collection<MasterServiceListener> stateListeners = new CopyOnWriteArrayList<>();
 
@@ -86,6 +87,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
 
     public MasterService(Settings settings, ThreadPool threadPool) {
         super(settings);
+        // TODO: introduce a dedicated setting for master service
         this.slowTaskLoggingThreshold = CLUSTER_SERVICE_SLOW_TASK_LOGGING_THRESHOLD_SETTING.get(settings);
         this.threadPool = threadPool;
     }
@@ -132,17 +134,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
     }
 
     /**
-     * The local node.
-     */
-    public DiscoveryNode localNode() {
-        DiscoveryNode localNode = state().getNodes().getLocalNode();
-        if (localNode == null) {
-            throw new IllegalStateException("No local node found. Is the node started?");
-        }
-        return localNode;
-    }
-
-    /**
      * The current cluster state.
      */
     public ClusterState state() {
@@ -162,16 +153,17 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
     }
 
     protected <T> void runTasks(TaskInputs<T> taskInputs) {
+        final String summary = taskInputs.summary;
         if (!lifecycle.started()) {
-            logger.debug("processing [{}]: ignoring, cluster service not started", taskInputs.summary);
+            logger.debug("processing [{}]: ignoring, cluster service not started", summary);
             return;
         }
 
-        logger.debug("processing [{}]: execute", taskInputs.summary);
+        logger.debug("processing [{}]: execute", summary);
         final ClusterState previousClusterState = state();
 
         if (!previousClusterState.nodes().isLocalNodeElectedMaster() && taskInputs.runOnlyOnMaster()) {
-            logger.debug("failing [{}]: local node is no longer master", taskInputs.summary);
+            logger.debug("failing [{}]: local node is no longer master", summary);
             taskInputs.onNoLongerMaster();
             return;
         }
@@ -183,22 +175,73 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         if (taskOutputs.clusterStateUnchanged()) {
             taskOutputs.notifySuccessfulTasksOnUnchangedClusterState();
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
-            logger.debug("processing [{}]: took [{}] no change in cluster_state", taskInputs.summary, executionTime);
-            warnAboutSlowTaskIfNeeded(executionTime, taskInputs.summary);
+            logger.debug("processing [{}]: took [{}] no change in cluster_state", summary, executionTime);
+            warnAboutSlowTaskIfNeeded(executionTime, summary);
         } else {
             ClusterState newClusterState = taskOutputs.newClusterState;
             if (logger.isTraceEnabled()) {
-                logger.trace("cluster state updated, source [{}]\n{}", taskInputs.summary, newClusterState);
+                logger.trace("cluster state updated, source [{}]\n{}", summary, newClusterState);
             } else if (logger.isDebugEnabled()) {
-                logger.debug("cluster state updated, version [{}], source [{}]", newClusterState.version(), taskInputs.summary);
+                logger.debug("cluster state updated, version [{}], source [{}]", newClusterState.version(), summary);
             }
             try {
-                publishChanges(taskInputs, taskOutputs);
+                ClusterChangedEvent clusterChangedEvent = new ClusterChangedEvent(summary, newClusterState, previousClusterState);
+                // new cluster state, notify all listeners
+                final DiscoveryNodes.Delta nodesDelta = clusterChangedEvent.nodesDelta();
+                if (nodesDelta.hasChanges() && logger.isInfoEnabled()) {
+                    String nodeSummary = nodesDelta.shortSummary();
+                    if (nodeSummary.length() > 0) {
+                        logger.info("{}, reason: {}", summary, nodeSummary);
+                    }
+                }
+
+                nodeConnectionsService.connectToNodes(newClusterState.nodes()); // TODO: push this down to discovery
+
+                logger.debug("publishing cluster state version [{}]", newClusterState.version());
+                try {
+                    clusterStatePublisher.accept(clusterChangedEvent, taskOutputs.createAckListener(threadPool, newClusterState));
+                } catch (Discovery.FailedToCommitClusterStateException t) {
+                    final long version = newClusterState.version();
+                    logger.warn(
+                        (Supplier<?>) () -> new ParameterizedMessage(
+                            "failing [{}]: failed to commit cluster state version [{}]", summary, version),
+                        t);
+                    // ensure that list of connected nodes in NodeConnectionsService is in-sync with the nodes of the current cluster state
+                    nodeConnectionsService.connectToNodes(previousClusterState.nodes());
+                    nodeConnectionsService.disconnectFromNodesExcept(previousClusterState.nodes());
+                    taskOutputs.publishingFailed(t);
+                    return;
+                } catch (NotMasterException e) {
+                    logger.debug("failing [{}]: local node is no longer master", summary);
+                    taskInputs.onNoLongerMaster();
+                    return;
+                }
+
+                stateListeners.forEach(listener -> {
+                    try {
+                        logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
+                        listener.clusterChanged(previousClusterState, newClusterState);
+                    } catch (Exception ex) {
+                        logger.warn("failed to notify MasterServiceListener", ex);
+                    }
+                });
+
+                taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
+
+                try {
+                    taskOutputs.clusterStatePublished(clusterChangedEvent);
+                } catch (Exception e) {
+                    logger.error(
+                        (Supplier<?>) () -> new ParameterizedMessage(
+                            "exception thrown while notifying executor of new cluster state publication [{}]",
+                            summary),
+                        e);
+                }
                 TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
-                logger.debug("processing [{}]: took [{}] done publishing updated cluster_state (version: {}, uuid: {})", taskInputs.summary,
+                logger.debug("processing [{}]: took [{}] done publishing updated cluster_state (version: {}, uuid: {})", summary,
                     executionTime, newClusterState.version(),
                     newClusterState.stateUUID());
-                warnAboutSlowTaskIfNeeded(executionTime, taskInputs.summary);
+                warnAboutSlowTaskIfNeeded(executionTime, summary);
             } catch (Exception e) {
                 TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, TimeValue.nsecToMSec(currentTimeInNanos() - startTimeNS)));
                 final long version = newClusterState.version();
@@ -210,7 +253,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
                         executionTime,
                         version,
                         stateUUID,
-                        taskInputs.summary,
+                        summary,
                         fullState),
                     e);
                 // TODO: do we want to call updateTask.onFailure here?
@@ -243,60 +286,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         }
 
         return newClusterState;
-    }
-
-    private void publishChanges(TaskInputs taskInputs, TaskOutputs taskOutputs) {
-        ClusterState previousClusterState = taskOutputs.previousClusterState;
-        ClusterState newClusterState = taskOutputs.newClusterState;
-
-        ClusterChangedEvent clusterChangedEvent = new ClusterChangedEvent(taskInputs.summary, newClusterState, previousClusterState);
-        // new cluster state, notify all listeners
-        final DiscoveryNodes.Delta nodesDelta = clusterChangedEvent.nodesDelta();
-        if (nodesDelta.hasChanges() && logger.isInfoEnabled()) {
-            String summary = nodesDelta.shortSummary();
-            if (summary.length() > 0) {
-                logger.info("{}, reason: {}", summary, taskInputs.summary);
-            }
-        }
-
-        nodeConnectionsService.connectToNodes(newClusterState.nodes());
-
-        logger.debug("publishing cluster state version [{}]", newClusterState.version());
-        try {
-            clusterStatePublisher.accept(clusterChangedEvent, taskOutputs.createAckListener(threadPool, newClusterState));
-        } catch (Discovery.FailedToCommitClusterStateException t) {
-            final long version = newClusterState.version();
-            logger.warn(
-                (Supplier<?>) () -> new ParameterizedMessage(
-                    "failing [{}]: failed to commit cluster state version [{}]", taskInputs.summary, version),
-                t);
-            // ensure that list of connected nodes in NodeConnectionsService is in-sync with the nodes of the current cluster state
-            nodeConnectionsService.connectToNodes(previousClusterState.nodes());
-            nodeConnectionsService.disconnectFromNodesExcept(previousClusterState.nodes());
-            taskOutputs.publishingFailed(t);
-            return;
-        }
-
-        stateListeners.forEach(listener -> {
-            try {
-                logger.trace("calling [{}] with change to version [{}]", listener, newClusterState.version());
-                listener.clusterChanged(previousClusterState, newClusterState);
-            } catch (Exception ex) {
-                logger.warn("failed to notify MasterServiceListener", ex);
-            }
-        });
-
-        taskOutputs.processedDifferentClusterState(previousClusterState, newClusterState);
-
-        try {
-            taskOutputs.clusterStatePublished(clusterChangedEvent);
-        } catch (Exception e) {
-            logger.error(
-                (Supplier<?>) () -> new ParameterizedMessage(
-                    "exception thrown while notifying executor of new cluster state publication [{}]",
-                    taskInputs.summary),
-                e);
-        }
     }
 
     /**
@@ -691,6 +680,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         return (executor, toExecute, tasksSummary) -> runTasks(new TaskInputs<>(executor, toExecute, tasksSummary));
     }
 
+    @Override
     public <T> void submitStateUpdateTasks(final String source,
                                            final Map<T, PublishingClusterStateTaskListener> tasks, final ClusterStateTaskConfig config,
                                            final ClusterStateTaskExecutor<T> executor) {

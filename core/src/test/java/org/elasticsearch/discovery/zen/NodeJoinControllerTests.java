@@ -141,7 +141,7 @@ public class NodeJoinControllerTests extends ESTestCase {
     public void testSimpleJoinAccumulation() throws InterruptedException, ExecutionException {
         setupMasterServiceAndNodeJoinController(initialState(true));
         List<DiscoveryNode> nodes = new ArrayList<>();
-        nodes.add(masterService.localNode());
+        nodes.add(masterService.state().nodes().getLocalNode());
 
         int nodeId = 0;
         for (int i = randomInt(5); i > 0; i--) {
@@ -445,7 +445,7 @@ public class NodeJoinControllerTests extends ESTestCase {
         setupMasterServiceAndNodeJoinController(initialState(true));
         Thread[] threads = new Thread[3 + randomInt(5)];
         ArrayList<DiscoveryNode> nodes = new ArrayList<>();
-        nodes.add(masterService.localNode());
+        nodes.add(masterService.state().nodes().getLocalNode());
         final CyclicBarrier barrier = new CyclicBarrier(threads.length);
         final List<Throwable> backgroundExceptions = new CopyOnWriteArrayList<>();
         for (int i = 0; i < threads.length; i++) {
@@ -487,7 +487,7 @@ public class NodeJoinControllerTests extends ESTestCase {
         Thread[] threads = new Thread[3 + randomInt(5)];
         final int requiredJoins = randomInt(threads.length);
         ArrayList<DiscoveryNode> nodes = new ArrayList<>();
-        nodes.add(masterService.localNode());
+        nodes.add(masterService.state().nodes().getLocalNode());
         final CyclicBarrier barrier = new CyclicBarrier(threads.length + 1);
         final List<Throwable> backgroundExceptions = new CopyOnWriteArrayList<>();
         for (int i = 0; i < threads.length; i++) {
