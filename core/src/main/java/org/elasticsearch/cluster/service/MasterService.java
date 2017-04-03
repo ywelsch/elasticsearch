@@ -111,6 +111,7 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
     protected synchronized void doStart() {
         Objects.requireNonNull(clusterStatePublisher, "please set a cluster state publisher before starting");
         Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
+        Objects.requireNonNull(clusterStateSupplier, "please set a cluster state supplier before starting");
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(MASTER_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, MASTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
         batchingClusterTaskExecutor = new BatchingClusterTaskExecutor<PublishingClusterStateTaskListener>(logger, threadExecutor, threadPool) {
