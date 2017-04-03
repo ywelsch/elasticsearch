@@ -75,7 +75,6 @@ public class ClusterService extends AbstractLifecycleComponent implements RunOnM
     }
 
     public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
-        masterService.setNodeConnectionsService(nodeConnectionsService);
         clusterApplierService.setNodeConnectionsService(nodeConnectionsService);
     }
 

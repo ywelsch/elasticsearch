@@ -29,7 +29,6 @@ import org.elasticsearch.cluster.ClusterState.Builder;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
-import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.NotMasterException;
 import org.elasticsearch.cluster.PublishingClusterStateTaskListener;
 import org.elasticsearch.cluster.metadata.MetaData;
@@ -79,8 +78,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
 
     private java.util.function.Supplier<ClusterState> clusterStateSupplier;
 
-    private NodeConnectionsService nodeConnectionsService;
-
     protected final ThreadPool threadPool;
 
     protected volatile BatchingClusterTaskExecutor<PublishingClusterStateTaskListener> batchingClusterTaskExecutor;
@@ -100,11 +97,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
         clusterStatePublisher = publisher;
     }
 
-    public synchronized void setNodeConnectionsService(NodeConnectionsService nodeConnectionsService) {
-        assert this.nodeConnectionsService == null : "nodeConnectionsService is already set";
-        this.nodeConnectionsService = nodeConnectionsService;
-    }
-
     public synchronized void setClusterStateSupplier(java.util.function.Supplier<ClusterState> clusterStateSupplier) {
         this.clusterStateSupplier = clusterStateSupplier;
     }
@@ -112,7 +104,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
     @Override
     protected synchronized void doStart() {
         Objects.requireNonNull(clusterStatePublisher, "please set a cluster state publisher before starting");
-        Objects.requireNonNull(nodeConnectionsService, "please set the node connection service before starting");
         Objects.requireNonNull(clusterStateSupplier, "please set a cluster state supplier before starting");
         PrioritizedEsThreadPoolExecutor threadExecutor = EsExecutors.newSinglePrioritizing(MASTER_UPDATE_THREAD_NAME,
             daemonThreadFactory(settings, MASTER_UPDATE_THREAD_NAME), threadPool.getThreadContext());
@@ -195,8 +186,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
                     }
                 }
 
-                nodeConnectionsService.connectToNodes(newClusterState.nodes()); // TODO: push this down to discovery
-
                 logger.debug("publishing cluster state version [{}]", newClusterState.version());
                 try {
                     clusterStatePublisher.accept(clusterChangedEvent, taskOutputs.createAckListener(threadPool, newClusterState));
@@ -206,9 +195,6 @@ public class MasterService extends AbstractLifecycleComponent implements RunOnMa
                         (Supplier<?>) () -> new ParameterizedMessage(
                             "failing [{}]: failed to commit cluster state version [{}]", summary, version),
                         t);
-                    // ensure that list of connected nodes in NodeConnectionsService is in-sync with the nodes of the current cluster state
-                    nodeConnectionsService.connectToNodes(previousClusterState.nodes());
-                    nodeConnectionsService.disconnectFromNodesExcept(previousClusterState.nodes());
                     taskOutputs.publishingFailed(t);
                     return;
                 } catch (NotMasterException e) {
