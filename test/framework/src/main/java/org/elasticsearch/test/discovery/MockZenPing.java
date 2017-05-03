@@ -26,6 +26,7 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.discovery.zen.PingContextProvider;
 import org.elasticsearch.discovery.zen.ZenPing;
+import org.elasticsearch.discovery.zen.ZenState;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -84,12 +85,13 @@ public final class MockZenPing extends AbstractComponent implements ZenPing {
     }
 
     private ClusterName getClusterName() {
-        return contextProvider.clusterState().getClusterName();
+        return contextProvider.currentState().getClusterState().getClusterName();
     }
 
     private PingResponse getPingResponse() {
-        final ClusterState clusterState = contextProvider.clusterState();
-        return new PingResponse(clusterState.nodes().getLocalNode(), clusterState.nodes().getMasterNode(), clusterState);
+        final ZenState zenState = contextProvider.currentState();
+        return new PingResponse(zenState.getClusterState().nodes().getLocalNode(), zenState.getClusterState().nodes().getMasterNode(),
+            zenState);
     }
 
     private Set<MockZenPing> getActiveNodesForCurrentCluster() {

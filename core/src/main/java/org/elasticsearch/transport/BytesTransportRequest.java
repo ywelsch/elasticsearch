@@ -30,7 +30,7 @@ import java.io.IOException;
  * A specialized, bytes only request, that can potentially be optimized on the network
  * layer, specifically for the same large buffer send to several nodes.
  */
-public class BytesTransportRequest extends TransportRequest {
+public abstract class BytesTransportRequest extends TransportRequest {
 
     BytesReference bytes;
     Version version;
@@ -55,9 +55,12 @@ public class BytesTransportRequest extends TransportRequest {
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
+        readAdditionalFields(in);
         bytes = in.readBytesReference();
         version = in.getVersion();
     }
+
+    protected abstract void readAdditionalFields(StreamInput in) throws IOException;
 
     /**
      * Writes the data in a "thin" manner, without the actual bytes, assumes
@@ -65,8 +68,11 @@ public class BytesTransportRequest extends TransportRequest {
      */
     public void writeThin(StreamOutput out) throws IOException {
         super.writeTo(out);
+        writeAdditionalFields(out);
         out.writeVInt(bytes.length());
     }
+
+    protected abstract void writeAdditionalFields(StreamOutput out) throws IOException;
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {

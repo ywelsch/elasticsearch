@@ -179,7 +179,8 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicReference<Exception> reference = new AtomicReference<>();
         internalCluster().getInstance(TransportService.class, noneMasterNode).sendRequest(node, PublishClusterStateAction.SEND_ACTION_NAME,
-                new BytesTransportRequest(bytes, Version.CURRENT), new EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
+            new PublishClusterStateAction.SendClusterStateRequest(1L, bytes, Version.CURRENT),
+            new EmptyTransportResponseHandler(ThreadPool.Names.SAME) {
 
             @Override
             public void handleResponse(TransportResponse.Empty response) {
@@ -197,7 +198,9 @@ public class ZenDiscoveryIT extends ESIntegTestCase {
         latch.await();
         assertThat(reference.get(), notNullValue());
         assertThat(ExceptionsHelper.detailedMessage(reference.get()),
-                containsString("cluster state from a different master than the current one, rejecting"));
+                either(containsString("cluster state from a different master than the current one, rejecting"))
+                    .or(containsString("have better state already")
+                ));
     }
 
     public void testHandleNodeJoin_incompatibleClusterState() throws UnknownHostException {

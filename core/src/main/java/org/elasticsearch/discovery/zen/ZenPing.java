@@ -19,6 +19,7 @@
 
 package org.elasticsearch.discovery.zen;
 
+import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -60,6 +61,9 @@ public interface ZenPing extends Releasable {
 
         private DiscoveryNode master;
 
+        private long nodeTerm;
+        private DiscoPhase discoPhase;
+        private long clusterStateTerm;
         private long clusterStateVersion;
 
         private PingResponse() {
@@ -72,18 +76,24 @@ public interface ZenPing extends Releasable {
          * @param clusterStateVersion the current cluster state version of that node
          *                            ({@link ElectMasterService.MasterCandidate#UNRECOVERED_CLUSTER_VERSION} for not recovered)
          */
-        PingResponse(DiscoveryNode node, DiscoveryNode master, ClusterName clusterName, long clusterStateVersion) {
+        PingResponse(DiscoveryNode node, DiscoveryNode master, ClusterName clusterName, long nodeTerm, DiscoPhase discoPhase,
+                     long clusterStateTerm, long clusterStateVersion) {
             this.id = idGenerator.incrementAndGet();
             this.node = node;
             this.master = master;
             this.clusterName = clusterName;
+            this.nodeTerm = nodeTerm;
+            this.discoPhase = discoPhase;
+            this.clusterStateTerm = clusterStateTerm;
             this.clusterStateVersion = clusterStateVersion;
         }
 
-        public PingResponse(DiscoveryNode node, DiscoveryNode master, ClusterState state) {
-            this(node, master, state.getClusterName(),
-                state.blocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) ?
-                    ElectMasterService.MasterCandidate.UNRECOVERED_CLUSTER_VERSION : state.version());
+        public PingResponse(DiscoveryNode node, DiscoveryNode master, ZenState state) {
+            this(node, master, state.getClusterState().getClusterName(), state.getNodeTerm(), state.getDiscoPhase(),
+                state.getClusterState().blocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) ?
+                    ElectMasterService.MasterCandidate.UNRECOVERED_CLUSTER_TERM: state.getClusterStateTerm(),
+                state.getClusterState().blocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) ?
+                    ElectMasterService.MasterCandidate.UNRECOVERED_CLUSTER_VERSION : state.getClusterState().version());
         }
 
             /**
@@ -109,6 +119,25 @@ public interface ZenPing extends Releasable {
         }
 
         /**
+         * the current node term
+         */
+        public long getNodeTerm() {
+            return nodeTerm;
+        }
+
+        public DiscoPhase getDiscoPhase() {
+            return discoPhase;
+        }
+
+        /**
+         * the current cluster state term of that node ({@link ElectMasterService.MasterCandidate#UNRECOVERED_CLUSTER_TERM}
+         * for not recovered)
+         */
+        public long getClusterStateTerm() {
+            return clusterStateTerm;
+        }
+
+        /**
          * the current cluster state version of that node ({@link ElectMasterService.MasterCandidate#UNRECOVERED_CLUSTER_VERSION}
          * for not recovered) */
         public long getClusterStateVersion() {
@@ -128,6 +157,15 @@ public interface ZenPing extends Releasable {
             if (in.readBoolean()) {
                 master = new DiscoveryNode(in);
             }
+            if (in.getVersion().onOrAfter(Version.V_6_0_0_alpha1)) {
+                this.nodeTerm = in.readLong();
+                this.discoPhase = DiscoPhase.readFrom(in);
+                this.clusterStateTerm = in.readLong();
+            } else {
+                this.nodeTerm = ElectMasterService.MasterCandidate.UNRECOVERED_CLUSTER_TERM;
+                this.discoPhase = null;
+                this.clusterStateTerm = ElectMasterService.MasterCandidate.UNRECOVERED_CLUSTER_TERM;
+            }
             this.clusterStateVersion = in.readLong();
             this.id = in.readLong();
         }
@@ -142,14 +180,21 @@ public interface ZenPing extends Releasable {
                 out.writeBoolean(true);
                 master.writeTo(out);
             }
+            if (out.getVersion().onOrAfter(Version.V_6_0_0_alpha1)) {
+                out.writeLong(nodeTerm);
+                // do we have to account for null value here? it could be the response from another node, that we copy here
+                discoPhase.writeTo(out);
+                out.writeLong(clusterStateTerm);
+            }
             out.writeLong(clusterStateVersion);
             out.writeLong(id);
         }
 
         @Override
         public String toString() {
-            return "ping_response{node [" + node + "], id[" + id + "], master [" + master + "]," +
-                   "cluster_state_version [" + clusterStateVersion + "], cluster_name[" + clusterName.value() + "]}";
+            return "ping_response{node [" + node + "], id[" + id + "], master [" + master +
+                "], cluster_state_term [" + clusterStateTerm + "], cluster_state_version [" + clusterStateVersion +
+                "], cluster_name[" + clusterName.value() + "]}";
         }
     }
 

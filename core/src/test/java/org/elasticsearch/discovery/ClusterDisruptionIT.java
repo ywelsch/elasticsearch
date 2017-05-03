@@ -390,6 +390,7 @@ public class ClusterDisruptionIT extends AbstractDisruptionTestCase {
         assertThat(client().prepareSearch().setSize(0).get().getHits().getTotalHits(), equalTo(100L));
     }
 
+    @AwaitsFix(bugUrl = "ZenDiscovery2 does not simply allow the cluster to proceed in case where master state was lost")
     public void testIndexImportedFromDataOnlyNodesIfMasterLostDataFolder() throws Exception {
         // test for https://github.com/elastic/elasticsearch/issues/8823
         configureCluster(2, null, 1);

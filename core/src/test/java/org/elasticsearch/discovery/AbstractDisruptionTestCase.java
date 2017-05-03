@@ -127,10 +127,7 @@ public abstract class AbstractDisruptionTestCase extends ESIntegTestCase {
         ensureStableCluster(numberOfNodes);
 
         // TODO: this is a temporary solution so that nodes will not base their reaction to a partition based on previous successful results
-        ZenPing zenPing = ((TestZenDiscovery) internalCluster().getInstance(Discovery.class)).getZenPing();
-        if (zenPing instanceof UnicastZenPing) {
-            ((UnicastZenPing) zenPing).clearTemporalResponses();
-        }
+        clearTemporalResponses();
         return nodes;
     }
 
@@ -289,6 +286,15 @@ public abstract class AbstractDisruptionTestCase extends ESIntegTestCase {
         side2.remove(isolatedNode);
 
         return new TwoPartitions(side1, side2);
+    }
+
+    protected void clearTemporalResponses() {
+        // Forcefully clean temporal response lists on all nodes. Otherwise the node in the unicast host list
+        // includes all the other nodes that have pinged it and the issue doesn't manifest
+        final ZenPing zenPing = ((TestZenDiscovery) internalCluster().getInstance(Discovery.class)).getZenPing();
+        if (zenPing instanceof UnicastZenPing) {
+            ((UnicastZenPing) zenPing).clearTemporalResponses();
+        }
     }
 
 }

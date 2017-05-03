@@ -50,6 +50,8 @@ public class ElectMasterService extends AbstractComponent {
      */
     public static class MasterCandidate {
 
+        public static final long UNRECOVERED_CLUSTER_TERM = -1;
+
         public static final long UNRECOVERED_CLUSTER_VERSION = -1;
 
         final DiscoveryNode node;

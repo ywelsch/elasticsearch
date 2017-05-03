@@ -32,9 +32,9 @@ import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen.ElectMasterService;
-import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.monitor.jvm.HotThreads;
 import org.elasticsearch.test.ESIntegTestCase;
+import org.elasticsearch.test.discovery.TestZenDiscovery;
 import org.elasticsearch.test.disruption.IntermittentLongGCDisruption;
 import org.elasticsearch.test.disruption.LongGCDisruption;
 import org.elasticsearch.test.disruption.NetworkDisruption;
@@ -455,7 +455,7 @@ public class MasterDisruptionIT extends AbstractDisruptionTestCase {
             assertTrue(
                     "node [" + node + "] is still joining master",
                     awaitBusy(
-                            () -> !((ZenDiscovery) internalCluster().getInstance(Discovery.class, node)).joiningCluster(),
+                            () -> !((TestZenDiscovery) internalCluster().getInstance(Discovery.class, node)).joiningCluster(),
                             30,
                             TimeUnit.SECONDS
                     )

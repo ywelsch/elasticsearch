@@ -157,7 +157,8 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             Set<Role> roles = new HashSet<>(randomSubsetOf(Arrays.asList(Role.values())));
             DiscoveryNode node = new DiscoveryNode("node_" + i, "id_" + i, buildNewFakeTransportAddress(), Collections.emptyMap(),
                     roles, Version.CURRENT);
-            responses.add(new ZenPing.PingResponse(node, randomBoolean() ? null : node, new ClusterName("test"), randomLong()));
+            responses.add(new ZenPing.PingResponse(node, randomBoolean() ? null : node, new ClusterName("test"), randomLong(),
+                DiscoPhase.Pinging, randomLong(), randomLong()));
             allNodes.add(node);
             if (node.isMasterNode()) {
                 masterNodes.add(node);

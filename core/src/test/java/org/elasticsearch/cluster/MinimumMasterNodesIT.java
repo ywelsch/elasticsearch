@@ -354,6 +354,7 @@ public class MinimumMasterNodesIT extends ESIntegTestCase {
         assertFalse(client().admin().cluster().prepareHealth().setWaitForNodes(Integer.toString(nodeCount)).get().isTimedOut());
     }
 
+    @AwaitsFix(bugUrl = "zen2 will fail on the last assertion, because it will retry to publish the change once cluster is healed")
     public void testCanNotPublishWithoutMinMastNodes() throws Exception {
         Settings settings = Settings.builder()
                 .put(ZenDiscovery.PING_TIMEOUT_SETTING.getKey(), "200ms")

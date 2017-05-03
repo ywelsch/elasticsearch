@@ -307,7 +307,7 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
             throw new RuntimeException(e);
         }
         seedNodes.addAll(hostsProvider.buildDynamicNodes());
-        final DiscoveryNodes nodes = contextProvider.clusterState().nodes();
+        final DiscoveryNodes nodes = contextProvider.currentState().getClusterState().nodes();
         // add all possible master nodes that were active in the last known cluster configuration
         for (ObjectCursor<DiscoveryNode> masterNode : nodes.getMasterNodes().values()) {
             seedNodes.add(masterNode.value);
@@ -458,7 +458,7 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
         final UnicastPingRequest pingRequest = new UnicastPingRequest();
         pingRequest.id = pingingRound.id();
         pingRequest.timeout = timeout;
-        ClusterState lastState = contextProvider.clusterState();
+        ZenState lastState = contextProvider.currentState();
 
         pingRequest.pingResponse = createPingResponse(lastState);
 
@@ -477,7 +477,7 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
         // resolve what we can via the latest cluster state
         final Set<DiscoveryNode> nodesToPing = uniqueNodesByAddress.values().stream()
             .map(node -> {
-                DiscoveryNode foundNode = lastState.nodes().findByAddress(node.getAddress());
+                DiscoveryNode foundNode = lastState.getClusterState().nodes().findByAddress(node.getAddress());
                 if (foundNode == null) {
                     return node;
                 } else {
@@ -588,6 +588,7 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
     private UnicastPingResponse handlePingRequest(final UnicastPingRequest request) {
         assert clusterName.equals(request.pingResponse.clusterName()) :
             "got a ping request from a different cluster. expected " + clusterName + " got " + request.pingResponse.clusterName();
+        contextProvider.onPing(request.pingResponse.node(), request.pingResponse.getNodeTerm());
         temporalResponses.add(request.pingResponse);
         // add to any ongoing pinging
         activePingingRounds.values().forEach(p -> p.addPingResponseToCollection(request.pingResponse));
@@ -595,7 +596,7 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
             () -> temporalResponses.remove(request.pingResponse));
 
         List<PingResponse> pingResponses = CollectionUtils.iterableAsArrayList(temporalResponses);
-        pingResponses.add(createPingResponse(contextProvider.clusterState()));
+        pingResponses.add(createPingResponse(contextProvider.currentState()));
 
         UnicastPingResponse unicastPingResponse = new UnicastPingResponse();
         unicastPingResponse.id = request.id;
@@ -648,9 +649,9 @@ public class UnicastZenPing extends AbstractComponent implements ZenPing {
         }
     }
 
-    private PingResponse createPingResponse(ClusterState clusterState) {
-        DiscoveryNodes discoNodes = clusterState.nodes();
-        return new PingResponse(discoNodes.getLocalNode(), discoNodes.getMasterNode(), clusterState);
+    private PingResponse createPingResponse(ZenState zenState) {
+        DiscoveryNodes discoNodes = zenState.getClusterState().nodes();
+        return new PingResponse(discoNodes.getLocalNode(), discoNodes.getMasterNode(), zenState);
     }
 
     static class UnicastPingResponse extends TransportResponse {

@@ -32,6 +32,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.single.SingleNodeDiscovery;
 import org.elasticsearch.discovery.zen.UnicastHostsProvider;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
+import org.elasticsearch.discovery.zen.ZenDiscovery2;
 import org.elasticsearch.plugins.DiscoveryPlugin;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
@@ -85,6 +86,9 @@ public class DiscoveryModule {
         Map<String, Supplier<Discovery>> discoveryTypes = new HashMap<>();
         discoveryTypes.put("zen",
             () -> new ZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
+                clusterSettings, hostsProvider, allocationService));
+        discoveryTypes.put("zen2",
+            () -> new ZenDiscovery2(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier,
                 clusterSettings, hostsProvider, allocationService));
         discoveryTypes.put("tribe", () -> new TribeDiscovery(settings, transportService, masterService, clusterApplier));
         discoveryTypes.put("single-node", () -> new SingleNodeDiscovery(settings, transportService, masterService, clusterApplier));

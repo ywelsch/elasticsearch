@@ -128,7 +128,7 @@ public class PublishClusterStateActionTests extends ESTestCase {
         }
 
         @Override
-        public void onIncomingClusterState(ClusterState incomingState) {
+        public void onIncomingClusterState(long term, ClusterState incomingState) {
             ZenDiscovery.validateIncomingState(logger, incomingState, clusterState);
             pendingStatesQueue.addPending(incomingState);
         }
@@ -486,7 +486,8 @@ public class PublishClusterStateActionTests extends ESTestCase {
         clusterState = ClusterState.builder(clusterState).blocks(ClusterBlocks.builder()
             .addGlobalBlock(MetaData.CLUSTER_READ_ONLY_BLOCK)).incrementVersion().build();
 
-        ClusterState unserializableClusterState = new ClusterState(clusterState.version(), clusterState.stateUUID(), clusterState) {
+        ClusterState unserializableClusterState = new ClusterState(clusterState.version(), clusterState.stateUUID(),
+            clusterState) {
             @Override
             public Diff<ClusterState> diff(ClusterState previousState) {
                 return new Diff<ClusterState>() {
@@ -638,7 +639,8 @@ public class PublishClusterStateActionTests extends ESTestCase {
         logger.info("--> publishing states");
         for (ClusterState state : states) {
             node.action.handleIncomingClusterStateRequest(
-                new BytesTransportRequest(PublishClusterStateAction.serializeFullClusterState(state, Version.CURRENT), Version.CURRENT),
+                new PublishClusterStateAction.SendClusterStateRequest(0L,
+                    PublishClusterStateAction.serializeFullClusterState(state, Version.CURRENT), Version.CURRENT),
                 channel);
             assertThat(channel.response.get(), equalTo((TransportResponse) TransportResponse.Empty.INSTANCE));
             assertThat(channel.error.get(), nullValue());
@@ -741,7 +743,7 @@ public class PublishClusterStateActionTests extends ESTestCase {
                                              ClusterState previousState, int minMasterNodes) throws InterruptedException {
         AssertingAckListener assertingAckListener = new AssertingAckListener(state.nodes().getSize() - 1);
         ClusterChangedEvent changedEvent = new ClusterChangedEvent("test update", state, previousState);
-        action.publish(changedEvent, minMasterNodes, assertingAckListener);
+        action.publish(0L, changedEvent, minMasterNodes, assertingAckListener);
         return assertingAckListener;
     }
 
@@ -815,7 +817,7 @@ public class PublishClusterStateActionTests extends ESTestCase {
         }
 
         @Override
-        protected void handleIncomingClusterStateRequest(BytesTransportRequest request, TransportChannel channel) throws IOException {
+        protected void handleIncomingClusterStateRequest(SendClusterStateRequest request, TransportChannel channel) throws IOException {
             if (errorOnSend.get()) {
                 throw new ElasticsearchException("forced error on incoming cluster state");
             }

@@ -19,14 +19,25 @@
 
 package org.elasticsearch.discovery.zen;
 
-import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.io.stream.Writeable;
 
-public interface PingContextProvider {
+import java.io.IOException;
 
-    /** return the current state of the node */
-    ZenState currentState();
+public enum DiscoPhase implements Writeable {
+    Pinging,
+    Become_Follower,
+    Follower,
+    Become_Master,
+    Master;
 
-    default void onPing(DiscoveryNode node, long nodeTerm) {
-        // do nothing by default
+    @Override
+    public void writeTo(StreamOutput out) throws IOException {
+        out.writeByte((byte) this.ordinal());
+    }
+
+    public static DiscoPhase readFrom(StreamInput in) throws IOException {
+        return DiscoPhase.values()[in.readByte()];
     }
 }

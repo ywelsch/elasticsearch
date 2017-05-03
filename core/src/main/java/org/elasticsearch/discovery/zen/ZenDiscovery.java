@@ -299,7 +299,6 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         IOUtils.close(masterFD, nodesFD);
     }
 
-    @Override
     public ClusterState clusterState() {
         ClusterState clusterState = committedState.get();
         assert clusterState != null : "accessing cluster state before it is set";
@@ -319,7 +318,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         pendingStatesQueue.addPending(newState);
 
         try {
-            publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
+            publishClusterState.publish(ZenState.UNKNOWN_TERM, clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
         } catch (FailedToCommitClusterStateException t) {
             // cluster service logs a WARN message
             logger.debug("failed to publish cluster state version [{}] (not enough nodes acknowledged, min master nodes [{}])",
@@ -506,7 +505,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
-                membership.sendJoinRequestBlocking(masterNode, transportService.getLocalNode(), joinTimeout);
+                membership.sendJoinRequestBlocking(masterNode, transportService.getLocalNode(), 0L, joinTimeout);
                 return true;
             } catch (Exception e) {
                 final Throwable unwrap = ExceptionsHelper.unwrapCause(e);
@@ -546,6 +545,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         synchronized (stateMutex) {
             committedState.set(clusterState);
         }
+    }
+
+    @Override
+    public ZenState currentState() {
+        return new ZenState(DiscoPhase.Pinging, 0L, 0L, clusterState());
     }
 
     // visible for testing
@@ -927,7 +931,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)
             .filter(n -> n.equals(localNode)).findAny().isPresent() == false;
 
-        fullPingResponses.add(new ZenPing.PingResponse(localNode, null, this.clusterState()));
+        fullPingResponses.add(new ZenPing.PingResponse(localNode, null, new ZenState(DiscoPhase.Pinging, ZenState.UNKNOWN_TERM,
+            ZenState.UNKNOWN_TERM, this.clusterState())));
 
         // filter responses
         final List<ZenPing.PingResponse> pingResponses = filterPingResponses(fullPingResponses, masterElectionIgnoreNonMasters, logger);
@@ -1072,7 +1077,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     @Override
-    public void onIncomingClusterState(ClusterState incomingState) {
+    public void onIncomingClusterState(long term, ClusterState incomingState) {
         validateIncomingState(logger, incomingState, committedState.get());
         pendingStatesQueue.addPending(incomingState);
     }
@@ -1131,8 +1136,8 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     private class MembershipListener implements MembershipAction.MembershipListener {
         @Override
-        public void onJoin(DiscoveryNode node, MembershipAction.JoinCallback callback) {
-            handleJoinRequest(node, ZenDiscovery.this.clusterState(), callback);
+        public void onJoin(MembershipAction.JoinRequest joinRequest, MembershipAction.JoinCallback callback) {
+            handleJoinRequest(joinRequest.getDiscoveryNode(), ZenDiscovery.this.clusterState(), callback);
         }
 
         @Override

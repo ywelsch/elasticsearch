@@ -19,11 +19,6 @@
 
 package org.elasticsearch.test.discovery;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Supplier;
-
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.cluster.service.MasterService;
@@ -33,25 +28,32 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoveryModule;
+import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.zen.UnicastHostsProvider;
 import org.elasticsearch.discovery.zen.ZenDiscovery;
+import org.elasticsearch.discovery.zen.ZenDiscovery2;
 import org.elasticsearch.discovery.zen.ZenPing;
 import org.elasticsearch.plugins.DiscoveryPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+
 /**
  * A alternative zen discovery which allows using mocks for things like pings, as well as
  * giving access to internals.
  */
-public class TestZenDiscovery extends ZenDiscovery {
+public interface TestZenDiscovery extends Discovery {
 
-    public static final Setting<Boolean> USE_MOCK_PINGS =
-        Setting.boolSetting("discovery.zen.use_mock_pings", true, Setting.Property.NodeScope);
+    Setting<Boolean> USE_MOCK_PINGS = Setting.boolSetting("discovery.zen.use_mock_pings", true, Setting.Property.NodeScope);
 
     /** A plugin which installs mock discovery and configures it to be used. */
-    public static class TestPlugin extends Plugin implements DiscoveryPlugin {
+    class TestPlugin extends Plugin implements DiscoveryPlugin {
         private Settings settings;
         public TestPlugin(Settings settings) {
             this.settings = settings;
@@ -62,9 +64,14 @@ public class TestZenDiscovery extends ZenDiscovery {
                                                                   MasterService masterService, ClusterApplier clusterApplier,
                                                                   ClusterSettings clusterSettings, UnicastHostsProvider hostsProvider,
                                                                   AllocationService allocationService) {
-            return Collections.singletonMap("test-zen",
-                () -> new TestZenDiscovery(settings, threadPool, transportService, namedWriteableRegistry, masterService,
+            Map<String, Supplier<Discovery>> discoveryTypes = new HashMap<>();
+            discoveryTypes.put("test-zen",
+                () -> new ZenDiscoveryTestImpl(settings, threadPool, transportService, namedWriteableRegistry, masterService,
                     clusterApplier, clusterSettings, hostsProvider, allocationService));
+            discoveryTypes.put("test-zen2",
+                () -> new ZenDiscoveryTestImpl2(settings, threadPool, transportService, namedWriteableRegistry, masterService,
+                    clusterApplier, clusterSettings, hostsProvider, allocationService));
+            return Collections.unmodifiableMap(discoveryTypes);
         }
 
         @Override
@@ -74,29 +81,64 @@ public class TestZenDiscovery extends ZenDiscovery {
 
         @Override
         public Settings additionalSettings() {
-            return Settings.builder().put(DiscoveryModule.DISCOVERY_TYPE_SETTING.getKey(), "test-zen").build();
+            return Settings.builder().put(DiscoveryModule.DISCOVERY_TYPE_SETTING.getKey(), "test-zen2").build();
         }
     }
 
-    private TestZenDiscovery(Settings settings, ThreadPool threadPool, TransportService transportService,
-                             NamedWriteableRegistry namedWriteableRegistry, MasterService masterService,
-                             ClusterApplier clusterApplier, ClusterSettings clusterSettings, UnicastHostsProvider hostsProvider,
-                             AllocationService allocationService) {
-        super(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier, clusterSettings,
-            hostsProvider, allocationService);
-    }
+    ZenPing getZenPing();
 
-    @Override
-    protected ZenPing newZenPing(Settings settings, ThreadPool threadPool, TransportService transportService,
-                                 UnicastHostsProvider hostsProvider) {
-        if (USE_MOCK_PINGS.get(settings)) {
-            return new MockZenPing(settings, this);
-        } else {
-            return super.newZenPing(settings, threadPool, transportService, hostsProvider);
+    boolean joiningCluster();
+
+    DiscoverySettings getDiscoverySettings();
+
+    class ZenDiscoveryTestImpl extends ZenDiscovery implements TestZenDiscovery {
+        public ZenDiscoveryTestImpl(Settings settings, ThreadPool threadPool, TransportService transportService,
+                                    NamedWriteableRegistry namedWriteableRegistry, MasterService masterService,
+                                    ClusterApplier clusterApplier, ClusterSettings clusterSettings,
+                                    UnicastHostsProvider hostsProvider, AllocationService allocationService) {
+            super(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier, clusterSettings,
+                hostsProvider, allocationService);
+        }
+
+        @Override
+        protected ZenPing newZenPing(Settings settings, ThreadPool threadPool, TransportService transportService,
+                                     UnicastHostsProvider hostsProvider) {
+            if (USE_MOCK_PINGS.get(settings)) {
+                return new MockZenPing(settings, this);
+            } else {
+                return super.newZenPing(settings, threadPool, transportService, hostsProvider);
+            }
+        }
+
+        @Override
+        public ZenPing getZenPing() {
+            return zenPing;
         }
     }
 
-    public ZenPing getZenPing() {
-        return zenPing;
+    class ZenDiscoveryTestImpl2 extends ZenDiscovery2 implements TestZenDiscovery {
+        public ZenDiscoveryTestImpl2(Settings settings, ThreadPool threadPool, TransportService transportService,
+                                     NamedWriteableRegistry namedWriteableRegistry, MasterService masterService,
+                                     ClusterApplier clusterApplier, ClusterSettings clusterSettings,
+                                     UnicastHostsProvider hostsProvider, AllocationService allocationService) {
+            super(settings, threadPool, transportService, namedWriteableRegistry, masterService, clusterApplier, clusterSettings,
+                hostsProvider, allocationService);
+        }
+
+        @Override
+        protected ZenPing newZenPing(Settings settings, ThreadPool threadPool, TransportService transportService,
+                                     UnicastHostsProvider hostsProvider) {
+            if (USE_MOCK_PINGS.get(settings)) {
+                return new MockZenPing(settings, this);
+            } else {
+                return super.newZenPing(settings, threadPool, transportService, hostsProvider);
+            }
+        }
+
+        @Override
+        public ZenPing getZenPing() {
+            return zenPing;
+        }
     }
+
 }

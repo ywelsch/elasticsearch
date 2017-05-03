@@ -48,6 +48,7 @@ public class SpecificMasterNodesIT extends ESIntegTestCase {
             .put(DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING.getKey(), 1).build();
     }
 
+    @AwaitsFix(bugUrl = "this test requires a data node to rejoin a blank master, after it was part of another cluster before")
     public void testSimpleOnlyMasterNodeElection() throws IOException {
         logger.info("--> start data node / non master node");
         internalCluster().startNode(Settings.builder().put(Node.NODE_DATA_SETTING.getKey(), true).put(Node.NODE_MASTER_SETTING.getKey(), false)

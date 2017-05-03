@@ -32,9 +32,11 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
 import org.elasticsearch.transport.TransportChannel;
+import org.elasticsearch.transport.TransportFuture;
 import org.elasticsearch.transport.TransportRequest;
 import org.elasticsearch.transport.TransportRequestHandler;
 import org.elasticsearch.transport.TransportResponse;
+import org.elasticsearch.transport.TransportResponseHandler;
 import org.elasticsearch.transport.TransportService;
 
 import java.io.IOException;
@@ -53,7 +55,7 @@ public class MembershipAction extends AbstractComponent {
     }
 
     public interface MembershipListener {
-        void onJoin(DiscoveryNode node, JoinCallback callback);
+        void onJoin(JoinRequest joinRequest, JoinCallback callback);
 
         void onLeave(DiscoveryNode node);
     }
@@ -87,9 +89,16 @@ public class MembershipAction extends AbstractComponent {
             EmptyTransportResponseHandler.INSTANCE_SAME).txGet(timeout.millis(), TimeUnit.MILLISECONDS);
     }
 
-    public void sendJoinRequestBlocking(DiscoveryNode masterNode, DiscoveryNode node, TimeValue timeout) {
-        transportService.submitRequest(masterNode, DISCOVERY_JOIN_ACTION_NAME, new JoinRequest(node),
+    public void sendJoinRequestBlocking(DiscoveryNode masterNode, DiscoveryNode node, long term, TimeValue timeout) {
+        transportService.submitRequest(masterNode, DISCOVERY_JOIN_ACTION_NAME, new JoinRequest(node, term),
             EmptyTransportResponseHandler.INSTANCE_SAME).txGet(timeout.millis(), TimeUnit.MILLISECONDS);
+    }
+
+    public void sendJoinRequest(DiscoveryNode masterNode, DiscoveryNode node, long term,
+                                TransportResponseHandler<TransportResponse.Empty> responseHandler) {
+
+        transportService.submitRequest(masterNode, DISCOVERY_JOIN_ACTION_NAME, new JoinRequest(node, term),
+            responseHandler);
     }
 
     /**
@@ -104,23 +113,51 @@ public class MembershipAction extends AbstractComponent {
 
         DiscoveryNode node;
 
+        long term;
+
         public JoinRequest() {
         }
 
-        private JoinRequest(DiscoveryNode node) {
+        public JoinRequest(DiscoveryNode node, long term) {
             this.node = node;
+            this.term = term;
         }
 
         @Override
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
             node = new DiscoveryNode(in);
+            if (in.getVersion().onOrAfter(Version.V_6_0_0_alpha1)) {
+                term = in.readLong();
+            } else {
+                term = ZenState.UNKNOWN_TERM;
+            }
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
             node.writeTo(out);
+            if (out.getVersion().onOrAfter(Version.V_6_0_0_alpha1)) {
+                out.writeLong(term);
+            }
+        }
+
+        public DiscoveryNode getDiscoveryNode() {
+            return node;
+        }
+
+        public long getTerm() {
+            return term;
+        }
+
+        public boolean voting() {
+            return node.isMasterNode();
+        }
+
+        @Override
+        public String toString() {
+            return "JoinRequest{term=" + term + ",node=" + node + "}";
         }
     }
 
@@ -129,7 +166,7 @@ public class MembershipAction extends AbstractComponent {
 
         @Override
         public void messageReceived(final JoinRequest request, final TransportChannel channel) throws Exception {
-            listener.onJoin(request.node, new JoinCallback() {
+            listener.onJoin(request, new JoinCallback() {
                 @Override
                 public void onSuccess() {
                     try {

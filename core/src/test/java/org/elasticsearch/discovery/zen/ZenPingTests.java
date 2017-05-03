@@ -38,6 +38,7 @@ public class ZenPingTests extends ESTestCase {
         DiscoveryNode[] nodes = new DiscoveryNode[randomIntBetween(1, 30)];
         long maxIdPerNode[] = new long[nodes.length];
         DiscoveryNode masterPerNode[] = new DiscoveryNode[nodes.length];
+        long clusterStateTermPerNode[] = new long[nodes.length];
         long clusterStateVersionPerNode[] = new long[nodes.length];
         ArrayList<ZenPing.PingResponse> pings = new ArrayList<>();
         for (int i = 0; i < nodes.length; i++) {
@@ -50,9 +51,10 @@ public class ZenPingTests extends ESTestCase {
             if (randomBoolean()) {
                 masterNode = nodes[randomInt(nodes.length - 1)];
             }
+            long clusterStateTerm = randomLong();
             long clusterStateVersion = randomLong();
             ZenPing.PingResponse ping = new ZenPing.PingResponse(nodes[node], masterNode, ClusterName.CLUSTER_NAME_SETTING.
-                getDefault(Settings.EMPTY), clusterStateVersion);
+                getDefault(Settings.EMPTY), randomLong(), DiscoPhase.Pinging, clusterStateTerm, clusterStateVersion);
             if (rarely()) {
                 // ignore some pings
                 continue;
@@ -60,6 +62,7 @@ public class ZenPingTests extends ESTestCase {
             // update max ping info
             maxIdPerNode[node] = ping.id();
             masterPerNode[node] = masterNode;
+            clusterStateTermPerNode[node] = clusterStateTerm;
             clusterStateVersionPerNode[node] = clusterStateVersion;
             pings.add(ping);
         }
@@ -76,6 +79,7 @@ public class ZenPingTests extends ESTestCase {
             int nodeId = Integer.parseInt(ping.node().getId());
             assertThat(maxIdPerNode[nodeId], equalTo(ping.id()));
             assertThat(masterPerNode[nodeId], equalTo(ping.master()));
+            assertThat(clusterStateTermPerNode[nodeId], equalTo(ping.getClusterStateTerm()));
             assertThat(clusterStateVersionPerNode[nodeId], equalTo(ping.getClusterStateVersion()));
 
             maxIdPerNode[nodeId] = -1; // mark as seen

@@ -27,9 +27,11 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.discovery.zen.DiscoPhase;
 import org.elasticsearch.discovery.zen.UnicastHostsProvider;
 import org.elasticsearch.discovery.zen.UnicastZenPing;
 import org.elasticsearch.discovery.zen.ZenPing;
+import org.elasticsearch.discovery.zen.ZenState;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.InternalTestCluster;
 import org.elasticsearch.test.NodeConfigurationSource;
@@ -93,7 +95,8 @@ public class SingleNodeDiscoveryIT extends ESIntegTestCase {
             final ClusterName clusterName = new ClusterName(internalCluster().getClusterName());
             final ClusterState state = ClusterState.builder(clusterName).nodes(nodes).build();
             final UnicastZenPing unicastZenPing =
-                new UnicastZenPing(settings, threadPool, pingTransport, provider, () -> state) {
+                new UnicastZenPing(settings, threadPool, pingTransport, provider,
+                    () -> new ZenState(DiscoPhase.Pinging, ZenState.UNKNOWN_TERM, ZenState.UNKNOWN_TERM, state)) {
                     @Override
                     protected void finishPingingRound(PingingRound pingingRound) {
                         latch.countDown();

@@ -34,6 +34,7 @@ import org.elasticsearch.discovery.zen.ZenDiscovery;
 import org.elasticsearch.indices.recovery.RecoverySettings;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.ESIntegTestCase.ClusterScope;
+import org.elasticsearch.test.discovery.TestZenDiscovery;
 import org.junit.After;
 
 import static org.elasticsearch.test.ESIntegTestCase.Scope.TEST;
@@ -292,7 +293,7 @@ public class ClusterSettingsIT extends ESIntegTestCase {
         assertThat(discoverySettings.getPublishTimeout().seconds(), equalTo(1L));
     }
 
-    private DiscoverySettings getDiscoverySettings() {return ((ZenDiscovery) internalCluster().getInstance(Discovery.class)).getDiscoverySettings();}
+    private DiscoverySettings getDiscoverySettings() {return ((TestZenDiscovery) internalCluster().getInstance(Discovery.class)).getDiscoverySettings();}
 
     public void testClusterUpdateSettingsWithBlocks() {
         String key1 = "cluster.routing.allocation.enable";
