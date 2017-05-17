@@ -37,16 +37,15 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 
-public class IndexShardOperationsLockTests extends ESTestCase {
+public class IndexShardOperationsPermitTests extends ESTestCase {
 
     private static ThreadPool threadPool;
 
-    private IndexShardOperationsLock block;
+    private IndexShardOperationsPermit block;
 
     @BeforeClass
     public static void setupThreadPool() {
@@ -61,7 +60,7 @@ public class IndexShardOperationsLockTests extends ESTestCase {
 
     @Before
     public void createIndexShardOperationsLock() {
-         block = new IndexShardOperationsLock(new ShardId("blubb", "id", 0), logger, threadPool);
+         block = new IndexShardOperationsPermit(new ShardId("blubb", "id", 0), logger, threadPool);
     }
 
     @After
