@@ -31,6 +31,9 @@ import org.elasticsearch.action.bulk.BulkShardResponse;
 import org.elasticsearch.action.bulk.TransportShardBulkAction;
 import org.elasticsearch.action.bulk.TransportShardBulkActionTests;
 import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.action.resync.ResyncReplicationRequest;
+import org.elasticsearch.action.resync.ResyncReplicationResponse;
+import org.elasticsearch.action.resync.TransportResyncReplicationAction;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.replication.ReplicationOperation;
 import org.elasticsearch.action.support.replication.ReplicationRequest;
@@ -56,13 +59,14 @@ import org.elasticsearch.index.engine.EngineFactory;
 import org.elasticsearch.index.seqno.GlobalCheckpointSyncAction;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.IndexShardTestCase;
+import org.elasticsearch.index.shard.PrimaryReplicaSyncer;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.shard.ShardPath;
 import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.indices.recovery.RecoveryTarget;
+import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.TransportRequest;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -289,6 +293,24 @@ public abstract class ESIndexLevelReplicationTestCase extends IndexShardTestCase
             boolean markAsRecovering) throws IOException {
             ESIndexLevelReplicationTestCase.this.recoverReplica(replica, primary, targetSupplier, markAsRecovering);
             updateAllocationIDsOnPrimary();
+        }
+
+        public PrimaryReplicaSyncer.ResyncTask resyncReplicas() {
+            PlainActionFuture<PrimaryReplicaSyncer.ResyncTask> fut = new PlainActionFuture<>();
+            try {
+                PrimaryReplicaSyncer syncer = new PrimaryReplicaSyncer(Settings.EMPTY, new TaskManager(Settings.EMPTY),
+                    (request, parentTask, listener) -> {
+                        try {
+                            new ResyncAction(request, listener, ReplicationGroup.this).execute();
+                        } catch (Exception e) {
+                            throw new AssertionError(e);
+                        }
+                    });
+                syncer.resync(primary, fut);
+                return fut.get();
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
         }
 
         public synchronized DiscoveryNode getPrimaryNode() {
@@ -625,4 +647,37 @@ public abstract class ESIndexLevelReplicationTestCase extends IndexShardTestCase
         }
     }
 
+    class ResyncAction extends ReplicationAction<ResyncReplicationRequest, ResyncReplicationRequest, ResyncReplicationResponse> {
+
+        ResyncAction(ResyncReplicationRequest request, ActionListener<ResyncReplicationResponse> listener, ReplicationGroup replicationGroup) {
+            super(request, listener, replicationGroup, "resync");
+        }
+
+        @Override
+        protected PrimaryResult performOnPrimary(IndexShard primary, ResyncReplicationRequest request) throws Exception {
+            final TransportWriteAction.WritePrimaryResult<ResyncReplicationRequest, ResyncReplicationResponse> result =
+                executeResyncOnPrimary(primary, request);
+            return new PrimaryResult(result.replicaRequest(), result.finalResponseIfSuccessful);
+        }
+
+        @Override
+        protected void performOnReplica(ResyncReplicationRequest request, IndexShard replica) throws Exception {
+            executeResyncOnReplica(replica, request);
+        }
+    }
+
+    private TransportWriteAction.WritePrimaryResult<ResyncReplicationRequest, ResyncReplicationResponse> executeResyncOnPrimary(
+        IndexShard primary, ResyncReplicationRequest request) throws Exception {
+        final TransportWriteAction.WritePrimaryResult<ResyncReplicationRequest, ResyncReplicationResponse> result =
+            new TransportWriteAction.WritePrimaryResult<>(TransportResyncReplicationAction.performOnPrimary(request, primary),
+                new ResyncReplicationResponse(), null, null, primary, logger);
+        request.primaryTerm(primary.getPrimaryTerm());
+        TransportWriteActionTestHelper.performPostWriteActions(primary, request, result.location, logger);
+        return result;
+    }
+
+    private void executeResyncOnReplica(IndexShard replica, ResyncReplicationRequest request) throws Exception {
+        final Translog.Location location = TransportResyncReplicationAction.performOnReplica(request, replica);
+        TransportWriteActionTestHelper.performPostWriteActions(replica, request, location, logger);
+    }
 }
