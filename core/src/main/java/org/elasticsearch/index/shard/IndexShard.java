@@ -277,6 +277,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         indexShardOperationsPermit = new IndexShardOperationsPermit(shardId, logger, threadPool);
         searcherWrapper = indexSearcherWrapper;
         primaryTerm = indexSettings.getIndexMetaData().primaryTerm(shardId.id());
+        pendingPrimaryTerm.set(primaryTerm);
         refreshListeners = buildRefreshListeners();
         persistMetadata(shardRouting, null);
     }
@@ -1859,7 +1860,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         indexShardOperationsPermit.acquire(onPermitAcquired, executorOnDelay, false);
     }
 
-    private final AtomicLong pendingPrimaryTerm = new AtomicLong();
+    private final AtomicLong pendingPrimaryTerm = new AtomicLong(); // is always greater or equal to primaryTerm
 
     /**
      * Acquire a replica operation permit whenever the shard is ready for indexing (see
@@ -1876,12 +1877,16 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             final long operationPrimaryTerm, final ActionListener<Releasable> onPermitAcquired, final String executorOnDelay) {
         verifyNotClosed();
         verifyReplicationTarget();
-        if (operationPrimaryTerm > primaryTerm
-                && pendingPrimaryTerm.accumulateAndGet(operationPrimaryTerm, Math::max) == operationPrimaryTerm) {
+        if (operationPrimaryTerm > primaryTerm &&
+            pendingPrimaryTerm.getAndAccumulate(operationPrimaryTerm, Math::max) < operationPrimaryTerm) {
+            // this means that our operation increased the pendingPrimaryTerm
+            // now we are responsible for increasing primaryTerm
             try {
                 indexShardOperationsPermit.blockOperations(30, TimeUnit.MINUTES, () -> {
+                    // re-check as someone with operationPrimaryTerm higher than ours could have come along and increased the primaryTerm
                     if (operationPrimaryTerm > primaryTerm) {
                         primaryTerm = operationPrimaryTerm;
+                        // this preserves pendingPrimaryTerm >= primaryTerm, as pendingPrimaryTerm >= operationPrimaryTerm
                     }
                 });
             } catch (final InterruptedException | TimeoutException e) {
@@ -1889,30 +1894,28 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
             }
         }
 
-        final long currentPrimaryTerm = primaryTerm;
-        if (operationPrimaryTerm == currentPrimaryTerm) {
-            indexShardOperationsPermit.acquire(
-                    new ActionListener<Releasable>() {
-                        @Override
-                        public void onResponse(final Releasable releasable) {
-                            if (operationPrimaryTerm < primaryTerm) {
-                                releasable.close();
-                                onOperationPrimaryTermIsTooOld(shardId, operationPrimaryTerm, primaryTerm, onPermitAcquired);
-                            } else if (operationPrimaryTerm == primaryTerm) {
-                                onPermitAcquired.onResponse(releasable);
-                            }
-                        }
+        indexShardOperationsPermit.acquire(
+            () -> operationPrimaryTerm <= primaryTerm, // permit is released and acquisition is delayed if this does not hold
+            new ActionListener<Releasable>() {
+                @Override
+                public void onResponse(final Releasable releasable) {
+                    assert operationPrimaryTerm <= primaryTerm; // otherwise we would have released the permit and delayed
+                    if (operationPrimaryTerm < primaryTerm) {
+                        releasable.close();
+                        onOperationPrimaryTermIsTooOld(shardId, operationPrimaryTerm, primaryTerm, onPermitAcquired);
+                    } else {
+                        assert operationPrimaryTerm == primaryTerm;
+                        onPermitAcquired.onResponse(releasable);
+                    }
+                }
 
-                        @Override
-                        public void onFailure(final Exception e) {
-                            onPermitAcquired.onFailure(e);
-                        }
-                    },
-                    executorOnDelay,
-                    true);
-        } else {
-            onOperationPrimaryTermIsTooOld(shardId, operationPrimaryTerm, currentPrimaryTerm, onPermitAcquired);
-        }
+                @Override
+                public void onFailure(final Exception e) {
+                    onPermitAcquired.onFailure(e);
+                }
+            },
+            executorOnDelay,
+            true);
     }
 
     private static void onOperationPrimaryTermIsTooOld(

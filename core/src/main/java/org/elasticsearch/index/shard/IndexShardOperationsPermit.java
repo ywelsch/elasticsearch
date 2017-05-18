@@ -106,26 +106,35 @@ public class IndexShardOperationsPermit implements Closeable {
         }
     }
 
+    public void acquire(ActionListener<Releasable> onAcquired, String executorOnDelay, boolean forceExecution) {
+        acquire(() -> true, onAcquired, executorOnDelay, forceExecution);
+    }
+
     /**
      * Acquires a permit whenever permit acquisition is not blocked. If the permit is directly available, the provided
      * {@link ActionListener} will be called on the calling thread. During calls of {@link #blockOperations(long, TimeUnit, Runnable)},
      * permit acquisition can be delayed. The provided ActionListener will then be called using the provided executor once operations are no
      * longer blocked.
      *
+     * @param extraCondition  predicate that must hold if action should not be delayed. Called when permit is acquired.
      * @param onAcquired      {@link ActionListener} that is invoked once acquisition is successful or failed
      * @param executorOnDelay executor to use for delayed call
      * @param forceExecution  whether the runnable should force its execution in case it gets rejected
      */
-    public void acquire(ActionListener<Releasable> onAcquired, String executorOnDelay, boolean forceExecution) {
+    public void acquire(Supplier<Boolean> extraCondition, ActionListener<Releasable> onAcquired, String executorOnDelay,
+                        boolean forceExecution) {
         if (closed) {
             onAcquired.onFailure(new IndexShardClosedException(shardId));
             return;
         }
-        Releasable releasable;
+        final Releasable releasable;
         try {
             synchronized (this) {
                 releasable = tryAcquire();
-                if (releasable == null) {
+                if (releasable == null || extraCondition.get() == false) {
+                    if (releasable != null) {
+                        releasable.close();
+                    }
                     // blockOperations is executing, this operation will be retried by blockOperations once it finishes
                     if (delayedOperations == null) {
                         delayedOperations = new ArrayList<>();
