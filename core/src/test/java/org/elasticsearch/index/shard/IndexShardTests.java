@@ -403,12 +403,8 @@ public class IndexShardTests extends IndexShardTestCase {
         boolean gap = false;
         for (int i = 0; i < operations; i++) {
             final String id = Integer.toString(i);
-            final ParsedDocument doc = testParsedDocument(id, "test", null, new ParseContext.Document(), new BytesArray("{}"), null);
             if (!rarely()) {
-                final Term uid = new Term("_id", doc.id());
-                final Engine.Index index =
-                        new Engine.Index(uid, doc, i, indexShard.getPrimaryTerm(), 1, EXTERNAL, REPLICA, System.nanoTime(), -1, false);
-                indexShard.index(index);
+                indexDoc(indexShard, "test", id);
                 max = i;
             } else {
                 gap = true;
@@ -733,7 +729,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(indexShard);
     }
 
-    public void testAcquireIndexCommit() throws IOException {
+    public void testAcquireIndexCommit() throws Exception {
         final IndexShard shard = newStartedShard();
         int numDocs = randomInt(20);
         for (int i = 0; i < numDocs; i++) {
@@ -762,7 +758,7 @@ public class IndexShardTests extends IndexShardTestCase {
     /***
      * test one can snapshot the store at various lifecycle stages
      */
-    public void testSnapshotStore() throws IOException {
+    public void testSnapshotStore() throws Exception {
         final IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0");
         flushShard(shard);
@@ -828,7 +824,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testMinimumCompatVersion() throws IOException {
+    public void testMinimumCompatVersion() throws Exception {
         Version versionCreated = VersionUtils.randomVersion(random());
         Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, versionCreated.id)
             .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 0)
@@ -883,7 +879,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testRefreshMetric() throws IOException {
+    public void testRefreshMetric() throws Exception {
         IndexShard shard = newStartedShard();
         assertThat(shard.refreshStats().getTotal(), equalTo(2L)); // one refresh on end of recovery, one on starting shard
         long initialTotalTime = shard.refreshStats().getTotalTimeInMillis();
@@ -917,7 +913,7 @@ public class IndexShardTests extends IndexShardTestCase {
             mappingUpdate);
     }
 
-    public void testIndexingOperationsListeners() throws IOException {
+    public void testIndexingOperationsListeners() throws Exception {
         IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0", "{\"foo\" : \"bar\"}");
         AtomicInteger preIndex = new AtomicInteger();
@@ -976,10 +972,7 @@ public class IndexShardTests extends IndexShardTestCase {
         });
         recoveryShardFromStore(shard);
 
-        ParsedDocument doc = testParsedDocument("1", "test", null, new ParseContext.Document(),
-            new BytesArray(new byte[]{1}), null);
-        Engine.Index index = new Engine.Index(new Term("_id", doc.id()), doc);
-        shard.index(index);
+        indexDoc(shard, "test", "1");
         assertEquals(1, preIndex.get());
         assertEquals(1, postIndexCreate.get());
         assertEquals(0, postIndexUpdate.get());
@@ -988,7 +981,7 @@ public class IndexShardTests extends IndexShardTestCase {
         assertEquals(0, postDelete.get());
         assertEquals(0, postDeleteException.get());
 
-        shard.index(index);
+        indexDoc(shard, "test", "1");
         assertEquals(2, preIndex.get());
         assertEquals(1, postIndexCreate.get());
         assertEquals(1, postIndexUpdate.get());
@@ -997,8 +990,7 @@ public class IndexShardTests extends IndexShardTestCase {
         assertEquals(0, postDelete.get());
         assertEquals(0, postDeleteException.get());
 
-        Engine.Delete delete = new Engine.Delete("test", "1", new Term("_id", doc.id()));
-        shard.delete(delete);
+        deleteDoc(shard, "test", "1");
 
         assertEquals(2, preIndex.get());
         assertEquals(1, postIndexCreate.get());
@@ -1012,7 +1004,7 @@ public class IndexShardTests extends IndexShardTestCase {
         shard.state = IndexShardState.STARTED; // It will generate exception
 
         try {
-            shard.index(index);
+            indexDoc(shard, "test", "1");
             fail();
         } catch (AlreadyClosedException e) {
 
@@ -1026,7 +1018,7 @@ public class IndexShardTests extends IndexShardTestCase {
         assertEquals(1, postDelete.get());
         assertEquals(0, postDeleteException.get());
         try {
-            shard.delete(delete);
+            deleteDoc(shard, "test", "1");
             fail();
         } catch (AlreadyClosedException e) {
 
@@ -1231,7 +1223,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testRecoverFromStore() throws IOException {
+    public void testRecoverFromStore() throws Exception {
         final IndexShard shard = newStartedShard(true);
         int translogOps = 1;
         indexDoc(shard, "test", "0");
@@ -1253,17 +1245,16 @@ public class IndexShardTests extends IndexShardTestCase {
     }
 
     /* This test just verifies that we fill up local checkpoint up to max seen seqID on primary recovery */
-    public void testRecoverFromStoreWithNoOps() throws IOException {
+    public void testRecoverFromStoreWithNoOps() throws Exception {
         final IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0");
-        Engine.Index test = indexDoc(shard, "test", "1");
+        Engine.IndexResult test = indexDoc(shard, "test", "1");
         // start a replica shard and index the second doc
         final IndexShard otherShard = newStartedShard(false);
-        test = otherShard.prepareIndexOnReplica(
-            SourceToParse.source(shard.shardId().getIndexName(), test.type(), test.id(), test.source(),
-                XContentType.JSON),
-            1, 1, 1, EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false);
-        otherShard.index(test);
+        SourceToParse sourceToParse = SourceToParse.source(shard.shardId().getIndexName(), "test", "1",
+            new BytesArray("{}"), XContentType.JSON);
+        otherShard.applyIndexOperationOnReplica( 1, 1, 1,
+            VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse, update -> {});
 
         final ShardRouting primaryShardRouting = shard.routingEntry();
         IndexShard newShard = reinitShard(otherShard, ShardRoutingHelper.initWithSameId(primaryShardRouting,
@@ -1292,7 +1283,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(newShard, shard);
     }
 
-    public void testRecoverFromCleanStore() throws IOException {
+    public void testRecoverFromCleanStore() throws Exception {
         final IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0");
         if (randomBoolean()) {
@@ -1381,7 +1372,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testRestoreShard() throws IOException {
+    public void testRestoreShard() throws Exception {
         final IndexShard source = newStartedShard(true);
         IndexShard target = newStartedShard(true);
 
@@ -1428,7 +1419,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(source, target);
     }
 
-    public void testSearcherWrapperIsUsed() throws IOException {
+    public void testSearcherWrapperIsUsed() throws Exception {
         IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0", "{\"foo\" : \"bar\"}");
         indexDoc(shard, "test", "1", "{\"foobar\" : \"bar\"}");
@@ -1476,7 +1467,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(newShard);
     }
 
-    public void testSearcherWrapperWorksWithGlobalOrdinals() throws IOException {
+    public void testSearcherWrapperWorksWithGlobalOrdinals() throws Exception {
         IndexSearcherWrapper wrapper = new IndexSearcherWrapper() {
             @Override
             public DirectoryReader wrap(DirectoryReader reader) throws IOException {
@@ -1528,7 +1519,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testIndexingOperationListenersIsInvokedOnRecovery() throws IOException {
+    public void testIndexingOperationListenersIsInvokedOnRecovery() throws Exception {
         IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0", "{\"foo\" : \"bar\"}");
         deleteDoc(shard, "test", "0");
@@ -1580,7 +1571,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(newShard);
     }
 
-    public void testSearchIsReleaseIfWrapperFails() throws IOException {
+    public void testSearchIsReleaseIfWrapperFails() throws Exception {
         IndexShard shard = newStartedShard(true);
         indexDoc(shard, "test", "0", "{\"foo\" : \"bar\"}");
         shard.refresh("test");
@@ -1611,7 +1602,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(newShard);
     }
 
-    public void testTranslogRecoverySyncsTranslog() throws IOException {
+    public void testTranslogRecoverySyncsTranslog() throws Exception {
         Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
             .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 1)
@@ -1639,7 +1630,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(primary, replica);
     }
 
-    public void testRecoverFromTranslog() throws IOException {
+    public void testRecoverFromTranslog() throws Exception {
         Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
             .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 1)
@@ -1690,62 +1681,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(primary);
     }
 
-    public void testTranslogOpToEngineOpConverter() throws IOException {
-        Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
-            .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
-            .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 1)
-            .build();
-        IndexMetaData metaData = IndexMetaData.builder("test")
-            .putMapping("test", "{ \"properties\": { \"foo\":  { \"type\": \"text\"}}}")
-            .settings(settings)
-            .primaryTerm(0, 1).build();
-        IndexShard primary = newShard(new ShardId(metaData.getIndex(), 0), true, "n1", metaData, null);
-        TranslogOpToEngineOpConverter converter = new TranslogOpToEngineOpConverter(primary.shardId(), primary.mapperService());
-
-        Engine.Operation.Origin origin = randomFrom(Engine.Operation.Origin.values());
-        // convert index op
-        Translog.Index translogIndexOp = new Translog.Index(randomAlphaOfLength(10), randomAlphaOfLength(10), randomNonNegativeLong(),
-            randomNonNegativeLong(), randomFrom(VersionType.values()), "{\"foo\" : \"bar\"}".getBytes(Charset.forName("UTF-8")),
-            randomAlphaOfLength(5), randomAlphaOfLength(5), randomLong());
-        Engine.Index engineIndexOp = (Engine.Index) converter.convertToEngineOp(translogIndexOp, origin);
-        assertEquals(engineIndexOp.origin(), origin);
-        assertEquals(engineIndexOp.primaryTerm(), translogIndexOp.primaryTerm());
-        assertEquals(engineIndexOp.seqNo(), translogIndexOp.seqNo());
-        assertEquals(engineIndexOp.version(), translogIndexOp.version());
-        assertEquals(engineIndexOp.versionType(), translogIndexOp.versionType().versionTypeForReplicationAndRecovery());
-        assertEquals(engineIndexOp.id(), translogIndexOp.id());
-        assertEquals(engineIndexOp.type(), translogIndexOp.type());
-        assertEquals(engineIndexOp.getAutoGeneratedIdTimestamp(), translogIndexOp.getAutoGeneratedIdTimestamp());
-        assertEquals(engineIndexOp.parent(), translogIndexOp.parent());
-        assertEquals(engineIndexOp.routing(), translogIndexOp.routing());
-        assertEquals(engineIndexOp.source(), translogIndexOp.source());
-
-        // convert delete op
-        Translog.Delete translogDeleteOp = new Translog.Delete(randomAlphaOfLength(5), randomAlphaOfLength(5),
-            new Term(randomAlphaOfLength(5), randomAlphaOfLength(5)), randomNonNegativeLong(), randomNonNegativeLong(),
-            randomNonNegativeLong(), randomFrom(VersionType.values()));
-        Engine.Delete engineDeleteOp = (Engine.Delete) converter.convertToEngineOp(translogDeleteOp, origin);
-        assertEquals(engineDeleteOp.origin(), origin);
-        assertEquals(engineDeleteOp.primaryTerm(), translogDeleteOp.primaryTerm());
-        assertEquals(engineDeleteOp.seqNo(), translogDeleteOp.seqNo());
-        assertEquals(engineDeleteOp.version(), translogDeleteOp.version());
-        assertEquals(engineDeleteOp.versionType(), translogDeleteOp.versionType().versionTypeForReplicationAndRecovery());
-        assertEquals(engineDeleteOp.id(), translogDeleteOp.id());
-        assertEquals(engineDeleteOp.type(), translogDeleteOp.type());
-        assertEquals(engineDeleteOp.uid(), translogDeleteOp.uid());
-
-        // convert noop
-        Translog.NoOp translogNoOp = new Translog.NoOp(randomNonNegativeLong(), randomNonNegativeLong(), randomAlphaOfLength(5));
-        Engine.NoOp engineNoOp = (Engine.NoOp) converter.convertToEngineOp(translogNoOp, origin);
-        assertEquals(engineNoOp.origin(), origin);
-        assertEquals(engineNoOp.primaryTerm(), translogNoOp.primaryTerm());
-        assertEquals(engineNoOp.seqNo(), translogNoOp.seqNo());
-        assertEquals(engineNoOp.reason(), translogNoOp.reason());
-
-        closeShards(primary);
-    }
-
-    public void testShardActiveDuringInternalRecovery() throws IOException {
+    public void testShardActiveDuringInternalRecovery() throws Exception {
         IndexShard shard = newStartedShard(true);
         indexDoc(shard, "type", "0");
         shard = reinitShard(shard);
@@ -1762,7 +1698,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(shard);
     }
 
-    public void testShardActiveDuringPeerRecovery() throws IOException {
+    public void testShardActiveDuringPeerRecovery() throws Exception {
         Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
             .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 1)
@@ -1803,7 +1739,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(primary, replica);
     }
 
-    public void testRecoverFromLocalShard() throws IOException {
+    public void testRecoverFromLocalShard() throws Exception {
         Settings settings = Settings.builder().put(IndexMetaData.SETTING_VERSION_CREATED, Version.CURRENT)
             .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 1)
             .put(IndexMetaData.SETTING_NUMBER_OF_SHARDS, 1)
@@ -1870,7 +1806,7 @@ public class IndexShardTests extends IndexShardTestCase {
         closeShards(sourceShard, targetShard);
     }
 
-    public void testDocStats() throws IOException {
+    public void testDocStats() throws Exception {
         IndexShard indexShard = null;
         try {
             indexShard = newStartedShard();
@@ -1880,22 +1816,7 @@ public class IndexShardTests extends IndexShardTestCase {
             final long numDocsToDelete = randomIntBetween((int) Math.ceil(Math.nextUp(numDocs / 10.0)), Math.toIntExact(numDocs));
             for (int i = 0; i < numDocs; i++) {
                 final String id = Integer.toString(i);
-                final ParsedDocument doc =
-                    testParsedDocument(id, "test", null, new ParseContext.Document(), new BytesArray("{}"), null);
-                final Engine.Index index =
-                    new Engine.Index(
-                        new Term("_id", doc.id()),
-                        doc,
-                        SequenceNumbersService.UNASSIGNED_SEQ_NO,
-                        0,
-                        Versions.MATCH_ANY,
-                        VersionType.INTERNAL,
-                        PRIMARY,
-                        System.nanoTime(),
-                        -1,
-                        false);
-                final Engine.IndexResult result = indexShard.index(index);
-                assertThat(result.getVersion(), equalTo(1L));
+                indexDoc(indexShard, "test", id);
             }
 
             indexShard.refresh("test");
@@ -1910,22 +1831,8 @@ public class IndexShardTests extends IndexShardTestCase {
                 IntStream.range(0, Math.toIntExact(numDocs)).boxed().collect(Collectors.toList()));
             for (final Integer i : ids) {
                 final String id = Integer.toString(i);
-                final ParsedDocument doc =
-                    testParsedDocument(id, "test", null, new ParseContext.Document(), new BytesArray("{}"), null);
-                final Engine.Index index =
-                    new Engine.Index(
-                        new Term("_id", doc.id()),
-                        doc,
-                        SequenceNumbersService.UNASSIGNED_SEQ_NO,
-                        0,
-                        Versions.MATCH_ANY,
-                        VersionType.INTERNAL,
-                        PRIMARY,
-                        System.nanoTime(),
-                        -1,
-                        false);
-                final Engine.IndexResult result = indexShard.index(index);
-                assertThat(result.getVersion(), equalTo(2L));
+                deleteDoc(indexShard, "test", id);
+                indexDoc(indexShard, "test", id);
             }
 
             // flush the buffered deletes
@@ -1964,7 +1871,7 @@ public class IndexShardTests extends IndexShardTestCase {
      * a recovery and concurrently clean files. This should always be possible without any exception. Yet there was a bug where IndexShard
      * acquired the index writer lock before it called into the store that has it's own locking for metadata reads
      */
-    public void testReadSnapshotConcurrently() throws IOException, InterruptedException {
+    public void testReadSnapshotConcurrently() throws Exception {
         IndexShard indexShard = newStartedShard();
         indexDoc(indexShard, "doc", "0", "{\"foo\" : \"bar\"}");
         if (randomBoolean()) {

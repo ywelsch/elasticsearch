@@ -467,44 +467,33 @@ public abstract class IndexShardTestCase extends ESTestCase {
     }
 
 
-    protected Engine.Index indexDoc(IndexShard shard, String type, String id) throws IOException {
+    protected Engine.IndexResult indexDoc(IndexShard shard, String type, String id) throws Exception {
         return indexDoc(shard, type, id, "{}");
     }
 
-    protected Engine.Index indexDoc(IndexShard shard, String type, String id, String source) throws IOException {
+    protected Engine.IndexResult indexDoc(IndexShard shard, String type, String id, String source) throws Exception {
         return indexDoc(shard, type, id, source, XContentType.JSON);
     }
 
-    protected Engine.Index indexDoc(IndexShard shard, String type, String id, String source, XContentType xContentType) throws IOException {
-        final Engine.Index index;
+    protected Engine.IndexResult indexDoc(IndexShard shard, String type, String id, String source, XContentType xContentType)
+        throws Exception {
+        SourceToParse sourceToParse = SourceToParse.source(shard.shardId().getIndexName(), type, id, new BytesArray(source), xContentType);
         if (shard.routingEntry().primary()) {
-            index = shard.prepareIndexOnPrimary(
-                SourceToParse.source(shard.shardId().getIndexName(), type, id, new BytesArray(source),
-                    xContentType),
-                Versions.MATCH_ANY,
-                VersionType.INTERNAL,
-                IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP,
-                false);
+            return shard.applyIndexOperationOnPrimary(Versions.MATCH_ANY, VersionType.INTERNAL, sourceToParse,
+                IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, update -> {});
         } else {
-            index = shard.prepareIndexOnReplica(
-                SourceToParse.source(shard.shardId().getIndexName(), type, id, new BytesArray(source),
-                    xContentType),
-                shard.seqNoStats().getMaxSeqNo() + 1, shard.getPrimaryTerm(), 0,
-                VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false);
+            return shard.applyIndexOperationOnReplica(shard.seqNoStats().getMaxSeqNo() + 1, shard.getPrimaryTerm(), 0,
+                VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse, update -> {});
         }
-        shard.index(index);
-        return index;
     }
 
-    protected Engine.Delete deleteDoc(IndexShard shard, String type, String id) throws IOException {
-        final Engine.Delete delete;
+    protected Engine.DeleteResult deleteDoc(IndexShard shard, String type, String id) throws Exception {
         if (shard.routingEntry().primary()) {
-            delete = shard.prepareDeleteOnPrimary(type, id, Versions.MATCH_ANY, VersionType.INTERNAL);
+            return shard.applyDeleteOperationOnPrimary(Versions.MATCH_ANY, type, id, VersionType.INTERNAL, update -> {});
         } else {
-            delete = shard.prepareDeleteOnPrimary(type, id, 1, VersionType.EXTERNAL);
+            return shard.applyDeleteOperationOnReplica(shard.seqNoStats().getMaxSeqNo() + 1, shard.getPrimaryTerm(),
+                0L, type, id, VersionType.EXTERNAL, update -> {});
         }
-        shard.delete(delete);
-        return delete;
     }
 
     protected void flushShard(IndexShard shard) {

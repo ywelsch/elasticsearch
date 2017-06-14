@@ -28,12 +28,16 @@ import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.compress.CompressedXContent;
+import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.MapperService.MergeReason;
 import org.elasticsearch.index.mapper.TextFieldMapper.TextFieldType;
@@ -185,7 +189,7 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
         for (String option : supportedOptions.keySet()) {
             jsonDoc.field(option, "1234");
         }
-        ParsedDocument doc = mapper.parse(SourceToParse.source("test", "type", "1", jsonDoc.endObject().bytes(), 
+        ParsedDocument doc = mapper.parse(SourceToParse.source("test", "type", "1", jsonDoc.endObject().bytes(),
                 XContentType.JSON));
 
         for (Map.Entry<String, IndexOptions> entry : supportedOptions.entrySet()) {
@@ -197,7 +201,7 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
         }
     }
 
-    public void testDefaultPositionIncrementGap() throws IOException {
+    public void testDefaultPositionIncrementGap() throws Exception {
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type")
                 .startObject("properties").startObject("field").field("type", "text").endObject().endObject()
                 .endObject().endObject().string();
@@ -207,12 +211,13 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
 
         assertEquals(mapping, mapper.mappingSource().toString());
 
-        ParsedDocument doc = mapper.parse(SourceToParse.source("test", "type", "1", XContentFactory.jsonBuilder()
+        SourceToParse sourceToParse = SourceToParse.source("test", "type", "1", XContentFactory.jsonBuilder()
                 .startObject()
                 .array("field", new String[] {"a", "b"})
                 .endObject()
                 .bytes(),
-                XContentType.JSON));
+            XContentType.JSON);
+        ParsedDocument doc = mapper.parse(sourceToParse);
 
         IndexableField[] fields = doc.rootDoc().getFields("field");
         assertEquals(2, fields.length);
@@ -221,7 +226,8 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
         assertEquals("b", fields[1].stringValue());
 
         IndexShard shard = indexService.getShard(0);
-        shard.index(new Engine.Index(new Term("_id", doc.id()), doc));
+        shard.applyIndexOperationOnPrimary(Versions.MATCH_ANY, VersionType.INTERNAL,
+            sourceToParse, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, update -> {});
         shard.refresh("test");
         try (Engine.Searcher searcher = shard.acquireSearcher("test")) {
             LeafReader leaf = searcher.getDirectoryReader().leaves().get(0).reader();
@@ -233,7 +239,7 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
         }
     }
 
-    public void testPositionIncrementGap() throws IOException {
+    public void testPositionIncrementGap() throws Exception {
         final int positionIncrementGap = randomIntBetween(1, 1000);
         String mapping = XContentFactory.jsonBuilder().startObject().startObject("type")
                 .startObject("properties").startObject("field")
@@ -247,12 +253,13 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
 
         assertEquals(mapping, mapper.mappingSource().toString());
 
-        ParsedDocument doc = mapper.parse(SourceToParse.source("test", "type", "1", XContentFactory.jsonBuilder()
+        SourceToParse sourceToParse = SourceToParse.source("test", "type", "1", XContentFactory.jsonBuilder()
                 .startObject()
-                .array("field", new String[] {"a", "b"})
+                .array("field", new String[]{"a", "b"})
                 .endObject()
                 .bytes(),
-                XContentType.JSON));
+            XContentType.JSON);
+        ParsedDocument doc = mapper.parse(sourceToParse);
 
         IndexableField[] fields = doc.rootDoc().getFields("field");
         assertEquals(2, fields.length);
@@ -261,7 +268,8 @@ public class TextFieldMapperTests extends ESSingleNodeTestCase {
         assertEquals("b", fields[1].stringValue());
 
         IndexShard shard = indexService.getShard(0);
-        shard.index(new Engine.Index(new Term("_id", doc.id()), doc));
+        shard.applyIndexOperationOnPrimary(Versions.MATCH_ANY, VersionType.INTERNAL,
+            sourceToParse, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, update -> {});
         shard.refresh("test");
         try (Engine.Searcher searcher = shard.acquireSearcher("test")) {
             LeafReader leaf = searcher.getDirectoryReader().leaves().get(0).reader();
