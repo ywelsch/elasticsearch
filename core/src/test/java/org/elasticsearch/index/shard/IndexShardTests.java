@@ -402,9 +402,13 @@ public class IndexShardTests extends IndexShardTestCase {
         int max = Math.toIntExact(SequenceNumbersService.NO_OPS_PERFORMED);
         boolean gap = false;
         for (int i = 0; i < operations; i++) {
-            final String id = Integer.toString(i);
             if (!rarely()) {
-                indexDoc(indexShard, "test", id);
+                final String id = Integer.toString(i);
+                SourceToParse sourceToParse = SourceToParse.source(indexShard.shardId().getIndexName(), "test", id,
+                    new BytesArray("{}"), XContentType.JSON);
+                indexShard.applyIndexOperationOnReplica(i, indexShard.getPrimaryTerm(),
+                    1, VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse,
+                    getMappingUpdater(indexShard, sourceToParse.type()));
                 max = i;
             } else {
                 gap = true;
@@ -1251,9 +1255,10 @@ public class IndexShardTests extends IndexShardTestCase {
         Engine.IndexResult test = indexDoc(shard, "test", "1");
         // start a replica shard and index the second doc
         final IndexShard otherShard = newStartedShard(false);
+        updateMappings(otherShard, shard.indexSettings().getIndexMetaData());
         SourceToParse sourceToParse = SourceToParse.source(shard.shardId().getIndexName(), "test", "1",
             new BytesArray("{}"), XContentType.JSON);
-        otherShard.applyIndexOperationOnReplica( 1, 1, 1,
+        otherShard.applyIndexOperationOnReplica(1, 1, 1,
             VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse, update -> {});
 
         final ShardRouting primaryShardRouting = shard.routingEntry();
@@ -1673,6 +1678,7 @@ public class IndexShardTests extends IndexShardTestCase {
             null));
         primary.recoverFromStore();
 
+        primary.state = IndexShardState.RECOVERING; // translog recovery on the next line would otherwise fail as we are in POST_RECOVERY
         primary.runTranslogRecovery(primary.getEngine(), snapshot);
         assertThat(primary.recoveryState().getTranslog().totalOperationsOnStart(), equalTo(numTotalEntries));
         assertThat(primary.recoveryState().getTranslog().totalOperations(), equalTo(numTotalEntries));

@@ -35,8 +35,10 @@ import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.cluster.routing.ShardRoutingHelper;
 import org.elasticsearch.cluster.routing.ShardRoutingState;
 import org.elasticsearch.cluster.routing.TestShardRouting;
+import org.elasticsearch.common.CheckedConsumer;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
@@ -54,6 +56,7 @@ import org.elasticsearch.index.fielddata.IndexFieldDataCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.mapper.IdFieldMapper;
 import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.index.mapper.Mapping;
 import org.elasticsearch.index.mapper.SourceToParse;
 import org.elasticsearch.index.seqno.SequenceNumbersService;
 import org.elasticsearch.index.similarity.SimilarityService;
@@ -480,11 +483,21 @@ public abstract class IndexShardTestCase extends ESTestCase {
         SourceToParse sourceToParse = SourceToParse.source(shard.shardId().getIndexName(), type, id, new BytesArray(source), xContentType);
         if (shard.routingEntry().primary()) {
             return shard.applyIndexOperationOnPrimary(Versions.MATCH_ANY, VersionType.INTERNAL, sourceToParse,
-                IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, update -> {});
+                IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, getMappingUpdater(shard, type));
         } else {
             return shard.applyIndexOperationOnReplica(shard.seqNoStats().getMaxSeqNo() + 1, shard.getPrimaryTerm(), 0,
-                VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse, update -> {});
+                VersionType.EXTERNAL, IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP, false, sourceToParse, getMappingUpdater(shard, type));
         }
+    }
+
+    protected CheckedConsumer<Mapping, Exception> getMappingUpdater(IndexShard shard, String type) {
+        return update -> updateMappings(shard, IndexMetaData.builder(shard.indexSettings().getIndexMetaData())
+            .putMapping(type, update.toString()).build());
+    }
+
+    protected void updateMappings(IndexShard shard, IndexMetaData indexMetadata) {
+        shard.indexSettings().updateIndexMetaData(indexMetadata);
+        shard.mapperService().merge(indexMetadata, MapperService.MergeReason.MAPPING_UPDATE, true);
     }
 
     protected Engine.DeleteResult deleteDoc(IndexShard shard, String type, String id) throws Exception {

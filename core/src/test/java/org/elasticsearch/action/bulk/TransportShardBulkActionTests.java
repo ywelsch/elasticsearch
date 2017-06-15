@@ -218,7 +218,7 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
         try {
             TransportShardBulkAction.executeBulkItemRequest(metaData, shard, bulkShardRequest,
                     location, 0, updateHelper, threadPool::absoluteTimeInMillis,
-                    new ThrowingMappingUpdatePerformer(err));
+                    new ThrowingVerifyingMappingUpdatePerformer(err));
             fail("should have thrown a retry exception");
         } catch (ReplicationOperation.RetryOnPrimaryException e) {
             assertThat(e, equalTo(err));
@@ -662,6 +662,21 @@ public class TransportShardBulkActionTests extends IndexShardTestCase {
 
         public void verifyMappings(Mapping update, ShardId shardId) throws Exception {
             fail("should not have gotten to this point");
+        }
+    }
+
+    /** Always throw the given exception */
+    private class ThrowingVerifyingMappingUpdatePerformer implements MappingUpdatePerformer {
+        private final Exception e;
+        ThrowingVerifyingMappingUpdatePerformer(Exception e) {
+            this.e = e;
+        }
+
+        public void updateMappings(Mapping update, ShardId shardId, String type) throws Exception {
+        }
+
+        public void verifyMappings(Mapping update, ShardId shardId) throws Exception {
+            throw e;
         }
     }
 }
