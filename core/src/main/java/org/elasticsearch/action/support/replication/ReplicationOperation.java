@@ -64,9 +64,11 @@ public class ReplicationOperation<
      * <li>Coordination of the operation as a whole. This prevents the operation from terminating early if we haven't started any replica
      * operations and the primary finishes.</li>
      * </ul>
+     *
+     * Note that this only considers in-sync shard copies
      */
     private final AtomicInteger pendingActions = new AtomicInteger();
-    private final AtomicInteger successfulShards = new AtomicInteger();
+    private final AtomicInteger successfulShards = new AtomicInteger(); // only counts in-sync shard copies
     private final Primary<Request, ReplicaRequest, PrimaryResultT> primary;
     private final Replicas<ReplicaRequest> replicasProxy;
     private final AtomicBoolean finished = new AtomicBoolean();
@@ -74,6 +76,7 @@ public class ReplicationOperation<
 
     private volatile PrimaryResultT primaryResult = null;
 
+    // only reports failures for in-sync shard copies
     private final List<ReplicationResponse.ShardInfo.Failure> shardReplicaFailures = Collections.synchronizedList(new ArrayList<>());
 
     public ReplicationOperation(Request request, Primary<Request, ReplicaRequest, PrimaryResultT> primary,
@@ -118,7 +121,8 @@ public class ReplicationOperation<
             final long globalCheckpoint = primary.globalCheckpoint();
             final ReplicationGroup replicationGroup = primary.getReplicationGroup();
             markUnavailableShardsAsStale(replicaRequest, replicationGroup.getInSyncAllocationIds(), replicationGroup.getRoutingTable());
-            performOnReplicas(replicaRequest, globalCheckpoint, replicationGroup.getRoutingTable());
+            performOnReplicas(replicaRequest, globalCheckpoint, replicationGroup.getRoutingTable(),
+                replicationGroup.getInSyncAllocationIds());
         }
 
         successfulShards.incrementAndGet();  // mark primary as successful
@@ -140,7 +144,7 @@ public class ReplicationOperation<
     }
 
     private void performOnReplicas(final ReplicaRequest replicaRequest, final long globalCheckpoint,
-                                   final IndexShardRoutingTable indexShardRoutingTable) {
+                                   final IndexShardRoutingTable indexShardRoutingTable, final Set<String> inSyncAllocationIds) {
         final String localNodeId = primary.routingEntry().currentNodeId();
         // If the index gets deleted after primary operation, we skip replication
         for (final ShardRouting shard : indexShardRoutingTable) {
@@ -151,26 +155,33 @@ public class ReplicationOperation<
             }
 
             if (shard.currentNodeId().equals(localNodeId) == false) {
-                performOnReplica(shard, replicaRequest, globalCheckpoint);
+                performOnReplica(shard, replicaRequest, globalCheckpoint, inSyncAllocationIds.contains(shard.allocationId().getId()));
             }
 
             if (shard.relocating() && shard.relocatingNodeId().equals(localNodeId) == false) {
-                performOnReplica(shard.getTargetRelocatingShard(), replicaRequest, globalCheckpoint);
+                performOnReplica(shard.getTargetRelocatingShard(), replicaRequest, globalCheckpoint,
+                    inSyncAllocationIds.contains(shard.allocationId().getRelocationId()));
             }
         }
     }
 
-    private void performOnReplica(final ShardRouting shard, final ReplicaRequest replicaRequest, final long globalCheckpoint) {
+    private void performOnReplica(final ShardRouting shard, final ReplicaRequest replicaRequest, final long globalCheckpoint,
+                                  final boolean inSync) {
         if (logger.isTraceEnabled()) {
-            logger.trace("[{}] sending op [{}] to replica {} for request [{}]", shard.shardId(), opType, shard, replicaRequest);
+            logger.trace("[{}] sending op [{}] to [{}] replica {} for request [{}]", shard.shardId(), opType,
+                inSync ? "in-sync" : "recovering", shard, replicaRequest);
         }
 
         totalShards.incrementAndGet();
-        pendingActions.incrementAndGet();
+        if (inSync) {
+            pendingActions.incrementAndGet();
+        }
         replicasProxy.performOn(shard, replicaRequest, globalCheckpoint, new ActionListener<ReplicaResponse>() {
             @Override
             public void onResponse(ReplicaResponse response) {
-                successfulShards.incrementAndGet();
+                if (inSync) {
+                    successfulShards.incrementAndGet();
+                }
                 try {
                     primary.updateLocalCheckpointForShard(shard.allocationId().getId(), response.localCheckpoint());
                 } catch (final AlreadyClosedException e) {
@@ -180,7 +191,9 @@ public class ReplicationOperation<
                     final String message = String.format(Locale.ROOT, "primary failed updating local checkpoint for replica %s", shard);
                     primary.failShard(message, e);
                 }
-                decPendingAndFinishIfNeeded();
+                if (inSync) {
+                    decPendingAndFinishIfNeeded();
+                }
             }
 
             @Override
@@ -194,15 +207,28 @@ public class ReplicationOperation<
                         replicaRequest),
                     replicaException);
                 if (TransportActions.isShardNotAvailableException(replicaException)) {
-                    decPendingAndFinishIfNeeded();
+                    if (inSync) {
+                        decPendingAndFinishIfNeeded();
+                    }
                 } else {
                     RestStatus restStatus = ExceptionsHelper.status(replicaException);
-                    shardReplicaFailures.add(new ReplicationResponse.ShardInfo.Failure(
-                        shard.shardId(), shard.currentNodeId(), replicaException, restStatus, false));
+                    if (inSync) {
+                        shardReplicaFailures.add(new ReplicationResponse.ShardInfo.Failure(
+                            shard.shardId(), shard.currentNodeId(), replicaException, restStatus, false));
+                    }
                     String message = String.format(Locale.ROOT, "failed to perform %s on replica %s", opType, shard);
-                    replicasProxy.failShardIfNeeded(shard, message,
-                            replicaException, ReplicationOperation.this::decPendingAndFinishIfNeeded,
-                            ReplicationOperation.this::onPrimaryDemoted, throwable -> decPendingAndFinishIfNeeded());
+                    replicasProxy.failShardIfNeeded(shard, message, replicaException,
+                        () -> {
+                            if (inSync) {
+                                decPendingAndFinishIfNeeded();
+                            }
+                        },
+                        ReplicationOperation.this::onPrimaryDemoted,
+                        throwable -> {
+                            if (inSync) {
+                                decPendingAndFinishIfNeeded();
+                            }
+                        });
                 }
             }
         });

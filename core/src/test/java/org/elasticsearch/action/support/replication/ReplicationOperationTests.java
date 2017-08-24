@@ -85,11 +85,9 @@ public class ReplicationOperationTests extends ESTestCase {
         state = ClusterState.builder(state).metaData(MetaData.builder(state.metaData()).put(IndexMetaData.builder(indexMetaData)
             .putInSyncAllocationIds(0, Sets.union(indexMetaData.inSyncAllocationIds(0), staleAllocationIds)))).build();
 
-        final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state);
-
         final Map<ShardRouting, Exception> expectedFailures = new HashMap<>();
         final Set<ShardRouting> expectedFailedShards = new HashSet<>();
-        for (ShardRouting replica : expectedReplicas) {
+        for (ShardRouting replica : getExpectedReplicas(shardId, state, true)) {
             if (randomBoolean()) {
                 Exception t;
                 boolean criticalFailure = randomBoolean();
@@ -116,6 +114,7 @@ public class ReplicationOperationTests extends ESTestCase {
         op.execute();
 
         assertThat("request was not processed on primary", request.processedOnPrimary.get(), equalTo(true));
+        final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state, false);
         assertThat(request.processedOnReplicas, equalTo(expectedReplicas));
         assertThat(replicasProxy.failedReplicas, equalTo(expectedFailedShards));
         assertThat(replicasProxy.markedAsStaleCopies, equalTo(staleAllocationIds));
@@ -123,7 +122,7 @@ public class ReplicationOperationTests extends ESTestCase {
         ShardInfo shardInfo = listener.actionGet().getShardInfo();
         assertThat(shardInfo.getFailed(), equalTo(expectedFailedShards.size()));
         assertThat(shardInfo.getFailures(), arrayWithSize(expectedFailedShards.size()));
-        assertThat(shardInfo.getSuccessful(), equalTo(1 + expectedReplicas.size() - expectedFailures.size()));
+        assertThat(shardInfo.getSuccessful(), equalTo(1 + getExpectedReplicas(shardId, state, true).size() - expectedFailures.size()));
         final List<ShardRouting> unassignedShards =
             indexShardRoutingTable.shardsWithState(ShardRoutingState.UNASSIGNED);
         final int totalShards = 1 + expectedReplicas.size() + unassignedShards.size();
@@ -152,11 +151,16 @@ public class ReplicationOperationTests extends ESTestCase {
             .putInSyncAllocationIds(0, Sets.union(indexMetaData.inSyncAllocationIds(0), Sets.newHashSet(randomAlphaOfLength(10))))))
             .build();
 
-        final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state);
+        final Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state, false);
 
         final Map<ShardRouting, Exception> expectedFailures = new HashMap<>();
-        final ShardRouting failedReplica = randomFrom(new ArrayList<>(expectedReplicas));
-        expectedFailures.put(failedReplica, new CorruptIndexException("simulated", (String) null));
+        final ShardRouting failedReplica;
+        if (expectedReplicas.isEmpty() == false) {
+            failedReplica = randomFrom(new ArrayList<>(expectedReplicas));
+            expectedFailures.put(failedReplica, new CorruptIndexException("simulated", (String) null));
+        } else {
+            failedReplica = null;
+        }
 
         Request request = new Request(shardId);
         PlainActionFuture<TestPrimary.Result> listener = new PlainActionFuture<>();
@@ -197,9 +201,11 @@ public class ReplicationOperationTests extends ESTestCase {
 
         assertThat("request was not processed on primary", request.processedOnPrimary.get(), equalTo(true));
         assertTrue("listener is not marked as done", listener.isDone());
-        assertTrue(primaryFailed.get());
-        assertListenerThrows("should throw exception to trigger retry", listener,
-            ReplicationOperation.RetryOnPrimaryException.class);
+        if (failedReplica != null) {
+            assertTrue(primaryFailed.get());
+            assertListenerThrows("should throw exception to trigger retry", listener,
+                ReplicationOperation.RetryOnPrimaryException.class);
+        }
     }
 
     public void testAddedReplicaAfterPrimaryOperation() throws Exception {
@@ -234,7 +240,7 @@ public class ReplicationOperationTests extends ESTestCase {
         op.execute();
 
         assertThat("request was not processed on primary", request.processedOnPrimary.get(), equalTo(true));
-        Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state.get());
+        Set<ShardRouting> expectedReplicas = getExpectedReplicas(shardId, state.get(), false);
         assertThat(request.processedOnReplicas, equalTo(expectedReplicas));
     }
 
@@ -329,23 +335,28 @@ public class ReplicationOperationTests extends ESTestCase {
         final ShardInfo shardInfo = listener.actionGet().getShardInfo();
         assertThat(shardInfo.getFailed(), equalTo(0));
         assertThat(shardInfo.getFailures(), arrayWithSize(0));
-        assertThat(shardInfo.getSuccessful(), equalTo(1 + getExpectedReplicas(shardId, state).size()));
+        assertThat(shardInfo.getSuccessful(), equalTo(1 + getExpectedReplicas(shardId, state, true).size()));
     }
 
-    private Set<ShardRouting> getExpectedReplicas(ShardId shardId, ClusterState state) {
+    private Set<ShardRouting> getExpectedReplicas(ShardId shardId, ClusterState state, boolean onlyInSync) {
         Set<ShardRouting> expectedReplicas = new HashSet<>();
         String localNodeId = state.nodes().getLocalNodeId();
         if (state.routingTable().hasIndex(shardId.getIndexName())) {
+            Set<String> inSyncIds = state.metaData().index(shardId.getIndex()).inSyncAllocationIds(shardId.id());
             for (ShardRouting shardRouting : state.routingTable().shardRoutingTable(shardId)) {
                 if (shardRouting.unassigned()) {
                     continue;
                 }
                 if (localNodeId.equals(shardRouting.currentNodeId()) == false) {
-                    expectedReplicas.add(shardRouting);
+                    if (onlyInSync == false || inSyncIds.contains(shardRouting.allocationId().getId())) {
+                        expectedReplicas.add(shardRouting);
+                    }
                 }
 
                 if (shardRouting.relocating() && localNodeId.equals(shardRouting.relocatingNodeId()) == false) {
-                    expectedReplicas.add(shardRouting.getTargetRelocatingShard());
+                    if (onlyInSync == false || inSyncIds.contains(shardRouting.allocationId().getRelocationId())) {
+                        expectedReplicas.add(shardRouting.getTargetRelocatingShard());
+                    }
                 }
             }
         }
