@@ -19,9 +19,11 @@
 
 package org.elasticsearch.gateway;
 
+import com.carrotsearch.hppc.ObjectFloatHashMap;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
+import org.elasticsearch.action.FailedNodeException;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateListener;
@@ -37,15 +39,20 @@ import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
+import org.elasticsearch.discovery.zen.ElectMasterService;
+import org.elasticsearch.index.Index;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GatewayService extends AbstractLifecycleComponent implements ClusterStateListener {
@@ -65,17 +72,21 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
     public static final Setting<Integer> RECOVER_AFTER_MASTER_NODES_SETTING =
         Setting.intSetting("gateway.recover_after_master_nodes", 0, 0, Property.NodeScope);
 
-    public static final ClusterBlock STATE_NOT_RECOVERED_BLOCK = new ClusterBlock(1, "state not recovered / initialized", true, true, false, RestStatus.SERVICE_UNAVAILABLE, ClusterBlockLevel.ALL);
+    public static final ClusterBlock STATE_NOT_RECOVERED_BLOCK = new ClusterBlock(1, "state not recovered / initialized", true, true, false,
+        RestStatus.SERVICE_UNAVAILABLE, ClusterBlockLevel.ALL);
 
     public static final TimeValue DEFAULT_RECOVER_AFTER_TIME_IF_EXPECTED_NODES_IS_SET = TimeValue.timeValueMinutes(5);
-
-    private final Gateway gateway;
 
     private final ThreadPool threadPool;
 
     private final AllocationService allocationService;
 
     private final ClusterService clusterService;
+
+    private final TransportNodesListGatewayMetaState listGatewayMetaState;
+
+    private final int minimumMasterNodes;
+    private final IndicesService indicesService;
 
     private final TimeValue recoverAfterTime;
     private final int recoverAfterNodes;
@@ -95,8 +106,9 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
                           TransportNodesListGatewayMetaState listGatewayMetaState,
                           IndicesService indicesService) {
         super(settings);
-        this.gateway = new Gateway(settings, clusterService, listGatewayMetaState,
-            indicesService);
+        this.indicesService = indicesService;
+        this.listGatewayMetaState = listGatewayMetaState;
+        this.minimumMasterNodes = ElectMasterService.DISCOVERY_ZEN_MINIMUM_MASTER_NODES_SETTING.get(settings);
         this.allocationService = allocationService;
         this.clusterService = clusterService;
         this.threadPool = threadPool;
@@ -118,8 +130,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
         if (RECOVER_AFTER_MASTER_NODES_SETTING.exists(this.settings)) {
             recoverAfterMasterNodes = RECOVER_AFTER_MASTER_NODES_SETTING.get(this.settings);
         } else {
-            // TODO: change me once the minimum_master_nodes is changed too
-            recoverAfterMasterNodes = settings.getAsInt("discovery.zen.minimum_master_nodes", -1);
+            recoverAfterMasterNodes = minimumMasterNodes;
         }
 
         clusterService.addLowPriorityApplier(metaState);
@@ -196,7 +207,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
     }
 
     private void performStateRecovery(boolean enforceRecoverAfterTime, String reason) {
-        final Gateway.GatewayStateRecoveredListener recoveryListener = new GatewayRecoveryListener();
+        final GatewayRecoveryListener recoveryListener = new GatewayRecoveryListener();
 
         if (enforceRecoverAfterTime && recoverAfterTime != null) {
             if (scheduledRecovery.compareAndSet(false, true)) {
@@ -204,7 +215,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
                 threadPool.schedule(recoverAfterTime, ThreadPool.Names.GENERIC, () -> {
                     if (recovered.compareAndSet(false, true)) {
                         logger.info("recover_after_time [{}] elapsed. performing state recovery...", recoverAfterTime);
-                        gateway.performStateRecovery(recoveryListener);
+                        performStateRecovery(recoveryListener);
                     }
                 });
             }
@@ -221,16 +232,127 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
 
                     @Override
                     protected void doRun() throws Exception {
-                        gateway.performStateRecovery(recoveryListener);
+                        performStateRecovery(recoveryListener);
                     }
                 });
             }
         }
     }
 
-    class GatewayRecoveryListener implements Gateway.GatewayStateRecoveredListener {
+    public void performStateRecovery(final GatewayRecoveryListener listener) throws GatewayException {
+        String[] nodesIds = clusterService.state().nodes().getMasterNodes().keys().toArray(String.class);
+        logger.trace("performing state recovery from {}", Arrays.toString(nodesIds));
+        TransportNodesListGatewayMetaState.NodesGatewayMetaState nodesState = listGatewayMetaState.list(nodesIds, null).actionGet();
 
-        @Override
+
+        int requiredAllocation = Math.max(1, minimumMasterNodes);
+
+
+        if (nodesState.hasFailures()) {
+            for (FailedNodeException failedNodeException : nodesState.failures()) {
+                logger.warn("failed to fetch state from node", failedNodeException);
+            }
+        }
+
+        ObjectFloatHashMap<Index> indices = new ObjectFloatHashMap<>();
+        MetaData electedGlobalState = null;
+        int found = 0;
+        for (TransportNodesListGatewayMetaState.NodeGatewayMetaState nodeState : nodesState.getNodes()) {
+            if (nodeState.metaData() == null) {
+                continue;
+            }
+            found++;
+            if (electedGlobalState == null) {
+                electedGlobalState = nodeState.metaData();
+            } else if (nodeState.metaData().version() > electedGlobalState.version()) {
+                electedGlobalState = nodeState.metaData();
+            }
+            for (ObjectCursor<IndexMetaData> cursor : nodeState.metaData().indices().values()) {
+                indices.addTo(cursor.value.getIndex(), 1);
+            }
+        }
+        if (found < requiredAllocation) {
+            listener.onFailure("found [" + found + "] metadata states, required [" + requiredAllocation + "]");
+            return;
+        }
+        // update the global state, and clean the indices, we elect them in the next phase
+        MetaData.Builder metaDataBuilder = MetaData.builder(electedGlobalState).removeAllIndices();
+
+        assert !indices.containsKey(null);
+        final Object[] keys = indices.keys;
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] != null) {
+                Index index = (Index) keys[i];
+                IndexMetaData electedIndexMetaData = null;
+                int indexMetaDataCount = 0;
+                for (TransportNodesListGatewayMetaState.NodeGatewayMetaState nodeState : nodesState.getNodes()) {
+                    if (nodeState.metaData() == null) {
+                        continue;
+                    }
+                    IndexMetaData indexMetaData = nodeState.metaData().index(index);
+                    if (indexMetaData == null) {
+                        continue;
+                    }
+                    if (electedIndexMetaData == null) {
+                        electedIndexMetaData = indexMetaData;
+                    } else if (indexMetaData.getVersion() > electedIndexMetaData.getVersion()) {
+                        electedIndexMetaData = indexMetaData;
+                    }
+                    indexMetaDataCount++;
+                }
+                if (electedIndexMetaData != null) {
+                    if (indexMetaDataCount < requiredAllocation) {
+                        logger.debug("[{}] found [{}], required [{}], not adding", index, indexMetaDataCount, requiredAllocation);
+                    } // TODO if this logging statement is correct then we are missing an else here
+                    try {
+                        if (electedIndexMetaData.getState() == IndexMetaData.State.OPEN) {
+                            // verify that we can actually create this index - if not we recover it as closed with lots of warn logs
+                            indicesService.verifyIndexMetadata(electedIndexMetaData, electedIndexMetaData);
+                        }
+                    } catch (Exception e) {
+                        final Index electedIndex = electedIndexMetaData.getIndex();
+                        logger.warn(
+                            (org.apache.logging.log4j.util.Supplier<?>)
+                                () -> new ParameterizedMessage("recovering index {} failed - recovering as closed", electedIndex), e);
+                        electedIndexMetaData = IndexMetaData.builder(electedIndexMetaData).state(IndexMetaData.State.CLOSE).build();
+                    }
+
+                    metaDataBuilder.put(electedIndexMetaData, false);
+                }
+            }
+        }
+        final ClusterSettings clusterSettings = clusterService.getClusterSettings();
+        metaDataBuilder.persistentSettings(
+            clusterSettings.archiveUnknownOrInvalidSettings(
+                metaDataBuilder.persistentSettings(),
+                e -> logUnknownSetting("persistent", e),
+                (e, ex) -> logInvalidSetting("persistent", e, ex)));
+        metaDataBuilder.transientSettings(
+            clusterSettings.archiveUnknownOrInvalidSettings(
+                metaDataBuilder.transientSettings(),
+                e -> logUnknownSetting("transient", e),
+                (e, ex) -> logInvalidSetting("transient", e, ex)));
+        ClusterState.Builder builder = clusterService.newClusterStateBuilder();
+        builder.metaData(metaDataBuilder);
+        listener.onSuccess(builder.build());
+    }
+
+    private void logUnknownSetting(String settingType, Map.Entry<String, String> e) {
+        logger.warn("ignoring unknown {} setting: [{}] with value [{}]; archiving", settingType, e.getKey(), e.getValue());
+    }
+
+    private void logInvalidSetting(String settingType, Map.Entry<String, String> e, IllegalArgumentException ex) {
+        logger.warn(
+            (org.apache.logging.log4j.util.Supplier<?>)
+                () -> new ParameterizedMessage("ignoring invalid {} setting: [{}] with value [{}]; archiving",
+                    settingType,
+                    e.getKey(),
+                    e.getValue()),
+            ex);
+    }
+
+    class GatewayRecoveryListener {
+
         public void onSuccess(final ClusterState recoveredState) {
             logger.trace("successful state recovery, importing cluster state...");
             clusterService.submitStateUpdateTask("local-gateway-elected-state", new ClusterStateUpdateTask() {
@@ -294,7 +416,6 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
             });
         }
 
-        @Override
         public void onFailure(String message) {
             recovered.set(false);
             scheduledRecovery.set(false);
@@ -308,5 +429,4 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
     public TimeValue recoverAfterTime() {
         return recoverAfterTime;
     }
-
 }
