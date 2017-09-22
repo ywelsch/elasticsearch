@@ -138,6 +138,15 @@ public class Regex {
         return false;
     }
 
+    public static boolean simpleMatch(Iterable<String> patterns, String str) {
+        for (String pattern : patterns) {
+            if (simpleMatch(pattern, str)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean simpleMatch(String[] patterns, String[] types) {
         if (patterns != null && types != null) {
             for (String type : types) {

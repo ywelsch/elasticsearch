@@ -64,6 +64,7 @@ import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -117,8 +118,8 @@ public class TransportService extends AbstractLifecycleComponent {
 
     private final Logger tracerLog;
 
-    volatile String[] tracerLogInclude;
-    volatile String[] tracerLogExclude;
+    private final AtomicReference<List<String>> tracerLogInclude = new AtomicReference<>();
+    private final AtomicReference<List<String>> tracerLogExclude = new AtomicReference<>();
 
     private final RemoteClusterService remoteClusterService;
 
@@ -188,11 +189,11 @@ public class TransportService extends AbstractLifecycleComponent {
     }
 
     void setTracerLogInclude(List<String> tracerLogInclude) {
-        this.tracerLogInclude = tracerLogInclude.toArray(Strings.EMPTY_ARRAY);
+        this.tracerLogInclude.set(new CopyOnWriteArrayList(tracerLogInclude));
     }
 
     void setTracerLogExclude(List<String> tracerLogExclude) {
-        this.tracerLogExclude = tracerLogExclude.toArray(Strings.EMPTY_ARRAY);
+        this.tracerLogExclude.set(new CopyOnWriteArrayList(tracerLogExclude));
     }
 
     @Override
@@ -676,13 +677,15 @@ public class TransportService extends AbstractLifecycleComponent {
     }
 
     private boolean shouldTraceAction(String action) {
-        if (tracerLogInclude.length > 0) {
-            if (Regex.simpleMatch(tracerLogInclude, action) == false) {
+        final List<String> includes = tracerLogInclude.get();
+        if (includes.isEmpty() == false) {
+            if (Regex.simpleMatch(includes, action) == false) {
                 return false;
             }
         }
-        if (tracerLogExclude.length > 0) {
-            return !Regex.simpleMatch(tracerLogExclude, action);
+        final List<String> excludes = tracerLogInclude.get();
+        if (excludes.isEmpty() == false) {
+            return !Regex.simpleMatch(excludes, action);
         }
         return true;
     }
