@@ -63,6 +63,7 @@ List projects = [
   'plugins:repository-s3',
   'plugins:jvm-example',
   'plugins:store-smb',
+  'plugins:transport-netty4.1.5',
   'qa:auto-create-index',
   'qa:evil-tests',
   'qa:mixed-cluster',
