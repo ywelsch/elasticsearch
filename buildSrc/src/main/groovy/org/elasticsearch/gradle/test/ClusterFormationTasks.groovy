@@ -252,19 +252,23 @@ class ClusterFormationTasks {
         switch (node.config.distribution) {
             case 'integ-test-zip':
             case 'zip':
-                extract = project.tasks.create(name: name, type: Copy, dependsOn: extractDependsOn) {
-                    from {
-                        project.zipTree(configuration.singleFile)
+                extract = project.tasks.create(name: name, type: DefaultTask, dependsOn: extractDependsOn) {
+                    doLast {
+                        project.copy {
+                            from project.zipTree(configuration.singleFile)
+                            into node.baseDir
+                        }
                     }
-                    into node.baseDir
                 }
                 break;
             case 'tar':
-                extract = project.tasks.create(name: name, type: Copy, dependsOn: extractDependsOn) {
-                    from {
-                        project.tarTree(project.resources.gzip(configuration.singleFile))
+                extract = project.tasks.create(name: name, type: DefaultTask, dependsOn: extractDependsOn) {
+                    doLast {
+                        project.copy {
+                            from project.tarTree(project.resources.gzip(configuration.singleFile))
+                            into node.baseDir
+                        }
                     }
-                    into node.baseDir
                 }
                 break;
             case 'rpm':
@@ -385,12 +389,10 @@ class ClusterFormationTasks {
         if (node.config.extraConfigFiles.isEmpty()) {
             return setup
         }
-        Copy copyConfig = project.tasks.create(name: name, type: Copy, dependsOn: setup)
-        File configDir = new File(node.homeDir, 'config')
-        copyConfig.into(configDir) // copy must always have a general dest dir, even though we don't use it
+        Task copyTask = project.tasks.create(name: name, type: DefaultTask, dependsOn: setup)
         for (Map.Entry<String,Object> extraConfigFile : node.config.extraConfigFiles.entrySet()) {
             Object extraConfigFileValue = extraConfigFile.getValue()
-            copyConfig.doFirst {
+            copyTask.doLast {
                 // make sure the copy won't be a no-op or act on a directory
                 File srcConfigFile = project.file(extraConfigFileValue)
                 if (srcConfigFile.isDirectory()) {
@@ -399,16 +401,14 @@ class ClusterFormationTasks {
                 if (srcConfigFile.exists() == false) {
                     throw new GradleException("Source file for extraConfigFile does not exist: ${srcConfigFile}")
                 }
-            }
-            File destConfigFile = new File(node.homeDir, 'config/' + extraConfigFile.getKey())
-            // wrap source file in closure to delay resolution to execution time
-            copyConfig.from({ extraConfigFileValue }) {
-                // this must be in a closure so it is only applied to the single file specified in from above
-                into(configDir.toPath().relativize(destConfigFile.canonicalFile.parentFile.toPath()).toFile())
-                rename { destConfigFile.name }
+                File destConfigFile = new File(node.homeDir, 'config/' + extraConfigFile.getKey())
+                project.copy {
+                    from srcConfigFile
+                    into destConfigFile
+                }
             }
         }
-        return copyConfig
+        return copyTask
     }
 
     /**
