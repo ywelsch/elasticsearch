@@ -98,38 +98,32 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
             throw new IllegalArgumentException("incoming slot " + vote.getFirstUncommittedSlot() + " higher than current slot " +
                 firstUncommittedSlot());
         }
-        final long lastAcceptedTermInSlot = lastAcceptedTermInSlot();
-        final boolean valueForced;
-        if (vote.getFirstUncommittedSlot() == firstUncommittedSlot()) {
-            // TODO: align the following checks with the Isabelle/TLA+ model
-            valueForced = vote.getLastAcceptedTerm() != NO_TERM;
+        if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() != NO_TERM) {
+            final long lastAcceptedTermInSlot = lastAcceptedTermInSlot();
             if (vote.getLastAcceptedTerm() > lastAcceptedTermInSlot) {
                 logger.trace("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
                     lastAcceptedTermInSlot, vote.getLastAcceptedTerm());
                 throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
                     "current last accepted term " + lastAcceptedTermInSlot);
             }
-            if (valueForced && vote.getLastAcceptedTerm() < lastAcceptedTermInSlot && electionState.valueForced() == false) {
+            if (vote.getLastAcceptedTerm() < lastAcceptedTermInSlot && electionState.valueForced() == false) {
                 logger.trace("handleVote: ignored vote as voter has worse last accepted term and election value not forced " +
                         "(expected: <=[{}], actual: [{}])", lastAcceptedTermInSlot, vote.getLastAcceptedTerm());
                 throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " lower than " +
                     "current last accepted term " + lastAcceptedTermInSlot + " and election value not forced");
             }
-        } else {
-            valueForced = false;
-        }
-        logger.trace("handleVote: adding vote {} from {} (forced value: {})", vote, sourceNode, valueForced);
-
-        electionState.add(sourceNode);
-
-        if (valueForced) {
             electionState.setValueForced(true);
         }
 
+        logger.trace("handleVote: adding vote {} from {} for election at slot {}", vote, sourceNode, firstUncommittedSlot());
+        electionState.add(sourceNode);
+
         if (electionState.maybeSetElectionWon(committedState.getVotingNodes())) {
-            logger.trace("handleVote: election won, value forced: {}", electionState.valueForced());
+            logger.trace("handleVote: election won");
 
             if (electionState.valueForced()) {
+                logger.trace("handleVote: value forced");
+
                 publishState.disablePublishing();
                 return Optional.of(new AcceptedState<>(firstUncommittedSlot(), currentTerm, acceptedState.getDiff()));
             }
