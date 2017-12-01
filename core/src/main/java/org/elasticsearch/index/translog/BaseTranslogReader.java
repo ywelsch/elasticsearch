@@ -19,7 +19,9 @@
 
 package org.elasticsearch.index.translog;
 
+import org.elasticsearch.common.CheckedFunction;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
+import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -38,7 +40,7 @@ public abstract class BaseTranslogReader implements Comparable<BaseTranslogReade
     protected final long firstOperationOffset;
 
     public BaseTranslogReader(long generation, FileChannel channel, Path path, long firstOperationOffset) {
-        assert Translog.parseIdFromFileName(path) == generation : "generation mismatch. Path: " + Translog.parseIdFromFileName(path) + " but generation: " + generation;
+        assert BaseTranslog.parseIdFromFileName(path) == generation : "generation mismatch. Path: " + BaseTranslog.parseIdFromFileName(path) + " but generation: " + generation;
 
         this.generation = generation;
         this.path = path;
@@ -54,7 +56,7 @@ public abstract class BaseTranslogReader implements Comparable<BaseTranslogReade
 
     public abstract int totalOperations();
 
-    abstract Checkpoint getCheckpoint();
+    abstract BaseCheckpoint getCheckpoint();
 
     public final long getFirstOperationOffset() {
         return firstOperationOffset;
@@ -99,8 +101,8 @@ public abstract class BaseTranslogReader implements Comparable<BaseTranslogReade
         return new BufferedChecksumStreamInput(new ByteBufferStreamInput(buffer), reuse);
     }
 
-    protected Translog.Operation read(BufferedChecksumStreamInput inStream) throws IOException {
-        return Translog.readOperation(inStream);
+    protected <T> T read(BufferedChecksumStreamInput inStream, CheckedFunction<StreamInput, T, IOException> reader) throws IOException {
+        return BaseTranslog.readOperation(inStream, reader);
     }
 
     /**

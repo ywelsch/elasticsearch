@@ -47,7 +47,7 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
 
     protected final long length;
     private final int totalOperations;
-    private final Checkpoint checkpoint;
+    private final BaseCheckpoint checkpoint;
     protected final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
@@ -58,7 +58,7 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
      * @param path                 the path to the translog
      * @param firstOperationOffset the offset to the first operation
      */
-    TranslogReader(final Checkpoint checkpoint, final FileChannel channel, final Path path, final long firstOperationOffset) {
+    TranslogReader(final BaseCheckpoint checkpoint, final FileChannel channel, final Path path, final long firstOperationOffset) {
         super(checkpoint.generation, channel, path, firstOperationOffset);
         this.length = checkpoint.offset;
         this.totalOperations = checkpoint.numOps;
@@ -76,7 +76,7 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
      * @throws IOException if any of the file operations resulted in an I/O exception
      */
     public static TranslogReader open(
-            final FileChannel channel, final Path path, final Checkpoint checkpoint, final String translogUUID) throws IOException {
+        final FileChannel channel, final Path path, final BaseCheckpoint checkpoint, final String translogUUID) throws IOException {
 
         try {
             InputStreamStreamInput headerStream = new InputStreamStreamInput(java.nio.channels.Channels.newInputStream(channel),
@@ -111,12 +111,12 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
                 }
                 // Confirm the rest of the header using CodecUtil, extracting
                 // the translog version
-                int version = CodecUtil.checkHeaderNoMagic(new InputStreamDataInput(headerStream), TranslogWriter.TRANSLOG_CODEC, 1, Integer.MAX_VALUE);
+                int version = CodecUtil.checkHeaderNoMagic(new InputStreamDataInput(headerStream), BaseTranslogWriter.TRANSLOG_CODEC, 1, Integer.MAX_VALUE);
                 switch (version) {
-                    case TranslogWriter.VERSION_CHECKSUMS:
+                    case BaseTranslogWriter.VERSION_CHECKSUMS:
                         throw new IllegalStateException("pre-2.0 translog found [" + path + "]");
-                    case TranslogWriter.VERSION_CHECKPOINTS:
-                        assert path.getFileName().toString().endsWith(Translog.TRANSLOG_FILE_SUFFIX) : "new file ends with old suffix: " + path;
+                    case BaseTranslogWriter.VERSION_CHECKPOINTS:
+                        assert path.getFileName().toString().endsWith(BaseTranslog.TRANSLOG_FILE_SUFFIX) : "new file ends with old suffix: " + path;
                         assert checkpoint.numOps >= 0 : "expected at least 0 operation but got: " + checkpoint.numOps;
                         assert checkpoint.offset <= channel.size() : "checkpoint is inconsistent with channel length: " + channel.size() + " " + checkpoint;
                         int len = headerStream.readInt();
@@ -132,7 +132,7 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
                                             " this translog file belongs to a different translog. path:" + path);
                         }
                         final long firstOperationOffset;
-                        firstOperationOffset = ref.length + CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC) + Integer.BYTES;
+                        firstOperationOffset = ref.length + CodecUtil.headerLength(BaseTranslogWriter.TRANSLOG_CODEC) + Integer.BYTES;
                         return new TranslogReader(checkpoint, channel, path, firstOperationOffset);
 
                     default:
@@ -157,7 +157,7 @@ public class TranslogReader extends BaseTranslogReader implements Closeable {
     }
 
     @Override
-    final Checkpoint getCheckpoint() {
+    final BaseCheckpoint getCheckpoint() {
         return checkpoint;
     }
 

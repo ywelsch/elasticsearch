@@ -18,7 +18,9 @@
  */
 package org.elasticsearch.index.translog;
 
+import org.elasticsearch.common.CheckedFunction;
 import org.elasticsearch.common.io.Channels;
+import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -27,7 +29,7 @@ import java.nio.ByteBuffer;
 final class TranslogSnapshot extends BaseTranslogReader {
 
     private final int totalOperations;
-    private final Checkpoint checkpoint;
+    private final BaseCheckpoint checkpoint;
     protected final long length;
 
     private final ByteBuffer reusableBuffer;
@@ -55,22 +57,22 @@ final class TranslogSnapshot extends BaseTranslogReader {
     }
 
     @Override
-    Checkpoint getCheckpoint() {
+    BaseCheckpoint getCheckpoint() {
         return checkpoint;
     }
 
-    public Translog.Operation next() throws IOException {
+    public <T> T next(CheckedFunction<StreamInput, T, IOException> reader) throws IOException {
         if (readOperations < totalOperations) {
-            return readOperation();
+            return readOperation(reader);
         } else {
             return null;
         }
     }
 
-    protected Translog.Operation readOperation() throws IOException {
+    protected <T> T readOperation(CheckedFunction<StreamInput, T, IOException> reader) throws IOException {
         final int opSize = readSize(reusableBuffer, position);
         reuse = checksummedStream(reusableBuffer, position, opSize, reuse);
-        Translog.Operation op = read(reuse);
+        T op = read(reuse, reader);
         position += opSize;
         readOperations++;
         return op;

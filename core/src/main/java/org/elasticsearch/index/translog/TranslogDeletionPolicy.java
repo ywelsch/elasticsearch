@@ -137,7 +137,7 @@ public class TranslogDeletionPolicy {
      * @param readers current translog readers
      * @param writer  current translog writer
      */
-    synchronized long minTranslogGenRequired(List<TranslogReader> readers, TranslogWriter writer) throws IOException {
+    synchronized long minTranslogGenRequired(List<TranslogReader> readers, BaseTranslogWriter writer) throws IOException {
         long minByLocks = getMinTranslogGenRequiredByLocks();
         long minByAge = getMinTranslogGenByAge(readers, writer, retentionAgeInMillis, currentTime());
         long minBySize = getMinTranslogGenBySize(readers, writer, retentionSizeInBytes);
@@ -151,7 +151,7 @@ public class TranslogDeletionPolicy {
         return Math.min(minByAgeAndSize, Math.min(minByLocks, minTranslogGenerationForRecovery));
     }
 
-    static long getMinTranslogGenBySize(List<TranslogReader> readers, TranslogWriter writer, long retentionSizeInBytes) {
+    static long getMinTranslogGenBySize(List<TranslogReader> readers, BaseTranslogWriter writer, long retentionSizeInBytes) {
         if (retentionSizeInBytes >= 0) {
             long totalSize = writer.sizeInBytes();
             long minGen = writer.getGeneration();
@@ -166,7 +166,7 @@ public class TranslogDeletionPolicy {
         }
     }
 
-    static long getMinTranslogGenByAge(List<TranslogReader> readers, TranslogWriter writer, long maxRetentionAgeInMillis, long now)
+    static long getMinTranslogGenByAge(List<TranslogReader> readers, BaseTranslogWriter writer, long maxRetentionAgeInMillis, long now)
         throws IOException {
         if (maxRetentionAgeInMillis >= 0) {
             for (TranslogReader reader: readers) {

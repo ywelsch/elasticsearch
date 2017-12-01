@@ -68,7 +68,7 @@ final class MultiSnapshot implements Translog.Snapshot {
         for (; index >= 0; index--) {
             final TranslogSnapshot current = translogs[index];
             Translog.Operation op;
-            while ((op = current.next()) != null) {
+            while ((op = current.next(Translog.Operation::readOperation)) != null) {
                 if (op.seqNo() == SequenceNumbers.UNASSIGNED_SEQ_NO || seenSeqNo.getAndSet(op.seqNo()) == false) {
                     return op;
                 } else {

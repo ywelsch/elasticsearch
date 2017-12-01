@@ -65,7 +65,7 @@ import org.elasticsearch.index.seqno.LocalCheckpointTracker;
 import org.elasticsearch.index.seqno.LocalCheckpointTrackerTests;
 import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.index.translog.Translog.Location;
+import org.elasticsearch.index.translog.BaseTranslog.Location;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.IndexSettingsModule;
 import org.hamcrest.Matchers;
@@ -1078,14 +1078,14 @@ public class TranslogTests extends ESTestCase {
 
             for (int op = 0; op < translogOperations; op++) {
                 if (op <= lastSynced) {
-                    final Translog.Operation read = snapshot.next();
+                    final Translog.Operation read = snapshot.next(Translog.Operation::readOperation);
                     assertEquals(Integer.toString(op), read.getSource().source.utf8ToString());
                 } else {
-                    Translog.Operation next = snapshot.next();
+                    Translog.Operation next = snapshot.next(Translog.Operation::readOperation);
                     assertNull(next);
                 }
             }
-            Translog.Operation next = snapshot.next();
+            Translog.Operation next = snapshot.next(Translog.Operation::readOperation);
             assertNull(next);
         }
         assertEquals(translogOperations + 1, translog.totalOperations());
@@ -1094,7 +1094,7 @@ public class TranslogTests extends ESTestCase {
     }
 
     public void testTranslogWriter() throws IOException {
-        final TranslogWriter writer = translog.createWriter(translog.currentFileGeneration() + 1);
+        final TranslogWriter writer = (TranslogWriter) translog.createWriter(translog.currentFileGeneration() + 1);
         final int numOps = randomIntBetween(8, 128);
         byte[] bytes = new byte[4];
         ByteArrayDataOutput out = new ByteArrayDataOutput(bytes);
@@ -1125,8 +1125,8 @@ public class TranslogTests extends ESTestCase {
         }
         final long minSeqNo = seenSeqNos.stream().min(Long::compareTo).orElse(SequenceNumbers.NO_OPS_PERFORMED);
         final long maxSeqNo = seenSeqNos.stream().max(Long::compareTo).orElse(SequenceNumbers.NO_OPS_PERFORMED);
-        assertThat(reader.getCheckpoint().minSeqNo, equalTo(minSeqNo));
-        assertThat(reader.getCheckpoint().maxSeqNo, equalTo(maxSeqNo));
+        assertThat(((Checkpoint) reader.getCheckpoint()).minSeqNo, equalTo(minSeqNo));
+        assertThat(((Checkpoint) reader.getCheckpoint()).maxSeqNo, equalTo(maxSeqNo));
 
         out.reset(bytes);
         out.writeInt(2048);
@@ -1154,7 +1154,7 @@ public class TranslogTests extends ESTestCase {
     }
 
     public void testCloseIntoReader() throws IOException {
-        try (TranslogWriter writer = translog.createWriter(translog.currentFileGeneration() + 1)) {
+        try (TranslogWriter writer = (TranslogWriter) translog.createWriter(translog.currentFileGeneration() + 1)) {
             final int numOps = randomIntBetween(8, 128);
             final byte[] bytes = new byte[4];
             final ByteArrayDataOutput out = new ByteArrayDataOutput(bytes);
@@ -1178,7 +1178,7 @@ public class TranslogTests extends ESTestCase {
                     final int value = buffer.getInt();
                     assertEquals(i, value);
                 }
-                final Checkpoint readerCheckpoint = reader.getCheckpoint();
+                final BaseCheckpoint readerCheckpoint = reader.getCheckpoint();
                 assertThat(readerCheckpoint, equalTo(writerCheckpoint));
             } finally {
                 IOUtils.close(reader);
@@ -2472,7 +2472,7 @@ public class TranslogTests extends ESTestCase {
                     try (TranslogReader reader = translog.openReader(translog.location().resolve(Translog.getFilename(g)), checkpoint)) {
                         TranslogSnapshot snapshot = reader.newSnapshot();
                         Translog.Operation operation;
-                        while ((operation = snapshot.next()) != null) {
+                        while ((operation = snapshot.next(Translog.Operation::readOperation)) != null) {
                             generationSeenSeqNos.add(Tuple.tuple(operation.seqNo(), operation.primaryTerm()));
                             opCount++;
                         }

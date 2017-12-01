@@ -19,7 +19,6 @@
 
 package org.elasticsearch.index.translog;
 
-import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
@@ -86,10 +85,7 @@ public class TranslogVersionTests extends ESTestCase {
 
     public TranslogReader openReader(final Path path, final long id) throws IOException {
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
-            final long minSeqNo = SequenceNumbers.NO_OPS_PERFORMED;
-            final long maxSeqNo = SequenceNumbers.NO_OPS_PERFORMED;
-            final Checkpoint checkpoint =
-                new Checkpoint(Files.size(path), 1, id, minSeqNo, maxSeqNo, SequenceNumbers.UNASSIGNED_SEQ_NO, id);
+            final BaseCheckpoint checkpoint = new BaseCheckpoint(Files.size(path), 1, id, id);
             return TranslogReader.open(channel, path, checkpoint, null);
         }
     }
