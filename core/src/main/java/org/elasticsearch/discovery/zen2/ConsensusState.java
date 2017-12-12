@@ -50,7 +50,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
     private Optional<AcceptedState<T>> acceptedState;
     // transient state
     private boolean electionWon;
-    private boolean electionValueForced;
     private NodeCollection joinVotes;
     private boolean publishPermitted;
     private NodeCollection publishVotes;
@@ -69,7 +68,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
 
         // transient state
         this.electionWon = false;
-        this.electionValueForced = false;
         this.joinVotes = new NodeCollection();
         this.publishPermitted = false;
         this.publishVotes = new NodeCollection();
@@ -125,7 +123,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         currentTerm = newTerm;
         joinVotes = new NodeCollection();
         electionWon = false;
-        electionValueForced = false;
         publishPermitted = true;
         publishVotes = new NodeCollection();
 
@@ -152,21 +149,12 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
             throw new IllegalArgumentException("incoming slot " + vote.getFirstUncommittedSlot() + " higher than current slot " +
                 firstUncommittedSlot());
         }
-        if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() != NO_TERM) {
-            final long lastAcceptedTermInSlot = lastAcceptedTerm();
-            if (vote.getLastAcceptedTerm() > lastAcceptedTermInSlot) {
-                logger.debug("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
-                    lastAcceptedTermInSlot, vote.getLastAcceptedTerm());
-                throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
-                    "current last accepted term " + lastAcceptedTermInSlot);
-            }
-            if (vote.getLastAcceptedTerm() < lastAcceptedTermInSlot && electionValueForced == false) {
-                logger.debug("handleVote: ignored vote as voter has worse last accepted term and election value not forced " +
-                    "(expected: <=[{}], actual: [{}])", lastAcceptedTermInSlot, vote.getLastAcceptedTerm());
-                throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " lower than " +
-                    "current last accepted term " + lastAcceptedTermInSlot + " and election value not forced");
-            }
-            electionValueForced = true;
+        final long lastAcceptedTerm = lastAcceptedTerm();
+        if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() > lastAcceptedTerm) {
+            logger.debug("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
+                lastAcceptedTerm, vote.getLastAcceptedTerm());
+            throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
+                "current last accepted term " + lastAcceptedTerm);
         }
 
         logger.debug("handleVote: adding vote {} from [{}] for election at slot {}", vote, sourceNode.getId(), firstUncommittedSlot());
@@ -174,13 +162,13 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
 
         electionWon = isQuorumInCurrentConfiguration(joinVotes);
 
-        logger.debug("handleVote: electionWon={} publishPermitted={} electionValueForce={}",
-            electionWon, publishPermitted, electionValueForced);
-        if (electionWon && publishPermitted && electionValueForced) {
+        logger.debug("handleVote: electionWon={} publishPermitted={} lastAcceptedTerm={}",
+            electionWon, publishPermitted, lastAcceptedTerm);
+        if (electionWon && publishPermitted && lastAcceptedTerm != NO_TERM) {
             logger.debug("handleVote: sending PublishRequest");
 
             publishPermitted = false;
-            assert acceptedState.isPresent(); // must be true because electionValueForced == true
+            assert acceptedState.isPresent(); // must be true because lastAcceptedTerm != NO_TERM
             return Optional.of(new PublishRequest<>(firstUncommittedSlot(), currentTerm, acceptedState.get().getDiff()));
         }
 
@@ -287,7 +275,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         committedState = newCommittedState;
         acceptedState = Optional.empty();
         publishPermitted = true;
-        electionValueForced = false;
         publishVotes = new NodeCollection();
     }
 
@@ -318,7 +305,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         persistence.persistCommittedState(newCommittedState);
         committedState = newCommittedState;
         acceptedState = Optional.empty();
-        electionValueForced = false;
         joinVotes = new NodeCollection();
         electionWon = false;
         publishVotes = new NodeCollection();
@@ -341,10 +327,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
             logger.debug("handleClientValue: ignored request as publishing is not permitted");
             throw new IllegalArgumentException("publishing not permitted");
         }
-        if (electionValueForced) {
-            logger.debug("handleClientValue: ignored request as election value is forced");
-            throw new IllegalArgumentException("election value forced");
-        }
+        assert lastAcceptedTerm() == NO_TERM; // see https://github.com/elastic/elasticsearch-formal-models/issues/24
 
         logger.trace("handleClientValue: processing request for slot [{}] and term [{}]", firstUncommittedSlot(), currentTerm);
         publishPermitted = false;
