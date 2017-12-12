@@ -23,12 +23,12 @@ import org.elasticsearch.cluster.Diff;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.zen2.ConsensusState.ApplyCommit;
+import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.ConsensusState.CommittedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
-import org.elasticsearch.discovery.zen2.ConsensusState.PublishRequest;
-import org.elasticsearch.discovery.zen2.ConsensusState.PublishResponse;
-import org.elasticsearch.discovery.zen2.ConsensusState.Vote;
+import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
+import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
+import org.elasticsearch.discovery.zen2.Messages.Vote;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 
@@ -37,6 +37,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import static org.hamcrest.Matchers.equalTo;
+
 
 public class ConsensusStateTests extends ESTestCase {
 
@@ -54,7 +55,7 @@ public class ConsensusStateTests extends ESTestCase {
                 }
 
                 @Override
-                public void persistAcceptedState(ConsensusState.SlotTermDiff<ClusterState> slotTermDiff) {
+                public void persistAcceptedState(Messages.SlotTermDiff<ClusterState> slotTermDiff) {
 
                 }
             });
@@ -72,13 +73,13 @@ public class ConsensusStateTests extends ESTestCase {
         ConsensusState<ClusterState> n2 = createInitialState(initialClusterState);
         ConsensusState<ClusterState> n3 = createInitialState(initialClusterState);
 
-        assertThat(n1.currentTerm, equalTo(0L));
+        assertThat(n1.getCurrentTerm(), equalTo(0L));
         Vote v1 = n1.handleStartVote(1);
-        assertThat(n1.currentTerm, equalTo(1L));
+        assertThat(n1.getCurrentTerm(), equalTo(1L));
 
-        assertThat(n2.currentTerm, equalTo(0L));
+        assertThat(n2.getCurrentTerm(), equalTo(0L));
         Vote v2 = n2.handleStartVote(1);
-        assertThat(n2.currentTerm, equalTo(1L));
+        assertThat(n2.getCurrentTerm(), equalTo(1L));
 
         Optional<PublishRequest<ClusterState>> invalidVote = n1.handleVote(node2, v2);
         assertFalse(invalidVote.isPresent());
@@ -107,15 +108,15 @@ public class ConsensusStateTests extends ESTestCase {
         assertThat(n2.firstUncommittedSlot(), equalTo(0L));
 
         assertThat(n3.firstUncommittedSlot(), equalTo(0L));
-        assertThat(n3.committedState.value, equalTo(42));
+        assertThat(n3.getCommittedState().value, equalTo(42));
         n3.handleCommit(n1Commit.get());
         assertThat(n3.firstUncommittedSlot(), equalTo(1L));
-        assertThat(n3.committedState.value, equalTo(5));
+        assertThat(n3.getCommittedState().value, equalTo(5));
 
         ClusterState n3ClusterState = n3.generateCatchup();
         n2.applyCatchup(n3ClusterState);
         assertThat(n2.firstUncommittedSlot(), equalTo(1L));
-        assertThat(n2.committedState.value, equalTo(5));
+        assertThat(n2.getCommittedState().value, equalTo(5));
     }
 
     static class ClusterState implements CommittedState {
@@ -139,9 +140,18 @@ public class ConsensusStateTests extends ESTestCase {
         public NodeCollection getVotingNodes() {
             return config;
         }
+
+        public int getValue() {
+            return value;
+        }
+
+        @Override
+        public String toString() {
+            return "ClusterState {slot=" + slot + ", value=" + value + ", config=" + config + "}";
+        }
     }
 
-    public Diff<ClusterState> createUpdate(Function<ClusterState, ClusterState> update) {
+    public static Diff<ClusterState> createUpdate(Function<ClusterState, ClusterState> update) {
         return new Diff<ClusterState>() {
 
             @Override
