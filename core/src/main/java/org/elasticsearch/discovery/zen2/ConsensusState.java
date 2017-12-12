@@ -25,7 +25,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
-import org.elasticsearch.discovery.zen2.Messages.SlotTermDiff;
 import org.elasticsearch.discovery.zen2.Messages.Vote;
 
 import java.util.HashMap;
@@ -48,7 +47,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
     // persisted state
     private long currentTerm;
     private T committedState;
-    private Optional<SlotTermDiff<T>> acceptedState;
+    private Optional<AcceptedState<T>> acceptedState;
     // transient state
     private boolean electionWon;
     private boolean electionValueForced;
@@ -56,7 +55,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
     private boolean publishPermitted;
     private NodeCollection publishVotes;
 
-    public ConsensusState(Settings settings, long currentTerm, T committedState, Optional<SlotTermDiff<T>> acceptedState,
+    public ConsensusState(Settings settings, long currentTerm, T committedState, Optional<AcceptedState<T>> acceptedState,
                           Persistence<T> persistence) {
         // TODO idea: just pass in a Persistence and let it provide the persisted state.
 
@@ -76,8 +75,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         this.publishVotes = new NodeCollection();
 
         assert currentTerm >= 0;
-        assert acceptedState.isPresent() == false || acceptedState.get().getTerm() <= currentTerm;
-        assert acceptedState.isPresent() == false || acceptedState.get().getSlot() <= firstUncommittedSlot();
+        assert lastAcceptedTerm() <= currentTerm;
     }
 
     public T getCommittedState() {
@@ -98,8 +96,8 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         return committedState.getSlot() + 1;
     }
 
-    public long lastAcceptedTermInSlot() {
-        if (acceptedState.isPresent() && firstUncommittedSlot() == acceptedState.get().getSlot()) {
+    public long lastAcceptedTerm() {
+        if (acceptedState.isPresent()) {
             return acceptedState.get().getTerm();
         } else {
             return NO_TERM;
@@ -131,7 +129,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         publishPermitted = true;
         publishVotes = new NodeCollection();
 
-        return new Vote(firstUncommittedSlot(), currentTerm, lastAcceptedTermInSlot());
+        return new Vote(firstUncommittedSlot(), currentTerm, lastAcceptedTerm());
     }
 
     /**
@@ -155,7 +153,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
                 firstUncommittedSlot());
         }
         if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() != NO_TERM) {
-            final long lastAcceptedTermInSlot = lastAcceptedTermInSlot();
+            final long lastAcceptedTermInSlot = lastAcceptedTerm();
             if (vote.getLastAcceptedTerm() > lastAcceptedTermInSlot) {
                 logger.debug("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
                     lastAcceptedTermInSlot, vote.getLastAcceptedTerm());
@@ -212,8 +210,9 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
 
         logger.trace("handlePublishRequest: storing publish request for slot [{}] and term [{}]",
             publishRequest.getSlot(), publishRequest.getTerm());
-        persistence.persistAcceptedState(publishRequest);
-        acceptedState = Optional.of(publishRequest);
+        final AcceptedState<T> termDiff = publishRequest.getAcceptedState();
+        persistence.persistAcceptedState(termDiff);
+        acceptedState = Optional.of(termDiff);
 
         return new PublishResponse(publishRequest.getSlot(), publishRequest.getTerm());
     }
@@ -264,11 +263,11 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
      */
     public void handleCommit(ApplyCommit applyCommit) {
-        if (applyCommit.getTerm() != lastAcceptedTermInSlot()) {
+        if (applyCommit.getTerm() != lastAcceptedTerm()) {
             logger.debug("handleCommit: ignored commit request due to term mismatch (expected: [{}], actual: [{}])",
-                lastAcceptedTermInSlot(), applyCommit.getTerm());
+                lastAcceptedTerm(), applyCommit.getTerm());
             throw new IllegalArgumentException("incoming term " + applyCommit.getTerm() + " does not match last accepted term " +
-                lastAcceptedTermInSlot());
+                lastAcceptedTerm());
         }
         if (applyCommit.getSlot() != firstUncommittedSlot()) {
             logger.debug("handleCommit: ignored commit request due to slot mismatch (expected: [{}], actual: [{}])",
@@ -280,13 +279,13 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         logger.trace("handleCommit: applying commit request for slot [{}]", applyCommit.getSlot());
 
         assert acceptedState.isPresent();
-        assert acceptedState.get().getSlot() == committedState.getSlot() + 1;
         final T newCommittedState = acceptedState.get().getDiff().apply(committedState);
         logger.trace("handleCommit: newCommittedState = [{}]", newCommittedState);
         assert newCommittedState.getSlot() == committedState.getSlot() + 1;
 
         persistence.persistCommittedState(newCommittedState);
         committedState = newCommittedState;
+        acceptedState = Optional.empty();
         publishPermitted = true;
         electionValueForced = false;
         publishVotes = new NodeCollection();
@@ -318,6 +317,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         logger.debug("applyCatchup: applying catch up for slot [{}]", newCommittedState.getSlot());
         persistence.persistCommittedState(newCommittedState);
         committedState = newCommittedState;
+        acceptedState = Optional.empty();
         electionValueForced = false;
         joinVotes = new NodeCollection();
         electionWon = false;
@@ -360,12 +360,57 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         NodeCollection getVotingNodes();
     }
 
+    public static class AcceptedState<T> {
+        protected final long term;
+        protected final Diff<T> diff;
+
+        public AcceptedState(long term, Diff<T> diff) {
+            this.term = term;
+            this.diff = diff;
+        }
+
+        public long getTerm() {
+            return term;
+        }
+
+        public Diff<T> getDiff() {
+            return diff;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            AcceptedState<?> termDiff = (AcceptedState<?>) o;
+
+            if (term != termDiff.term) return false;
+            return diff.equals(termDiff.diff);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = (int) (term ^ (term >>> 32));
+            result = 31 * result + diff.hashCode();
+            return result;
+        }
+
+
+        @Override
+        public String toString() {
+            return "AcceptedState{" +
+                "term=" + term +
+                ", diff=" + diff +
+                '}';
+        }
+    }
+
     public interface Persistence<T> {
         void persistCurrentTerm(long currentTerm);
 
         void persistCommittedState(T committedState);
 
-        void persistAcceptedState(SlotTermDiff<T> slotTermDiff);
+        void persistAcceptedState(AcceptedState<T> termDiff);
     }
 
     /**

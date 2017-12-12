@@ -55,7 +55,7 @@ public class ConsensusStateTests extends ESTestCase {
                 }
 
                 @Override
-                public void persistAcceptedState(Messages.SlotTermDiff<ClusterState> slotTermDiff) {
+                public void persistAcceptedState(ConsensusState.AcceptedState<ClusterState> termDiff) {
 
                 }
             });

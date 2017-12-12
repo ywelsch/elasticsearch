@@ -159,10 +159,11 @@ public class Messages {
         }
     }
 
-    public abstract static class SlotTermDiff<T> extends SlotTerm {
+    public static class PublishRequest<T> extends SlotTerm {
+
         protected final Diff<T> diff;
 
-        public SlotTermDiff(long slot, long term, Diff<T> diff) {
+        public PublishRequest(long slot, long term, Diff<T> diff) {
             super(slot, term);
             this.diff = diff;
         }
@@ -171,12 +172,16 @@ public class Messages {
             return diff;
         }
 
+        public ConsensusState.AcceptedState<T> getAcceptedState() {
+            return new ConsensusState.AcceptedState<>(term, diff);
+        }
+
         @Override
         public boolean equals(Object o) {
             if (super.equals(o) == false) {
                 return false;
             }
-            SlotTermDiff<?> that = (SlotTermDiff<?>) o;
+            PublishRequest<?> that = (PublishRequest<?>) o;
             return diff != null ? diff.equals(that.diff) : that.diff == null;
         }
 
@@ -185,22 +190,6 @@ public class Messages {
             int result = super.hashCode();
             result = 31 * result + (diff != null ? diff.hashCode() : 0);
             return result;
-        }
-
-        @Override
-        public String toString() {
-            return "SlotTermDiff{" +
-                "slot=" + slot +
-                ", term=" + term +
-                ", diff=" + diff +
-                '}';
-        }
-    }
-
-    public static class PublishRequest<T> extends SlotTermDiff<T> {
-
-        public PublishRequest(long slot, long term, Diff<T> diff) {
-            super(slot, term, diff);
         }
 
         @Override
