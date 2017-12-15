@@ -84,6 +84,10 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         return currentTerm;
     }
 
+    boolean canHandleClientValue() {
+        return electionWon && publishPermitted;
+    }
+
     public boolean isQuorumInCurrentConfiguration(NodeCollection votes) {
         final HashSet<String> intersection = new HashSet<>(committedState.getVotingNodes().nodes.keySet());
         intersection.retainAll(votes.nodes.keySet());
@@ -157,7 +161,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
                 "current last accepted term " + lastAcceptedTerm);
         }
 
-        logger.debug("handleVote: adding vote {} from [{}] for election at slot {}", vote, sourceNode.getId(), firstUncommittedSlot());
+        logger.debug("handleVote: adding vote {} from [{}] for election at slot {}", vote, sourceNode, firstUncommittedSlot());
         joinVotes.add(sourceNode);
 
         electionWon = isQuorumInCurrentConfiguration(joinVotes);
@@ -233,7 +237,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         }
 
         logger.trace("handlePublishResponse: accepted publish response for slot [{}] and term [{}] from [{}]",
-            publishResponse.getSlot(), publishResponse.getTerm(), sourceNode.getId());
+            publishResponse.getSlot(), publishResponse.getTerm(), sourceNode);
         publishVotes.add(sourceNode);
         if (isQuorumInCurrentConfiguration(publishVotes)) {
             logger.trace("handlePublishResponse: value committed for slot [{}] and term [{}]",

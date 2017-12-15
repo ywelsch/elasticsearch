@@ -25,10 +25,51 @@ public class Messages {
 
     public static final long NO_TERM = -1L;
 
+    public static class OfferVote {
+        protected final long firstUncommittedSlot;
+        protected final long term;
+        protected final long lastAcceptedTerm;
+
+        public OfferVote(long firstUncommittedSlot, long term, long lastAcceptedTerm) {
+            this.firstUncommittedSlot = firstUncommittedSlot;
+            this.term = term;
+            this.lastAcceptedTerm = lastAcceptedTerm;
+        }
+
+        public long getFirstUncommittedSlot() {
+            return firstUncommittedSlot;
+        }
+
+        public long getTerm() {
+            return term;
+        }
+
+        public long getLastAcceptedTerm() {
+            return lastAcceptedTerm;
+        }
+
+        @Override
+        public String toString() {
+            return "OfferVote{firstUncommittedSlot=" + firstUncommittedSlot
+                + ", term=" + term + ", lastAcceptedTerm=" + lastAcceptedTerm + '}';
+        }
+    }
+
+    public static class SeekVotes extends SlotTerm {
+        public SeekVotes(long slot, long term) {
+            super(slot, term);
+        }
+
+        @Override
+        public String toString() {
+            return "SeekVotes{" + "slot=" + slot + ", term=" + term + '}';
+        }
+    }
+
     public static class Vote {
-        private final long firstUncommittedSlot;
-        private final long term;
-        private final long lastAcceptedTerm;
+        protected final long firstUncommittedSlot;
+        protected final long term;
+        protected final long lastAcceptedTerm;
 
         public Vote(long firstUncommittedSlot, long term, long lastAcceptedTerm) {
             assert firstUncommittedSlot >= 0;
@@ -197,8 +238,8 @@ public class Messages {
             return "PublishRequest{" +
                 "slot=" + slot +
                 ", term=" + term +
-                ", diff=" + diff +
-                '}';
+                ", diff=[" + diff +
+                "]}";
         }
     }
 }

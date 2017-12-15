@@ -84,7 +84,7 @@ public class ConsensusStateTests extends ESTestCase {
         Optional<PublishRequest<ClusterState>> invalidVote = n1.handleVote(node2, v2);
         assertFalse(invalidVote.isPresent());
 
-        Diff<ClusterState> diff = createUpdate(cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), 5));
+        Diff<ClusterState> diff = createUpdate("set value to 5", cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), 5));
         expectThrows(IllegalArgumentException.class, () -> n1.handleClientValue(diff));
         n1.handleVote(node1, v1);
 
@@ -151,7 +151,7 @@ public class ConsensusStateTests extends ESTestCase {
         }
     }
 
-    public static Diff<ClusterState> createUpdate(Function<ClusterState, ClusterState> update) {
+    public static Diff<ClusterState> createUpdate(String description, Function<ClusterState, ClusterState> update) {
         return new Diff<ClusterState>() {
 
             @Override
@@ -162,6 +162,11 @@ public class ConsensusStateTests extends ESTestCase {
             @Override
             public ClusterState apply(ClusterState part) {
                 return update.apply(part);
+            }
+
+            @Override
+            public String toString() {
+                return description;
             }
         };
     }
