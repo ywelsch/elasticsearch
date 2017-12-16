@@ -23,9 +23,9 @@ import org.elasticsearch.Version;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.zen2.ConsensusState.AcceptedState;
+import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
-import org.elasticsearch.discovery.zen2.ConsensusState.Persistence;
+import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusStateTests.ClusterState;
 import org.elasticsearch.discovery.zen2.Legislator.Transport;
 import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
@@ -43,10 +43,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
+import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithValue;
+import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithVotingNodes;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_COMMIT_DELAY_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_MIN_DELAY_SETTING;
 import static org.hamcrest.Matchers.lessThan;
@@ -64,8 +65,7 @@ public class LegislatorTests extends ESTestCase {
 
         final int finalValue = randomInt();
         logger.info("--> proposing final value [{}] to [{}]", finalValue, leader.getId());
-        leader.legislator.handleClientValue(ConsensusStateTests.createUpdate("set final value " + finalValue,
-            cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), finalValue)));
+        leader.legislator.handleClientValue(diffWithValue(leader.legislator.getCommittedState(), finalValue));
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
@@ -113,8 +113,7 @@ public class LegislatorTests extends ESTestCase {
             allNodes.add(clusterNode.localNode);
         }
 
-        leader.legislator.handleClientValue(ConsensusStateTests.createUpdate("set configuration to " + allNodes,
-            cs -> new ClusterState(cs.getSlot() + 1, allNodes, cs.getValue())));
+        leader.legislator.handleClientValue(diffWithVotingNodes(leader.legislator.getCommittedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         leader.isConnected = false;
@@ -138,8 +137,7 @@ public class LegislatorTests extends ESTestCase {
             allNodes.add(clusterNode.localNode);
         }
 
-        leader.legislator.handleClientValue(ConsensusStateTests.createUpdate("set configuration to " + allNodes,
-            cs -> new ClusterState(cs.getSlot() + 1, allNodes, cs.getValue())));
+        leader.legislator.handleClientValue(diffWithVotingNodes(leader.legislator.getCommittedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         final long disconnectionTime = cluster.currentTimeMillis;
@@ -267,15 +265,14 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
                         logger.info("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
-                        clusterNode.legislator.handleClientValue(ConsensusStateTests.createUpdate("set value to " + newValue,
-                            cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), newValue)));
+                        clusterNode.legislator.handleClientValue(diffWithValue(clusterNode.legislator.getCommittedState(), newValue));
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final NodeCollection newConfig = randomConfiguration();
                         logger.info("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
-                        clusterNode.legislator.handleClientValue(ConsensusStateTests.createUpdate("update config to " + newConfig,
-                            cs -> new ClusterState(cs.getSlot() + 1, newConfig, cs.getValue())));
+                        clusterNode.legislator.handleClientValue(
+                            diffWithVotingNodes(clusterNode.legislator.getCommittedState(), newConfig));
                     } else if (rarely()) {
                         // reboot random node
                         final ClusterNode clusterNode = randomLegislator();
@@ -433,7 +430,7 @@ public class LegislatorTests extends ESTestCase {
 
         class ClusterNode {
             final DiscoveryNode localNode;
-            final MockPersistence persistence;
+            PersistedState<ClusterState> persistedState;
             final MockTransport transport;
             Legislator<ClusterState> legislator;
             boolean isConnected = true;
@@ -441,17 +438,26 @@ public class LegislatorTests extends ESTestCase {
             ClusterNode(int index) {
                 localNode = new DiscoveryNode("node" + index, buildNewFakeTransportAddress(), Version.CURRENT);
                 transport = new MockTransport();
-                persistence = new MockPersistence();
             }
 
             void initialise(NodeCollection initialVotingNodes) {
+                assert persistedState == null;
                 assert legislator == null;
-                persistence.persistCommittedState(new ClusterState(-1, initialVotingNodes, 0));
-                reboot();
+                persistedState = new BasePersistedState<>(0L, new ClusterState(-1, initialVotingNodes, 0));
+                legislator = createLegislator();
             }
 
+            // TODO: have some tests that use the on-disk data for persistence across reboots.
             void reboot() {
-                legislator = persistence.load();
+                legislator = createLegislator();
+            }
+
+            private Legislator<ClusterState> createLegislator() {
+                Settings settings = Settings.builder()
+                    .put("node.name", localNode.getId())
+                    .build();
+                return new Legislator<>(settings, persistedState, transport, localNode,
+                    new CurrentTimeSupplier(), ConsensusStateTests::noOpDiff);
             }
 
             String getId() {
@@ -534,46 +540,6 @@ public class LegislatorTests extends ESTestCase {
                     if (isConnected) {
                         sendAbdicationFrom(localNode, destination, currentTerm);
                     }
-                }
-            }
-
-            // TODO 1. use `BasePersistedState` once the persistence layer is merged
-            // TODO 2. also have some tests that use the on-disk data for persistence across reboots.
-            private class MockPersistence implements Persistence<ClusterState> {
-
-                private long currentTerm;
-                private ClusterState committedState;
-                private Optional<AcceptedState<ClusterState>> acceptedState;
-
-                MockPersistence() {
-                    currentTerm = 0;
-                    acceptedState = Optional.empty();
-                    // committedState needs to be initialised later as it needs to know the initial configuration
-                }
-
-                @Override
-                public void persistCurrentTerm(long currentTerm) {
-                    this.currentTerm = currentTerm;
-                }
-
-                @Override
-                public void persistCommittedState(ClusterState committedState) {
-                    this.committedState = committedState;
-                    this.acceptedState = Optional.empty();
-                }
-
-                @Override
-                public void persistAcceptedState(AcceptedState<ClusterState> acceptedState) {
-                    this.acceptedState = Optional.of(acceptedState);
-                }
-
-                public Legislator<ClusterState> load() {
-                    Settings.Builder sb = Settings.builder();
-                    sb.put("node.name", localNode.getId());
-                    return new Legislator<>(sb.build(), currentTerm, committedState, acceptedState, this, transport, localNode,
-                        new CurrentTimeSupplier(),
-                        ConsensusStateTests.createUpdate("no-op",
-                            cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), cs.getValue())));
                 }
             }
         }

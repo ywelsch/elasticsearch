@@ -1923,7 +1923,7 @@ public class TranslogTests extends ESTestCase {
         return getFailableTranslog(fail, config, randomBoolean(), false, null, createTranslogDeletionPolicy());
     }
 
-    private static class FailSwitch {
+    public static class FailSwitch {
         private volatile int failRate;
         private volatile boolean onceFailedFailAlways = false;
 
@@ -2070,7 +2070,7 @@ public class TranslogTests extends ESTestCase {
         }
     }
 
-    private static final class UnknownException extends RuntimeException {
+    public static final class UnknownException extends RuntimeException {
 
     }
 

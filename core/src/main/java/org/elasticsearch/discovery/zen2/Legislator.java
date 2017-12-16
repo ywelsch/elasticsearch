@@ -27,10 +27,8 @@ import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.zen2.ConsensusState.AcceptedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.CommittedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
-import org.elasticsearch.discovery.zen2.ConsensusState.Persistence;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
@@ -39,6 +37,7 @@ import org.elasticsearch.discovery.zen2.Messages.Vote;
 
 import java.util.Optional;
 import java.util.Random;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -62,7 +61,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         Setting.timeSetting("discovery.zen2.commit_delay",
             TimeValue.timeValueMillis(90000), TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
 
-    private final Diff<T> noOp;
+    private final Function<T, Diff<T>> noOpCreator;
 
     private final ConsensusState<T> consensusState;
     private final Transport<T> transport;
@@ -89,10 +88,9 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     // Present if we receive an ApplyCommit while catching up
     private Optional<ApplyCommit> storedApplyCommit = Optional.empty();
 
-    public Legislator(Settings settings, long currentTerm, T committedState,
-                      Optional<AcceptedState<T>> acceptedState, Persistence<T> persistence,
+    public Legislator(Settings settings, ConsensusState.PersistedState<T> persistedState,
                       Transport<T> transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
-                      Diff<T> noOp) {
+                      Function<T, Diff<T>> noOpCreator) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
@@ -100,11 +98,11 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         commitDelay = CONSENSUS_COMMIT_DELAY_SETTING.get(settings);
         random = Randomness.get();
 
-        consensusState = new ConsensusState<>(settings, currentTerm, committedState, acceptedState, persistence);
+        consensusState = new ConsensusState<>(settings, persistedState);
         this.transport = transport;
         this.localNode = localNode;
         this.currentTimeSupplier = currentTimeSupplier;
-        this.noOp = noOp;
+        this.noOpCreator = noOpCreator;
         lastKnownLeader = localNode;
 
         mode = Mode.CANDIDATE;
@@ -187,7 +185,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                 case LEADER:
                     logger.trace("handleWakeUp: waking up as [{}] at [{}]", mode, now);
                     mode = Mode.INCUMBENT;
-                    handleClientValue(noOp);
+                    handleClientValue(noOpCreator.apply(consensusState.getCommittedState()));
                     ignoreWakeUpsForAtLeast(reelectionDelay);
                     break;
             }
@@ -229,7 +227,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             PublishRequest<T> publishRequest = maybePublishRequest.get();
             transport.broadcastPublishRequest(publishRequest);
         } else if (consensusState.canHandleClientValue()) {
-            handleClientValue(noOp);
+            handleClientValue(noOpCreator.apply(consensusState.getCommittedState()));
         }
     }
 

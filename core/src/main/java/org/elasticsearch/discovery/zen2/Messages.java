@@ -204,9 +204,12 @@ public class Messages {
 
         protected final Diff<T> diff;
 
+        private final ConsensusState.AcceptedState<T> acceptedState;
+
         public PublishRequest(long slot, long term, Diff<T> diff) {
             super(slot, term);
             this.diff = diff;
+            this.acceptedState = new ConsensusState.AcceptedState<>(term, diff);
         }
 
         public Diff<T> getDiff() {
@@ -214,7 +217,7 @@ public class Messages {
         }
 
         public ConsensusState.AcceptedState<T> getAcceptedState() {
-            return new ConsensusState.AcceptedState<>(term, diff);
+            return acceptedState;
         }
 
         @Override

@@ -92,6 +92,21 @@ public abstract class AbstractDiffable<T extends Diffable<T>> implements Diffabl
                 return part;
             }
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            CompleteDiff<?> that = (CompleteDiff<?>) o;
+
+            return part != null ? part.equals(that.part) : that.part == null;
+        }
+
+        @Override
+        public int hashCode() {
+            return part != null ? part.hashCode() : 0;
+        }
     }
 
     @SuppressWarnings("unchecked")

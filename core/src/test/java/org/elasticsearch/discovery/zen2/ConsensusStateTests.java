@@ -19,13 +19,17 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.elasticsearch.Version;
+import org.elasticsearch.cluster.AbstractDiffable;
 import org.elasticsearch.cluster.Diff;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
+import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.CommittedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
+import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
+import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.Vote;
@@ -34,31 +38,14 @@ import org.elasticsearch.test.junit.annotations.TestLogging;
 
 import java.io.IOException;
 import java.util.Optional;
-import java.util.function.Function;
 
 import static org.hamcrest.Matchers.equalTo;
 
 
 public class ConsensusStateTests extends ESTestCase {
 
-    public ConsensusState<ClusterState> createInitialState(ClusterState initialClusterState) {
-        return new ConsensusState<>(Settings.EMPTY, 0L, initialClusterState, Optional.empty(),
-            new ConsensusState.Persistence<ClusterState>() {
-                @Override
-                public void persistCurrentTerm(long currentTerm) {
-
-                }
-
-                @Override
-                public void persistCommittedState(ClusterState committedState) {
-
-                }
-
-                @Override
-                public void persistAcceptedState(ConsensusState.AcceptedState<ClusterState> termDiff) {
-
-                }
-            });
+    public static ConsensusState<ClusterState> createInitialState(PersistedState<ClusterState> storage) {
+        return new ConsensusState<>(Settings.EMPTY, storage);
     }
 
     @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
@@ -69,9 +56,13 @@ public class ConsensusStateTests extends ESTestCase {
         NodeCollection initialConfig = new NodeCollection();
         initialConfig.add(node1);
         ClusterState initialClusterState = new ClusterState(-1L, initialConfig, 42);
-        ConsensusState<ClusterState> n1 = createInitialState(initialClusterState);
-        ConsensusState<ClusterState> n2 = createInitialState(initialClusterState);
-        ConsensusState<ClusterState> n3 = createInitialState(initialClusterState);
+        PersistedState<ClusterState> s1 = new BasePersistedState<>(0L, initialClusterState);
+        PersistedState<ClusterState> s2 = new BasePersistedState<>(0L, initialClusterState);
+        PersistedState<ClusterState> s3 = new BasePersistedState<>(0L, initialClusterState);
+
+        ConsensusState<ClusterState> n1 = createInitialState(s1);
+        ConsensusState<ClusterState> n2 = createInitialState(s2);
+        ConsensusState<ClusterState> n3 = createInitialState(s3);
 
         assertThat(n1.getCurrentTerm(), equalTo(0L));
         Vote v1 = n1.handleStartVote(1);
@@ -84,7 +75,7 @@ public class ConsensusStateTests extends ESTestCase {
         Optional<PublishRequest<ClusterState>> invalidVote = n1.handleVote(node2, v2);
         assertFalse(invalidVote.isPresent());
 
-        Diff<ClusterState> diff = createUpdate("set value to 5", cs -> new ClusterState(cs.getSlot() + 1, cs.getVotingNodes(), 5));
+        Diff<ClusterState> diff = diffWithValue(initialClusterState, 5);
         expectThrows(IllegalArgumentException.class, () -> n1.handleClientValue(diff));
         n1.handleVote(node1, v1);
 
@@ -119,7 +110,20 @@ public class ConsensusStateTests extends ESTestCase {
         assertThat(n2.getCommittedState().value, equalTo(5));
     }
 
-    static class ClusterState implements CommittedState {
+    static Diff<ClusterState> noOpDiff(ClusterState lastCommittedState) {
+        return new ClusterState(lastCommittedState.getSlot() + 1, lastCommittedState.getVotingNodes(),
+            lastCommittedState.getValue()).diff(lastCommittedState);
+    }
+
+    static Diff<ClusterState> diffWithValue(ClusterState lastCommittedState, int newValue) {
+        return new ClusterState(lastCommittedState.getSlot() + 1, lastCommittedState.getVotingNodes(), newValue).diff(lastCommittedState);
+    }
+
+    static Diff<ClusterState> diffWithVotingNodes(ClusterState lastCommittedState, NodeCollection newConfig) {
+        return new ClusterState(lastCommittedState.getSlot() + 1, newConfig, lastCommittedState.getValue()).diff(lastCommittedState);
+    }
+
+    static class ClusterState extends AbstractDiffable<ClusterState> implements CommittedState {
 
         private final long slot;
         private final NodeCollection config;
@@ -129,6 +133,20 @@ public class ConsensusStateTests extends ESTestCase {
             this.slot = slot;
             this.config = config;
             this.value = value;
+        }
+
+        ClusterState(StreamInput in) throws IOException {
+            this.slot = in.readLong();
+            this.value = in.readInt();
+            this.config = new NodeCollection();
+            in.readMap(StreamInput::readString, DiscoveryNode::new).values().forEach(config::add);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            out.writeLong(slot);
+            out.writeInt(value);
+            out.writeMap(config.nodes, StreamOutput::writeString, StreamOutput::writeWriteable);
         }
 
         @Override
@@ -146,29 +164,29 @@ public class ConsensusStateTests extends ESTestCase {
         }
 
         @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            ClusterState that = (ClusterState) o;
+
+            if (slot != that.slot) return false;
+            if (value != that.value) return false;
+            return config.equals(that.config);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = (int) (slot ^ (slot >>> 32));
+            result = 31 * result + config.hashCode();
+            result = 31 * result + value;
+            return result;
+        }
+
+        @Override
         public String toString() {
             return "ClusterState {slot=" + slot + ", value=" + value + ", config=" + config + "}";
         }
-    }
-
-    public static Diff<ClusterState> createUpdate(String description, Function<ClusterState, ClusterState> update) {
-        return new Diff<ClusterState>() {
-
-            @Override
-            public void writeTo(StreamOutput out) throws IOException {
-                fail();
-            }
-
-            @Override
-            public ClusterState apply(ClusterState part) {
-                return update.apply(part);
-            }
-
-            @Override
-            public String toString() {
-                return description;
-            }
-        };
     }
 
 }
