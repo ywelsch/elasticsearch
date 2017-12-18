@@ -159,36 +159,38 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public void handleWakeUp() {
         long now = currentTimeSupplier.getAsLong();
 
-        if (nextWakeUpTimeMillis - now <= 0L) {
-            switch (mode) {
-                case CANDIDATE:
-                    logger.debug("handleWakeUp: waking up as [{}] at [{}] with slot={}, term={}, lastAcceptedTerm={}", mode, now,
-                        consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
-                    currentDelayMillis = Math.min(maxDelay.getMillis(), currentDelayMillis + minDelay.getMillis());
-                    ignoreWakeUpsForRandomDelay();
-                    startSeekingVotes();
-                    break;
+        try {
+            if (nextWakeUpTimeMillis - now <= 0L) {
+                switch (mode) {
+                    case CANDIDATE:
+                        logger.debug("handleWakeUp: waking up as [{}] at [{}] with slot={}, term={}, lastAcceptedTerm={}", mode, now,
+                            consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
+                        currentDelayMillis = Math.min(maxDelay.getMillis(), currentDelayMillis + minDelay.getMillis());
+                        ignoreWakeUpsForRandomDelay();
+                        startSeekingVotes();
+                        break;
 
-                case FOLLOWER:
-                case INCUMBENT:
-                    logger.debug("handleWakeUp: waking up as [{}] at [{}]", mode, now);
-                    mode = Mode.CANDIDATE;
-                    currentDelayMillis = minDelay.getMillis();
-                    ignoreWakeUpsForRandomDelay();
-                    break;
+                    case FOLLOWER:
+                    case INCUMBENT:
+                        logger.debug("handleWakeUp: waking up as [{}] at [{}]", mode, now);
+                        mode = Mode.CANDIDATE;
+                        currentDelayMillis = minDelay.getMillis();
+                        ignoreWakeUpsForRandomDelay();
+                        break;
 
-                case LEADER:
-                    logger.trace("handleWakeUp: waking up as [{}] at [{}]", mode, now);
-                    mode = Mode.INCUMBENT;
-                    handleClientValue(noOpCreator.apply(consensusState.getCommittedState()));
-                    ignoreWakeUpsForAtLeast(reelectionDelay);
-                    break;
+                    case LEADER:
+                        logger.trace("handleWakeUp: waking up as [{}] at [{}]", mode, now);
+                        mode = Mode.INCUMBENT;
+                        ignoreWakeUpsForAtLeast(reelectionDelay);
+                        handleClientValue(noOpCreator.apply(consensusState.getCommittedState()));
+                        break;
+                }
+            } else {
+                logger.trace("handleWakeUp: ignoring wake-up at [{}] because it is earlier than [{}]", now, nextWakeUpTimeMillis);
             }
-        } else {
-            logger.trace("handleWakeUp: ignoring wake-up at [{}] because it is earlier than [{}]", now, nextWakeUpTimeMillis);
+        } finally {
+            assert nextWakeUpTimeMillis > now;
         }
-
-        assert nextWakeUpTimeMillis > now;
     }
 
     private void startSeekingVotes() {
@@ -311,8 +313,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
 
         if (offerVote.getFirstUncommittedSlot() > consensusState.firstUncommittedSlot()
-                || (offerVote.getFirstUncommittedSlot() == consensusState.firstUncommittedSlot()
-                        && offerVote.getLastAcceptedTerm() > consensusState.lastAcceptedTerm())) {
+            || (offerVote.getFirstUncommittedSlot() == consensusState.firstUncommittedSlot()
+            && offerVote.getLastAcceptedTerm() > consensusState.lastAcceptedTerm())) {
             logger.debug("handleOfferVote: handing over pre-voting to [{}] because of {}", sender, offerVote);
             votesOffered = Optional.empty();
             transport.sendPreVoteHandover(sender);
