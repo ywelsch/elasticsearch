@@ -133,11 +133,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     @SuppressForbidden(reason = "Argument to Math.abs() is definitely not Long.MIN_VALUE")
     private long randomNonNegativeLong() {
-        long result;
-        do {
-            result = random.nextLong();
-        } while (result == Long.MIN_VALUE);
-        return Math.abs(result);
+        long result = random.nextLong();
+        return result == Long.MIN_VALUE ? 0 : Math.abs(result);
     }
 
     /**
@@ -149,8 +146,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     private void ignoreWakeUpsForRandomDelay() {
-        assert currentDelayMillis > 0;
-        assert currentDelayMillis >= minDelay.getMillis();
         nextWakeUpTimeMillis = currentTimeSupplier.getAsLong() + randomLongBetween(minDelay.getMillis(), currentDelayMillis + 1);
     }
 
