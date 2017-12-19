@@ -267,7 +267,17 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         persistedState.markLastAcceptedStateAsCommitted();
         assert getCommittedState().getSlot() == applyCommit.getSlot();
         assert getAcceptedState().isPresent() == false;
+
         publishPermitted = true;
+        final boolean prevElectionWon = electionWon;
+        electionWon = isQuorumInCurrentConfiguration(joinVotes);
+        if (prevElectionWon != electionWon) {
+            if (electionWon) {
+                logger.debug("handleCommit: election won through reconfiguration change");
+            } else {
+                logger.debug("handleCommit: election lost through reconfiguration change");
+            }
+        }
         publishVotes = new NodeCollection();
     }
 
