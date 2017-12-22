@@ -40,15 +40,17 @@ import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.hamcrest.Matcher;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.stream.Collectors;
 
 import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithValue;
 import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithVotingNodes;
-import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_COMMIT_DELAY_SETTING;
+import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_FOLLOWER_TIMEOUT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_MIN_DELAY_SETTING;
 import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.core.Is.is;
@@ -84,7 +86,7 @@ public class LegislatorTests extends ESTestCase {
         final ClusterNode leader = cluster.getAnyLeader();
         final long stabilisedSlot = leader.legislator.getCommittedState().getSlot();
 
-        final ClusterNode newLeader = cluster.randomLegislator();
+        final ClusterNode newLeader = cluster.randomLegislator();;
         logger.info("--> abdicating from [{}] to [{}]", leader.getId(), newLeader.getId());
         leader.legislator.abdicateTo(newLeader.localNode);
         cluster.deliverNextMessageUntilQuiescent();
@@ -92,7 +94,7 @@ public class LegislatorTests extends ESTestCase {
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             final String legislatorId = clusterNode.getId();
             final Legislator<ClusterState> legislator = clusterNode.legislator;
-            assertThat(legislatorId + " is at the next slot", legislator.getCommittedState().getSlot(), is(stabilisedSlot + 1));
+            assertThat(legislatorId + " is at the same slot", legislator.getCommittedState().getSlot(), is(stabilisedSlot));
             if (clusterNode == newLeader) {
                 assertThat(legislatorId + " is the leader", legislator.getMode(), is(Legislator.Mode.LEADER));
             } else {
@@ -182,12 +184,12 @@ public class LegislatorTests extends ESTestCase {
             deliverNextMessageUntilQuiescent();
 
             // How long to wait? The worst case is that a leader just committed a value to all the other nodes, and then
-            // dropped off the network, which would mean that they all wait for up to CONSENSUS_COMMIT_DELAY_SETTING
+            // dropped off the network, which would mean that they all wait for up to CONSENSUS_FOLLOWER_TIMEOUT_SETTING
             // before waking up again. Then they wake up, become candidates, and wait for up to
             // 2 * CONSENSUS_MIN_DELAY_SETTING before attempting an election. The first election is expected to succeed, however,
             // because we run to quiescence before waking any other nodes up.
             final long catchUpPhaseEndMillis = currentTimeMillis +
-                CONSENSUS_COMMIT_DELAY_SETTING.get(Settings.EMPTY).millis() +
+                CONSENSUS_FOLLOWER_TIMEOUT_SETTING.get(Settings.EMPTY).millis() +
                 CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2;
 
             logger.info("--> start of stabilisation phase: run until time {}ms", catchUpPhaseEndMillis);
@@ -226,21 +228,25 @@ public class LegislatorTests extends ESTestCase {
         }
 
         /**
-         * @return Any node that is a LEADER or INCUMBENT. Throws an exception if there is no such node. It is up to the caller to
-         * check the modes of all the other nodes to make sure, if expected, that there are no other LEADER/INCUMBENT nodes.
+         * @return Any node that is a LEADER. Throws an exception if there is no such node. It is up to the caller to
+         * check the modes of all the other nodes to make sure, if expected, that there are no other LEADER nodes.
          */
         private ClusterNode getAnyLeader() {
-            return clusterNodes.stream().filter(clusterNode -> clusterNode.legislator.isLeading()).findFirst().get();
+            List<ClusterNode> leaders = clusterNodes.stream()
+                .filter(clusterNode -> clusterNode.legislator.getMode() == Legislator.Mode.LEADER)
+                .collect(Collectors.toList());
+            assertNotEquals(Collections.emptyList(), leaders);
+            return randomFrom(leaders);
         }
 
         private void doNextWakeUp() {
-            final long firstWakeUp = clusterNodes.stream()
-                .map(clusterNode -> clusterNode.legislator.getNextWakeUpTimeMillis()).min(Long::compareTo).get();
+            final long firstWakeUpDelay = clusterNodes.stream()
+                .map(clusterNode -> clusterNode.legislator.getNextWakeUpDelayMillis()).min(Long::compareTo).get();
 
-            setCurrentTimeForwards(firstWakeUp);
+            setCurrentTimeForwards(firstWakeUpDelay);
 
             for (final ClusterNode clusterNode : clusterNodes) {
-                if (clusterNode.legislator.getNextWakeUpTimeMillis() <= currentTimeMillis) {
+                if (clusterNode.legislator.getNextWakeUpDelayMillis() == 0L) {
                     logger.info("waking up {} at {}ms", clusterNode.getId(), currentTimeMillis);
                     try {
                         clusterNode.legislator.handleWakeUp();
@@ -287,10 +293,10 @@ public class LegislatorTests extends ESTestCase {
                         oldLeader.legislator.abdicateTo(newLeader.localNode);
                     } else {
                         // wake up random node
-                        // TODO @ywelsch says "call this "long garbage collection cycle" ;-)" - discuss this
                         final ClusterNode clusterNode = randomLegislator();
-                        logger.info("----> [safety {}] waking up [{}]", iteration, clusterNode.getId());
-                        setCurrentTimeForwards(clusterNode.legislator.getNextWakeUpTimeMillis());
+                        long nextWakeUpDelayMillis = clusterNode.legislator.getNextWakeUpDelayMillis();
+                        setCurrentTimeForwards(nextWakeUpDelayMillis);
+                        logger.info("----> [safety {}] waking up [{}] at [{}]", iteration, clusterNode.getId(), currentTimeMillis);
                         clusterNode.legislator.handleWakeUp();
                     }
                 } catch (IllegalArgumentException e) {
@@ -303,9 +309,10 @@ public class LegislatorTests extends ESTestCase {
             logger.info("--> end of safety phase");
         }
 
-        void setCurrentTimeForwards(long newTimeMillis) {
-            if (newTimeMillis > currentTimeMillis) {
-                currentTimeMillis = newTimeMillis;
+        void setCurrentTimeForwards(long delayMillis) {
+            if (delayMillis > 0) {
+                logger.debug("----> moving time from [{}] to [{}]", currentTimeMillis, currentTimeMillis + delayMillis);
+                currentTimeMillis += delayMillis;
             }
         }
 
@@ -335,6 +342,14 @@ public class LegislatorTests extends ESTestCase {
 
         void sendPublishResponseFrom(DiscoveryNode sender, DiscoveryNode destination, PublishResponse publishResponse) {
             sendTo(destination, e -> e.handlePublishResponse(sender, publishResponse));
+        }
+
+        void broadcastHeartbeatRequestFrom(DiscoveryNode sender, Messages.HeartbeatRequest heartbeatRequest) {
+            broadcast(e -> e.handleHeartbeatRequest(sender, heartbeatRequest));
+        }
+
+        void sendHeartbeatResponseFrom(DiscoveryNode sender, DiscoveryNode destination, Messages.HeartbeatResponse heartbeatResponse) {
+            sendTo(destination, e -> e.handleHeartbeatResponse(sender, heartbeatResponse));
         }
 
         void broadcastApplyCommitFrom(DiscoveryNode thisNode, ApplyCommit applyCommit) {
@@ -380,6 +395,7 @@ public class LegislatorTests extends ESTestCase {
                     assertEquals(committedState.getVotingNodes(), storedState.getVotingNodes());
                     assertEquals(committedState.getValue(), storedState.getValue());
                 }
+                clusterNode.legislator.invariant();
             }
         }
 
@@ -421,7 +437,7 @@ public class LegislatorTests extends ESTestCase {
         private ClusterNode randomLegislatorPreferringLeaders() {
             for (int i = 0; i < 3; i++) {
                 ClusterNode clusterNode = randomLegislator();
-                if (clusterNode.legislator.isLeading()) {
+                if (clusterNode.legislator.getMode() == Legislator.Mode.LEADER) {
                     return clusterNode;
                 }
             }
@@ -456,8 +472,7 @@ public class LegislatorTests extends ESTestCase {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
-                return new Legislator<>(settings, persistedState, transport, localNode,
-                    new CurrentTimeSupplier(), ConsensusStateTests::noOpDiff);
+                return new Legislator<>(settings, persistedState, transport, localNode, new CurrentTimeSupplier());
             }
 
             String getId() {
@@ -483,6 +498,20 @@ public class LegislatorTests extends ESTestCase {
                 public void sendPublishResponse(DiscoveryNode destination, PublishResponse publishResponse) {
                     if (isConnected) {
                         sendPublishResponseFrom(localNode, destination, publishResponse);
+                    }
+                }
+
+                @Override
+                public void broadcastHeartbeat(Messages.HeartbeatRequest heartbeatRequest) {
+                    if (isConnected) {
+                        broadcastHeartbeatRequestFrom(localNode, heartbeatRequest);
+                    }
+                }
+
+                @Override
+                public void sendHeartbeatResponse(DiscoveryNode destination, Messages.HeartbeatResponse heartbeatResponse) {
+                    if (isConnected) {
+                        sendHeartbeatResponseFrom(localNode, destination, heartbeatResponse);
                     }
                 }
 

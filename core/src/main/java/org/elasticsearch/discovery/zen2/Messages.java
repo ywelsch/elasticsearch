@@ -185,6 +185,36 @@ public class Messages {
         }
     }
 
+    public static class HeartbeatRequest extends SlotTerm {
+
+        public HeartbeatRequest(long slot, long term) {
+            super(slot, term);
+        }
+
+        @Override
+        public String toString() {
+            return "HeartbeatRequest{" +
+                "slot=" + slot +
+                ", term=" + term +
+                '}';
+        }
+    }
+
+    public static class HeartbeatResponse extends SlotTerm {
+
+        public HeartbeatResponse(long slot, long term) {
+            super(slot, term);
+        }
+
+        @Override
+        public String toString() {
+            return "HeartbeatResponse{" +
+                "slot=" + slot +
+                ", term=" + term +
+                '}';
+        }
+    }
+
     public static class ApplyCommit extends SlotTerm {
 
         public ApplyCommit(long slot, long term) {

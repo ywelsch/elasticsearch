@@ -311,7 +311,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         joinVotes = new NodeCollection();
         electionWon = false;
         publishVotes = new NodeCollection();
-        publishPermitted = false;
+        publishPermitted = true;
     }
 
     /**
@@ -335,6 +335,10 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         logger.trace("handleClientValue: processing request for slot [{}] and term [{}]", firstUncommittedSlot(), getCurrentTerm());
         publishPermitted = false;
         return new PublishRequest<>(firstUncommittedSlot(), getCurrentTerm(), diff);
+    }
+
+    public boolean electionWon() {
+        return electionWon;
     }
 
     /**
