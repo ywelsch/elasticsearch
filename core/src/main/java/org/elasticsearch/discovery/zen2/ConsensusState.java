@@ -300,7 +300,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         if (newCommittedState.getSlot() <= getCommittedState().getSlot()) {
             logger.debug("applyCatchup: ignored catch up request due to slot mismatch (expected: >[{}], actual: [{}])",
                 getCommittedState().getSlot(), newCommittedState.getSlot());
-            throw new IllegalArgumentException("incoming slot " + newCommittedState.getSlot() + " higher than current slot " +
+            throw new IllegalArgumentException("incoming slot " + newCommittedState.getSlot() + " no higher than current slot " +
                 getCommittedState().getSlot());
         }
 
