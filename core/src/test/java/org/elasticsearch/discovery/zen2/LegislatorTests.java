@@ -30,13 +30,22 @@ import org.elasticsearch.discovery.zen2.ConsensusStateTests.ClusterState;
 import org.elasticsearch.discovery.zen2.Legislator.Transport;
 import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
+import org.elasticsearch.discovery.zen2.Messages.CatchupRequest;
+import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
+import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferVote;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.SeekVotes;
+import org.elasticsearch.discovery.zen2.Messages.StartVoteRequest;
 import org.elasticsearch.discovery.zen2.Messages.Vote;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
+import org.elasticsearch.transport.EmptyTransportResponseHandler;
+import org.elasticsearch.transport.TransportException;
+import org.elasticsearch.transport.TransportResponse;
+import org.elasticsearch.transport.TransportResponseHandler;
 import org.hamcrest.Matcher;
 
 import java.util.ArrayList;
@@ -94,7 +103,7 @@ public class LegislatorTests extends ESTestCase {
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             final String legislatorId = clusterNode.getId();
             final Legislator<ClusterState> legislator = clusterNode.legislator;
-            assertThat(legislatorId + " is at the same slot", legislator.getCommittedState().getSlot(), is(stabilisedSlot));
+            assertThat(legislatorId + " is at the next slot", legislator.getCommittedState().getSlot(), is(stabilisedSlot + 1));
             if (clusterNode == newLeader) {
                 assertThat(legislatorId + " is the leader", legislator.getMode(), is(Legislator.Mode.LEADER));
             } else {
@@ -326,58 +335,80 @@ public class LegislatorTests extends ESTestCase {
             });
         }
 
-        void broadcast(Consumer<Legislator<ClusterState>> action) {
-            for (final ClusterNode clusterNode : clusterNodes) {
-                sendTo(clusterNode.localNode, action);
-            }
+        void sendPublishRequestFrom(DiscoveryNode sender, DiscoveryNode destination, PublishRequest<ClusterState> publishRequest,
+                                    TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    LegislatorPublishResponse publishResponse = e.handlePublishRequest(sender, publishRequest);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(publishResponse));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
-        void sendVoteFrom(DiscoveryNode sender, DiscoveryNode destination, Vote vote) {
-            sendTo(destination, e -> e.handleVote(sender, vote));
+        void sendHeartbeatRequestFrom(DiscoveryNode sender, DiscoveryNode destination, HeartbeatRequest heartbeatRequest,
+                                      TransportResponseHandler<HeartbeatResponse> responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    HeartbeatResponse heartbeatResponse = e.handleHeartbeatRequest(sender, heartbeatRequest);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(heartbeatResponse));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
-        void broadcastPublishRequestFrom(DiscoveryNode sender, PublishRequest<ClusterState> publishRequest) {
-            broadcast(e -> e.handlePublishRequest(sender, publishRequest));
+        void sendApplyCommitFrom(DiscoveryNode sender, DiscoveryNode destination, ApplyCommit applyCommit,
+                                 EmptyTransportResponseHandler responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    e.handleApplyCommit(sender, applyCommit);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
-        void sendPublishResponseFrom(DiscoveryNode sender, DiscoveryNode destination, PublishResponse publishResponse) {
-            sendTo(destination, e -> e.handlePublishResponse(sender, publishResponse));
+        void sendSeekVotesFrom(DiscoveryNode sender, DiscoveryNode destination, SeekVotes seekVotes,
+                               TransportResponseHandler<OfferVote> responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    OfferVote offerVote = e.handleSeekVotes(sender, seekVotes);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(offerVote));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
-        void broadcastHeartbeatRequestFrom(DiscoveryNode sender, Messages.HeartbeatRequest heartbeatRequest) {
-            broadcast(e -> e.handleHeartbeatRequest(sender, heartbeatRequest));
-        }
-
-        void sendHeartbeatResponseFrom(DiscoveryNode sender, DiscoveryNode destination, Messages.HeartbeatResponse heartbeatResponse) {
-            sendTo(destination, e -> e.handleHeartbeatResponse(sender, heartbeatResponse));
-        }
-
-        void broadcastApplyCommitFrom(DiscoveryNode thisNode, ApplyCommit applyCommit) {
-            broadcast(e -> e.handleApplyCommit(thisNode, applyCommit));
-        }
-
-        void broadcastSeekVotesFrom(DiscoveryNode sender, SeekVotes seekVotes) {
-            broadcast(e -> e.handleSeekVotes(sender, seekVotes));
-        }
-
-        void sendOfferVoteFrom(DiscoveryNode sender, DiscoveryNode destination, OfferVote offerVote) {
-            sendTo(destination, e -> e.handleOfferVote(sender, offerVote));
-        }
-
-        void broadcastStartVoteFrom(DiscoveryNode sender, long term) {
-            broadcast(e -> e.handleStartVote(sender, term));
+        void sendStartVoteFrom(DiscoveryNode sender, DiscoveryNode destination, StartVoteRequest startVoteRequest,
+                               TransportResponseHandler<Vote> responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    Vote vote = e.handleStartVote(sender, startVoteRequest);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(vote));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
         void sendPreVoteHandoverFrom(DiscoveryNode sender, DiscoveryNode destination) {
             sendTo(destination, e -> e.handlePreVoteHandover(sender));
         }
 
-        void sendRequestCatchUpFrom(DiscoveryNode sender, DiscoveryNode destination) {
-            sendTo(destination, e -> e.handleRequestCatchUp(sender));
-        }
-
-        void sendCatchUpFrom(DiscoveryNode sender, DiscoveryNode destination, ClusterState catchUp) {
-            sendTo(destination, e -> e.handleCatchUp(sender, catchUp));
+        void sendCatchUpFrom(DiscoveryNode sender, DiscoveryNode destination, CatchupRequest<ClusterState> catchUp,
+                             TransportResponseHandler<PublishResponse> responseHandler) {
+            sendTo(destination, e -> {
+                try {
+                    PublishResponse publishResponse = e.handleCatchUp(sender, catchUp);
+                    sendTo(sender, e2 -> responseHandler.handleResponse(publishResponse));
+                } catch (Exception ex) {
+                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                }
+            });
         }
 
         void sendAbdicationFrom(DiscoveryNode sender, DiscoveryNode destination, long currentTerm) {
@@ -472,74 +503,58 @@ public class LegislatorTests extends ESTestCase {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
-                return new Legislator<>(settings, persistedState, transport, localNode, new CurrentTimeSupplier());
+                return new Legislator<>(settings, persistedState, transport, localNode, new CurrentTimeSupplier(),
+                    () -> clusterNodes.stream().map(ClusterNode::getLocalNode).collect(Collectors.toList()),
+                    ConsensusStateTests::noOpDiff);
             }
 
             String getId() {
                 return localNode.getId();
             }
 
+            public DiscoveryNode getLocalNode() {
+                return localNode;
+            }
+
             private class MockTransport implements Transport<ClusterState> {
+
                 @Override
-                public void sendVote(DiscoveryNode destination, Vote vote) {
+                public void sendPublishRequest(DiscoveryNode destination, PublishRequest<ClusterState> publishRequest,
+                                               TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
                     if (isConnected) {
-                        sendVoteFrom(localNode, destination, vote);
+                        sendPublishRequestFrom(localNode, destination, publishRequest, responseHandler);
                     }
                 }
 
                 @Override
-                public void broadcastPublishRequest(PublishRequest<ClusterState> publishRequest) {
+                public void sendHeartbeatRequest(DiscoveryNode destination, HeartbeatRequest heartbeatRequest,
+                                                 TransportResponseHandler<HeartbeatResponse> responseHandler) {
                     if (isConnected) {
-                        broadcastPublishRequestFrom(localNode, publishRequest);
+                        sendHeartbeatRequestFrom(localNode, destination, heartbeatRequest, responseHandler);
                     }
                 }
 
                 @Override
-                public void sendPublishResponse(DiscoveryNode destination, PublishResponse publishResponse) {
+                public void sendApplyCommit(DiscoveryNode destination, ApplyCommit applyCommit,
+                                            EmptyTransportResponseHandler responseHandler) {
                     if (isConnected) {
-                        sendPublishResponseFrom(localNode, destination, publishResponse);
+                        sendApplyCommitFrom(localNode, destination, applyCommit, responseHandler);
                     }
                 }
 
                 @Override
-                public void broadcastHeartbeat(Messages.HeartbeatRequest heartbeatRequest) {
+                public void sendSeekVotes(DiscoveryNode destination, SeekVotes seekVotes,
+                                          TransportResponseHandler<OfferVote> responseHandler) {
                     if (isConnected) {
-                        broadcastHeartbeatRequestFrom(localNode, heartbeatRequest);
+                        sendSeekVotesFrom(localNode, destination, seekVotes, responseHandler);
                     }
                 }
 
                 @Override
-                public void sendHeartbeatResponse(DiscoveryNode destination, Messages.HeartbeatResponse heartbeatResponse) {
+                public void sendStartVote(DiscoveryNode destination, StartVoteRequest startVoteRequest,
+                                          TransportResponseHandler<Vote> responseHandler) {
                     if (isConnected) {
-                        sendHeartbeatResponseFrom(localNode, destination, heartbeatResponse);
-                    }
-                }
-
-                @Override
-                public void broadcastApplyCommit(ApplyCommit applyCommit) {
-                    if (isConnected) {
-                        broadcastApplyCommitFrom(localNode, applyCommit);
-                    }
-                }
-
-                @Override
-                public void broadcastSeekVotes(SeekVotes seekVotes) {
-                    if (isConnected) {
-                        broadcastSeekVotesFrom(localNode, seekVotes);
-                    }
-                }
-
-                @Override
-                public void sendOfferVote(DiscoveryNode destination, OfferVote offerVote) {
-                    if (isConnected) {
-                        sendOfferVoteFrom(localNode, destination, offerVote);
-                    }
-                }
-
-                @Override
-                public void broadcastStartVote(long term) {
-                    if (isConnected) {
-                        broadcastStartVoteFrom(localNode, term);
+                        sendStartVoteFrom(localNode, destination, startVoteRequest, responseHandler);
                     }
                 }
 
@@ -551,16 +566,10 @@ public class LegislatorTests extends ESTestCase {
                 }
 
                 @Override
-                public void sendRequestCatchUp(DiscoveryNode destination) {
+                public void sendCatchUp(DiscoveryNode destination, CatchupRequest<ClusterState> catchUp,
+                                        TransportResponseHandler<PublishResponse> responseHandler) {
                     if (isConnected) {
-                        sendRequestCatchUpFrom(localNode, destination);
-                    }
-                }
-
-                @Override
-                public void sendCatchUp(DiscoveryNode destination, ClusterState catchUp) {
-                    if (isConnected) {
-                        sendCatchUpFrom(localNode, destination, catchUp);
+                        sendCatchUpFrom(localNode, destination, catchUp, responseHandler);
                     }
                 }
 

@@ -20,25 +20,42 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.cluster.Diff;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.component.AbstractComponent;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen2.ConsensusState.CommittedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
+import org.elasticsearch.discovery.zen2.Messages.CatchupRequest;
+import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
+import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
+import org.elasticsearch.discovery.zen2.Messages.OfferVote;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.SeekVotes;
+import org.elasticsearch.discovery.zen2.Messages.StartVoteRequest;
 import org.elasticsearch.discovery.zen2.Messages.Vote;
+import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.EmptyTransportResponseHandler;
+import org.elasticsearch.transport.TransportException;
+import org.elasticsearch.transport.TransportResponseHandler;
 
+import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * A Legislator, following the Paxos metaphor, is responsible for making sure that actions happen in a timely fashion
@@ -71,6 +88,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private final ConsensusState<T> consensusState;
     private final Transport<T> transport;
     private final DiscoveryNode localNode;
+    private final Supplier<List<DiscoveryNode>> nodeSupplier;
+    private final Function<T, Diff<T>> noOpCreator;
     private final TimeValue minDelay;
     private final TimeValue maxDelay;
     private final TimeValue leaderTimeout;
@@ -78,6 +97,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private final TimeValue heartbeatDelay;
     private final LongSupplier currentTimeSupplier;
     private final Random random;
+
+    private boolean termIncrementedAtLeastOnce; // Ensures we cannot win an election without publishing being permitted
 
     private Mode mode;
     private LeaderMode leaderMode;
@@ -87,21 +108,17 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     // TODO use nanoseconds throughout instead
 
     // Present if we are in the pre-voting phase, used to collect vote offers.
-    private Optional<NodeCollection> votesOffered = Optional.empty();
+    private Optional<OfferVoteCollector> currentOfferVoteCollector;
 
-    private NodeCollection heartbeatNodes;
+    // Present if we are collecting heartbeats
+    private Optional<HeartbeatCollector> currentHeartbeatCollector;
 
     // Present if we are catching-up.
     private Optional<PublishRequest<T>> storedPublishRequest = Optional.empty();
 
-    // Present if we are catching-up.
-    private Optional<Messages.HeartbeatRequest> storedHeartbeatRequest = Optional.empty();
-
-    // Present if we receive an ApplyCommit while catching up
-    private Optional<ApplyCommit> storedApplyCommit = Optional.empty();
-
     public Legislator(Settings settings, ConsensusState.PersistedState<T> persistedState,
-                      Transport<T> transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier) {
+                      Transport<T> transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
+                      Supplier<List<DiscoveryNode>> nodeSupplier, Function<T, Diff<T>> noOpCreator) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
@@ -114,8 +131,11 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         this.transport = transport;
         this.localNode = localNode;
         this.currentTimeSupplier = currentTimeSupplier;
-        this.heartbeatNodes = new NodeCollection();
+        this.nodeSupplier = nodeSupplier;
+        this.noOpCreator = noOpCreator;
+        currentHeartbeatCollector = Optional.empty();
         lastKnownLeader = Optional.empty();
+        currentOfferVoteCollector = Optional.empty();
 
         becomeCandidate("init");
     }
@@ -192,8 +212,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                                 break;
                             case HEARTBEAT_DELAY:
                                 becomeOrRenewLeader("handleWakeUp", LeaderMode.HEARTBEAT_IN_PROGRESS);
-                                transport.broadcastHeartbeat(
-                                    new Messages.HeartbeatRequest(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm()));
+                                sendHeartBeat();
                                 break;
                         }
                         break;
@@ -216,6 +235,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         mode = Mode.CANDIDATE;
         currentDelayMillis = minDelay.getMillis();
         ignoreWakeUpsForRandomDelay();
+        currentHeartbeatCollector = Optional.empty();
     }
 
     private void becomeOrRenewLeader(String method, LeaderMode newLeaderMode) {
@@ -239,38 +259,51 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                 break;
         }
         lastKnownLeader = Optional.of(localNode);
-        heartbeatNodes = new NodeCollection();
+        currentHeartbeatCollector = Optional.empty();
     }
 
-    private void becomeOrRenewFollower(DiscoveryNode leaderNode) {
+    private void becomeOrRenewFollower(String method, DiscoveryNode leaderNode) {
         if (mode != Mode.FOLLOWER) {
-            logger.debug("handleApplyCommit: becoming follower of [{}] (lastKnownLeader was [{}])",
-                leaderNode, lastKnownLeader);
+            logger.debug("{}: becoming follower of [{}] (lastKnownLeader was [{}])",
+                method, leaderNode, lastKnownLeader);
         }
         mode = Mode.FOLLOWER;
         lastKnownLeader = Optional.of(leaderNode);
         ignoreWakeUpsForAtLeast(followerTimeout);
+        currentHeartbeatCollector = Optional.empty();
     }
 
     private void startSeekingVotes() {
-        votesOffered = Optional.of(new NodeCollection());
+        currentOfferVoteCollector = Optional.of(new OfferVoteCollector());
         SeekVotes seekVotes = new SeekVotes(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm());
-        transport.broadcastSeekVotes(seekVotes);
+        currentOfferVoteCollector.get().start(seekVotes);
     }
 
-    public void handleStartVote(DiscoveryNode sourceNode, long targetTerm) {
-        logger.debug("handleStartVote: from [{}] with term {}", sourceNode, targetTerm);
-        Vote vote = consensusState.handleStartVote(targetTerm);
+    private void sendHeartBeat() {
+        HeartbeatRequest heartbeatRequest =
+            new HeartbeatRequest(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm());
+        currentHeartbeatCollector = Optional.of(new HeartbeatCollector());
+        safeAddHeartbeatResponse(localNode, currentHeartbeatCollector.get());
+        if (currentHeartbeatCollector.isPresent()) {
+            currentHeartbeatCollector.get().start(heartbeatRequest);
+        }
+    }
+
+    public Vote handleStartVote(DiscoveryNode sourceNode, StartVoteRequest startVoteRequest) {
+        logger.debug("handleStartVote: from [{}] with term {}", sourceNode, startVoteRequest.getTerm());
+        Vote vote = consensusState.handleStartVote(startVoteRequest.getTerm());
+        termIncrementedAtLeastOnce = true;
         if (mode != Mode.CANDIDATE) {
             becomeCandidate("handleStartVote");
         }
-        transport.sendVote(sourceNode, vote);
+        return vote;
     }
 
-    private void ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
+    private Optional<Vote> ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
         if (consensusState.getCurrentTerm() < targetTerm) {
-            handleStartVote(sourceNode, targetTerm);
+            return Optional.of(handleStartVote(sourceNode, new StartVoteRequest(targetTerm)));
         }
+        return Optional.empty();
     }
 
     public void handleClientValue(Diff<T> diff) {
@@ -279,11 +312,94 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
         PublishRequest<T> publishRequest = consensusState.handleClientValue(diff);
         becomeOrRenewLeader("handleClientValue", LeaderMode.PUBLISH_IN_PROGRESS);
-        transport.broadcastPublishRequest(publishRequest);
+        publish(publishRequest);
     }
 
-    public void handleVote(DiscoveryNode sourceNode, Vote vote) {
-        ensureTermAtLeast(localNode, vote.getTerm());
+    private void publish(PublishRequest<T> publishRequest) {
+        CatchupRequest<T> catchUp = new CatchupRequest<>(publishRequest.getTerm(), consensusState.generateCatchup());
+        AtomicReference<ApplyCommit> applyCommitReference = new AtomicReference<>();
+        nodeSupplier.get().forEach(n -> transport.sendPublishRequest(n, publishRequest,
+            new TransportResponseHandler<LegislatorPublishResponse>() {
+            @Override
+            public LegislatorPublishResponse read(StreamInput in) throws IOException {
+                return new LegislatorPublishResponse(in);
+            }
+
+            @Override
+            public void handleResponse(LegislatorPublishResponse response) {
+                if (response.getVote().isPresent()) {
+                    handleVote(n, response.getVote().get());
+                }
+                if (response.isNeedsCatchup()) {
+                    logger.debug("handleRequestCatchUp: sending catch-up to {} with slot {}", n, catchUp.getFullState().getSlot());
+                    transport.sendCatchUp(n, catchUp, new TransportResponseHandler<PublishResponse>() {
+                        @Override
+                        public PublishResponse read(StreamInput in) throws IOException {
+                            return new PublishResponse(in);
+                        }
+
+                        @Override
+                        public void handleResponse(PublishResponse response) {
+                            handlePublishResponse(n, response);
+                        }
+
+                        @Override
+                        public void handleException(TransportException exp) {logger.trace(
+                            (Supplier<?>) () -> new ParameterizedMessage(
+                                "handleCatchupResponse: failed to get catchup response from [{}]", n), exp);
+                        }
+
+                        @Override
+                        public String executor() {
+                            return ThreadPool.Names.SAME;
+                        }
+                    });
+                }
+                if (response.getPublishResponse().isPresent()) {
+                    handlePublishResponse(n, response.getPublishResponse().get());
+                }
+            }
+
+            void handlePublishResponse(DiscoveryNode sourceNode, PublishResponse publishResponse) {
+                logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, sourceNode);
+                assert consensusState.getCurrentTerm() >= publishResponse.getTerm();
+                if (applyCommitReference.get() != null) {
+                    transport.sendApplyCommit(n, applyCommitReference.get(),
+                        new EmptyTransportResponseHandler(ThreadPool.Names.SAME));
+                } else {
+                    Optional<ApplyCommit> optionalCommit = consensusState.handlePublishResponse(sourceNode, publishResponse);
+                    if (optionalCommit.isPresent()) {
+                        applyCommitReference.set(optionalCommit.get());
+                        nodeSupplier.get().forEach(n -> transport.sendApplyCommit(n, optionalCommit.get(),
+                            new EmptyTransportResponseHandler(ThreadPool.Names.SAME)));
+                    }
+                }
+                // TODO: handle negative votes and move to candidate if leader
+            }
+
+            @Override
+            public void handleException(TransportException exp) {
+                logger.trace(
+                    (Supplier<?>) () -> new ParameterizedMessage(
+                        "handlePublishResponse: failed to get publish response from [{}]", n), exp);
+            }
+
+            @Override
+            public String executor() {
+                return ThreadPool.Names.SAME;
+            }
+        }));
+    }
+
+    void handleVote(DiscoveryNode sourceNode, Vote vote) {
+        Optional<Vote> optionalVote = ensureTermAtLeast(localNode, vote.getTerm());
+        if (optionalVote.isPresent()) {
+            handleVote(localNode, optionalVote.get()); // someone thinks we should be master, so let's try to become one
+        }
+
+        if (termIncrementedAtLeastOnce == false) {
+            return;
+        }
 
         boolean prevElectionWon = consensusState.electionWon();
         Optional<PublishRequest<T>> maybePublishRequest = consensusState.handleVote(sourceNode, vote);
@@ -291,91 +407,81 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         if (prevElectionWon == false && consensusState.electionWon()) {
             assert mode == Mode.CANDIDATE : "expected candidate but was " + mode;
 
+            becomeOrRenewLeader("handleVote", LeaderMode.PUBLISH_IN_PROGRESS);
+
             if (maybePublishRequest.isPresent()) {
-                becomeOrRenewLeader("handleVote", LeaderMode.PUBLISH_IN_PROGRESS);
-                transport.broadcastPublishRequest(maybePublishRequest.get());
-            } else if (consensusState.canHandleClientValue()) {
-                becomeOrRenewLeader("handleVote", LeaderMode.HEARTBEAT_IN_PROGRESS);
-                transport.broadcastHeartbeat(
-                    new Messages.HeartbeatRequest(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm()));
+                publish(maybePublishRequest.get());
             } else {
-                // This is a rare case where a node started an election, then rebooted, and then received enough votes to win the election
-                logger.debug("handleVote: election won even though publishing is not permitted");
+                assert consensusState.canHandleClientValue();
+                publish(consensusState.handleClientValue(noOpCreator.apply(consensusState.getCommittedState())));
             }
         }
     }
 
-    public void handlePublishRequest(DiscoveryNode sourceNode, PublishRequest<T> publishRequest) {
+    public LegislatorPublishResponse handlePublishRequest(DiscoveryNode sourceNode, PublishRequest<T> publishRequest) {
+        if (publishRequest.getTerm() < consensusState.getCurrentTerm()) {
+            throw new IllegalArgumentException("incoming term too old");
+        }
         if (publishRequest.slot > consensusState.firstUncommittedSlot()) {
             logger.debug("handlePublishRequest: received request [{}] with future slot (expected [{}]): catching up",
                 publishRequest, consensusState.firstUncommittedSlot());
-            ensureTermAtLeast(sourceNode, publishRequest.getTerm());
+            Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
+            if (mode == Mode.LEADER) {
+                // we are a stale leader with same term as new leader and have not committed configuration change yet that tells us
+                // we're cannot become leader anymore.
+                // TODO: Disable electionWon on this node and turn it into follower
+                assert false;
+            }
+            if (sourceNode.equals(localNode) == false) {
+                becomeOrRenewFollower("handlePublishRequest", sourceNode);
+            }
             storedPublishRequest = Optional.of(publishRequest);
-            transport.sendRequestCatchUp(sourceNode);
+            return new LegislatorPublishResponse(true, Optional.empty(), optionalVote);
         } else {
             logger.trace("handlePublishRequest: handling [{}] from [{}])", publishRequest, sourceNode);
-            ensureTermAtLeast(sourceNode, publishRequest.getTerm());
-            PublishResponse publishResponse = consensusState.handlePublishRequest(publishRequest);
-            if (sourceNode.equals(localNode) == false) {
-                becomeOrRenewFollower(sourceNode);
-            }
-            transport.sendPublishResponse(sourceNode, publishResponse);
-        }
-    }
-
-    public void handlePublishResponse(DiscoveryNode sourceNode, PublishResponse publishResponse) {
-        logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, sourceNode);
-        assert consensusState.getCurrentTerm() >= publishResponse.getTerm();
-        Optional<ApplyCommit> optionalCommit = consensusState.handlePublishResponse(sourceNode, publishResponse);
-        // TODO: handle negative votes and move to candidate if leader
-        if (optionalCommit.isPresent()) {
-            assert mode == Mode.LEADER || mode == Mode.CANDIDATE : localNode.getId() + ": expected leader or candidate but was " + mode;
-            transport.broadcastApplyCommit(optionalCommit.get());
-        }
-    }
-
-    public void handleHeartbeatRequest(DiscoveryNode sourceNode, Messages.HeartbeatRequest heartbeatRequest) {
-        if (heartbeatRequest.getSlot() > consensusState.firstUncommittedSlot()) {
-            logger.debug("handleHeartbeatRequest: received request [{}] with future slot (expected [{}]): catching up",
-                heartbeatRequest, consensusState.firstUncommittedSlot());
-            ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm());
-            storedHeartbeatRequest = Optional.of(heartbeatRequest);
-            transport.sendRequestCatchUp(sourceNode);
-        } else {
-            logger.trace("handleHeartbeatRequest: handling [{}] from [{}])", heartbeatRequest, sourceNode);
-            ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm());
-            if (matchesNextSlot(heartbeatRequest)) {
+            Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
+            Optional<PublishResponse> optionalPublishResponse = Optional.empty();
+            try {
+                optionalPublishResponse = Optional.of(consensusState.handlePublishRequest(publishRequest));
                 if (sourceNode.equals(localNode) == false) {
-                    becomeOrRenewFollower(sourceNode);
+                    becomeOrRenewFollower("handlePublishRequest", sourceNode);
                 }
-                transport.sendHeartbeatResponse(sourceNode,
-                    new Messages.HeartbeatResponse(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm()));
+            } catch (IllegalArgumentException ignored) {
+
             }
+            return new LegislatorPublishResponse(false, optionalPublishResponse, optionalVote);
         }
     }
 
-    public void handleHeartbeatResponse(DiscoveryNode sourceNode, Messages.HeartbeatResponse heartbeatResponse) {
-        if (mode == Mode.LEADER && leaderMode == LeaderMode.HEARTBEAT_IN_PROGRESS) {
+    public HeartbeatResponse handleHeartbeatRequest(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
+        logger.trace("handleHeartbeatRequest: handling [{}] from [{}])", heartbeatRequest, sourceNode);
+        assert sourceNode.equals(localNode) == false;
+        if (matchesNextSlot(heartbeatRequest)) {
+            becomeOrRenewFollower("handleHeartbeatRequest", sourceNode);
+        }
+        return new HeartbeatResponse(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm());
+    }
+
+    public void handleHeartbeatResponse(DiscoveryNode sourceNode, HeartbeatCollector heartbeatCollector,
+                                        HeartbeatResponse heartbeatResponse) {
+        if (currentHeartbeatCollector.isPresent() && currentHeartbeatCollector.get() == heartbeatCollector) {
             if (consensusState.firstUncommittedSlot() == heartbeatResponse.getSlot() &&
                 consensusState.getCurrentTerm() == heartbeatResponse.getTerm()) {
-                heartbeatNodes.add(sourceNode);
-                if (consensusState.isQuorumInCurrentConfiguration(heartbeatNodes)) {
-                    logger.trace("handleHeartbeatResponse: renewing leader lease");
-                    becomeOrRenewLeader("handleHeartbeatResponse", LeaderMode.HEARTBEAT_DELAY);
-                    heartbeatNodes = new NodeCollection(); // TODO record all the heartbeat responses
-                }
+                safeAddHeartbeatResponse(sourceNode, heartbeatCollector);
             }
+        }
+    }
+
+    private void safeAddHeartbeatResponse(DiscoveryNode sourceNode, HeartbeatCollector heartbeatCollector) {
+        assert mode == Mode.LEADER && leaderMode == LeaderMode.HEARTBEAT_IN_PROGRESS;
+        heartbeatCollector.add(sourceNode); // TODO record all the heartbeat responses
+        if (consensusState.isQuorumInCurrentConfiguration(heartbeatCollector.heartbeatNodes)) {
+            logger.trace("handleHeartbeatResponse: renewing leader lease");
+            becomeOrRenewLeader("handleHeartbeatResponse", LeaderMode.HEARTBEAT_DELAY);
         }
     }
 
     public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit) {
-
-        if (applyCommit.slot > consensusState.firstUncommittedSlot()) {
-            logger.debug("handleApplyCommit: storing future {}", applyCommit);
-            storedApplyCommit = Optional.of(applyCommit);
-            return;
-        }
-
         logger.trace("handleApplyCommit: applying {}", applyCommit);
 
         boolean prevElectionWon = consensusState.electionWon();
@@ -388,27 +494,23 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             assert mode != Mode.LEADER : "expected non-leader but was leader";
             assert consensusState.canHandleClientValue();
             becomeOrRenewLeader("handleApplyCommit", LeaderMode.HEARTBEAT_IN_PROGRESS);
-            transport.broadcastHeartbeat(
-                new Messages.HeartbeatRequest(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm()));
+            sendHeartBeat();
         } else if (prevElectionWon && consensusState.electionWon() == false) {
             assert mode == Mode.LEADER || mode == Mode.CANDIDATE : localNode.getId() + ": expected leader or candidate but was " + mode;
             if (mode != Mode.CANDIDATE) {
                 becomeCandidate("handleApplyCommit");
             }
         }
-
-        storedPublishRequest = Optional.empty();
-        storedApplyCommit = Optional.empty();
     }
 
-    public void handleSeekVotes(DiscoveryNode sender, Messages.SeekVotes seekVotes) {
+    public OfferVote handleSeekVotes(DiscoveryNode sender, SeekVotes seekVotes) {
         logger.debug("handleSeekVotes: received [{}] from [{}]", seekVotes, sender);
 
         if (mode == Mode.CANDIDATE) {
-            Messages.OfferVote offerVote = new Messages.OfferVote(consensusState.firstUncommittedSlot(),
+            OfferVote offerVote = new OfferVote(consensusState.firstUncommittedSlot(),
                 consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
             logger.debug("handleSeekVotes: candidate received [{}] from [{}] and responding with [{}]", seekVotes, sender, offerVote);
-            transport.sendOfferVote(sender, offerVote);
+            return offerVote;
         } else if (consensusState.getCurrentTerm() < seekVotes.getTerm() && mode == Mode.LEADER) {
             // This is a _rare_ case that can occur if this node is the leader but pauses for long enough for other
             // nodes to consider it failed, leading to `sender` winning a pre-voting round and increments its term, but
@@ -420,36 +522,119 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             final long newTerm = seekVotes.getTerm() + 1;
             logger.debug("handleSeekVotes: leader in term {} handling [{}] from [{}] by starting an election in term {}",
                 consensusState.getCurrentTerm(), seekVotes, sender, newTerm);
-            transport.broadcastStartVote(newTerm);
+            sendStartVote(new StartVoteRequest(newTerm));
+            throw new IllegalArgumentException("I'm still a leader");
         } else {
+            // TODO: remove this once it's taken care of by fault detection
+            if (mode == Mode.LEADER && consensusState.canHandleClientValue()) {
+                becomeOrRenewLeader("handleSeekVotes", LeaderMode.PUBLISH_IN_PROGRESS);
+                publish(consensusState.handleClientValue(noOpCreator.apply(consensusState.getCommittedState())));
+            }
             logger.debug("handleSeekVotes: not offering vote: slot={}, term={}, mode={}",
                 consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), mode);
+            throw new IllegalArgumentException("not offering vote");
         }
     }
 
-    public void handleOfferVote(DiscoveryNode sender, Messages.OfferVote offerVote) {
-        if (votesOffered.isPresent() == false) {
+    public class OfferVoteCollector {
+        NodeCollection votesOffered = new NodeCollection();
+        long maxTermSeen = 0L;
+
+        public void add(DiscoveryNode sender, long term) {
+            votesOffered.add(sender);
+            maxTermSeen = Math.max(maxTermSeen, term);
+        }
+
+        public void start(SeekVotes seekVotes) {
+            nodeSupplier.get().forEach(n -> transport.sendSeekVotes(n, seekVotes, new TransportResponseHandler<OfferVote>() {
+                @Override
+                public OfferVote read(StreamInput in) throws IOException {
+                    return new OfferVote(in);
+                }
+
+                @Override
+                public void handleResponse(OfferVote response) {
+                    handleOfferVote(n, OfferVoteCollector.this, response);
+                }
+
+                @Override
+                public void handleException(TransportException exp) {
+                    logger.trace(
+                        (Supplier<?>) () -> new ParameterizedMessage(
+                            "handleOfferVoteResponse: failed to get vote from [{}]", n), exp);
+                }
+
+                @Override
+                public String executor() {
+                    return ThreadPool.Names.SAME;
+                }
+            }));
+        }
+    }
+
+    public class HeartbeatCollector {
+        NodeCollection heartbeatNodes = new NodeCollection();
+
+        public void add(DiscoveryNode sender) {
+            heartbeatNodes.add(sender);
+        }
+
+        public void start(HeartbeatRequest heartbeatRequest) {
+            nodeSupplier.get().forEach(n -> {
+                if (n.equals(localNode) == false) {
+                    transport.sendHeartbeatRequest(n, heartbeatRequest,
+                        new TransportResponseHandler<HeartbeatResponse>() {
+                            @Override
+                            public HeartbeatResponse read(StreamInput in) throws IOException {
+                                return new HeartbeatResponse(in);
+                            }
+
+                            @Override
+                            public void handleResponse(HeartbeatResponse response) {
+                                handleHeartbeatResponse(n, HeartbeatCollector.this, response);
+                            }
+
+                            @Override
+                            public void handleException(TransportException exp) {
+                                logger.trace(
+                                    (Supplier<?>) () -> new ParameterizedMessage(
+                                        "handleHeartbeatResponse: failed to get heartbeat from [{}]", n), exp);
+                            }
+
+                            @Override
+                            public String executor() {
+                                return ThreadPool.Names.SAME;
+                            }
+                        });
+                }
+            });
+        }
+    }
+
+    public void handleOfferVote(DiscoveryNode sender, OfferVoteCollector offerVoteCollector, OfferVote offerVote) {
+        if (currentOfferVoteCollector.isPresent() == false || currentOfferVoteCollector.get() != offerVoteCollector) {
             logger.debug("handleOfferVote: received OfferVote message from [{}] but not collecting offers.", sender);
             throw new IllegalArgumentException("Received OfferVote but not collecting offers.");
         }
+
+        assert currentOfferVoteCollector.get() == offerVoteCollector;
 
         if (offerVote.getFirstUncommittedSlot() > consensusState.firstUncommittedSlot()
             || (offerVote.getFirstUncommittedSlot() == consensusState.firstUncommittedSlot()
             && offerVote.getLastAcceptedTerm() > consensusState.lastAcceptedTerm())) {
             logger.debug("handleOfferVote: handing over pre-voting to [{}] because of {}", sender, offerVote);
-            votesOffered = Optional.empty();
+            currentOfferVoteCollector = Optional.empty();
             transport.sendPreVoteHandover(sender);
             return;
         }
 
         logger.debug("handleOfferVote: received {} from [{}]", offerVote, sender);
-        ensureTermAtLeast(localNode, offerVote.getTerm());
-        votesOffered.get().add(sender);
+        offerVoteCollector.add(sender, offerVote.getTerm());
 
-        if (consensusState.isQuorumInCurrentConfiguration(votesOffered.get())) {
+        if (consensusState.isQuorumInCurrentConfiguration(offerVoteCollector.votesOffered)) {
             logger.debug("handleOfferVote: received a quorum of OfferVote messages, so starting an election.");
-            votesOffered = Optional.empty();
-            transport.broadcastStartVote(consensusState.getCurrentTerm() + 1);
+            currentOfferVoteCollector = Optional.empty();
+            sendStartVote(new StartVoteRequest(Math.max(consensusState.getCurrentTerm(), offerVoteCollector.maxTermSeen) + 1));
         }
     }
 
@@ -458,44 +643,29 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         startSeekingVotes();
     }
 
-    public void handleRequestCatchUp(DiscoveryNode sender) {
-        assert sender.equals(localNode) == false;
-        T committedState = consensusState.generateCatchup();
-        logger.debug("handleRequestCatchUp: sending catch-up to {} with slot {}", sender, committedState.getSlot());
-        transport.sendCatchUp(sender, committedState);
-    }
-
     public boolean matchesNextSlot(Messages.SlotTerm slotTerm) {
         return slotTerm.getTerm() == consensusState.getCurrentTerm() &&
             slotTerm.getSlot() == consensusState.firstUncommittedSlot();
     }
 
-    public void handleCatchUp(DiscoveryNode sender, T catchUp) {
-        logger.debug("handleCatchUp: received catch-up from {} to slot {}", sender, catchUp.getSlot());
-        consensusState.applyCatchup(catchUp);
-        if (mode == Mode.LEADER) {
-            logger.debug("stale leader receiving catch-up from {} to slot {}", sender, catchUp.getSlot());
-            becomeCandidate("handleCatchup");
+    public PublishResponse handleCatchUp(DiscoveryNode sender, CatchupRequest<T> catchUp) {
+        logger.debug("handleCatchUp: received catch-up from {} to slot {}", sender, catchUp.getFullState().getSlot());
+        if (catchUp.getTerm() != consensusState.getCurrentTerm()) {
+            throw new IllegalArgumentException("catchup for wrong term");
         }
+        consensusState.applyCatchup(catchUp.getFullState());
+        assert sender.equals(localNode) == false;
+        assert mode != Mode.LEADER;
 
-        if (storedHeartbeatRequest.isPresent()) {
-            logger.debug("handleCatchUp: replaying stored {}", storedHeartbeatRequest.get());
-            if (matchesNextSlot(storedHeartbeatRequest.get())) {
-                handleHeartbeatRequest(sender, storedHeartbeatRequest.get()); // TODO wrong sender, doesn't matter?
-                storedHeartbeatRequest = Optional.empty();
-            }
-        }
-        if (storedPublishRequest.isPresent()) {
+        if (storedPublishRequest.isPresent() && matchesNextSlot(storedPublishRequest.get())) {
             logger.debug("handleCatchUp: replaying stored {}", storedPublishRequest.get());
-            if (matchesNextSlot(storedPublishRequest.get())) {
-                handlePublishRequest(sender, storedPublishRequest.get()); // TODO wrong sender, doesn't matter?
-                storedPublishRequest = Optional.empty();
-            }
-        }
-        if (storedApplyCommit.isPresent()) {
-            logger.debug("handleCatchUp: replaying stored {}", storedApplyCommit.get());
-            handleApplyCommit(sender, storedApplyCommit.get()); // TODO wrong sender, doesn't matter?
-            storedApplyCommit = Optional.empty();
+            // TODO wrong sender on the next line, doesn't matter?
+            LegislatorPublishResponse publishResponse = handlePublishRequest(sender, storedPublishRequest.get());
+            assert publishResponse.getPublishResponse().isPresent();
+            storedPublishRequest = Optional.empty();
+            return publishResponse.getPublishResponse().get();
+        } else {
+            throw new IllegalArgumentException("publish state not stored");
         }
     }
 
@@ -510,7 +680,33 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     public void handleAbdication(DiscoveryNode sender, long currentTerm) {
         logger.debug("handleAbdication: accepting abdication from [{}] in term {}", sender, currentTerm);
-        transport.broadcastStartVote(currentTerm + 1);
+        sendStartVote(new StartVoteRequest(currentTerm + 1));
+    }
+
+    private void sendStartVote(StartVoteRequest startVoteRequest) {
+        nodeSupplier.get().forEach(n -> transport.sendStartVote(n, startVoteRequest, new TransportResponseHandler<Vote>() {
+            @Override
+            public Vote read(StreamInput in) throws IOException {
+                return new Vote(in);
+            }
+
+            @Override
+            public void handleResponse(Vote response) {
+                handleVote(n, response);
+            }
+
+            @Override
+            public void handleException(TransportException exp) {
+                logger.debug(
+                    (Supplier<?>) () -> new ParameterizedMessage(
+                        "handleVoteResponse: failed to get vote from [{}]", n), exp);
+            }
+
+            @Override
+            public String executor() {
+                return ThreadPool.Names.SAME;
+            }
+        }));
     }
 
     public void handleDisconnectedNode(DiscoveryNode sender) {
@@ -530,6 +726,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             assert consensusState.canHandleClientValue() == false; // follows from electionWon == false, but explicitly stated here again
             assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
         }
+        assert currentHeartbeatCollector.isPresent() == (mode == Mode.LEADER && leaderMode == LeaderMode.HEARTBEAT_IN_PROGRESS);
     }
 
     public enum Mode {
@@ -541,29 +738,21 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     public interface Transport<T> {
-        void sendVote(DiscoveryNode destination, Vote vote);
+        void sendPublishRequest(DiscoveryNode destination, PublishRequest<T> publishRequest,
+                                TransportResponseHandler<LegislatorPublishResponse> responseHandler);
 
-        void broadcastPublishRequest(PublishRequest<T> publishRequest);
+        void sendCatchUp(DiscoveryNode destination, CatchupRequest<T> catchUp, TransportResponseHandler<PublishResponse> responseHandler);
 
-        void sendPublishResponse(DiscoveryNode destination, PublishResponse publishResponse);
+        void sendHeartbeatRequest(DiscoveryNode destination, HeartbeatRequest heartbeatRequest,
+                                  TransportResponseHandler<HeartbeatResponse> responseHandler);
 
-        void broadcastHeartbeat(Messages.HeartbeatRequest heartbeatRequest);
+        void sendApplyCommit(DiscoveryNode destination, ApplyCommit applyCommit, EmptyTransportResponseHandler responseHandler);
 
-        void sendHeartbeatResponse(DiscoveryNode destination, Messages.HeartbeatResponse heartbeatResponse);
+        void sendSeekVotes(DiscoveryNode destination, SeekVotes seekVotes, TransportResponseHandler<OfferVote> responseHandler);
 
-        void broadcastApplyCommit(ApplyCommit applyCommit);
-
-        void broadcastSeekVotes(Messages.SeekVotes seekVotes);
-
-        void sendOfferVote(DiscoveryNode destination, Messages.OfferVote offerVote);
-
-        void broadcastStartVote(long term);
+        void sendStartVote(DiscoveryNode destination, StartVoteRequest startVoteRequest, TransportResponseHandler<Vote> responseHandler);
 
         void sendPreVoteHandover(DiscoveryNode destination);
-
-        void sendRequestCatchUp(DiscoveryNode destination);
-
-        void sendCatchUp(DiscoveryNode destination, T catchUp);
 
         void sendAbdication(DiscoveryNode destination, long currentTerm);
     }
