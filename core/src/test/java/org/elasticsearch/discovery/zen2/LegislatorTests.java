@@ -360,7 +360,7 @@ public class LegislatorTests extends ESTestCase {
         }
 
         void sendApplyCommitFrom(DiscoveryNode sender, DiscoveryNode destination, ApplyCommit applyCommit,
-                                 EmptyTransportResponseHandler responseHandler) {
+                                 TransportResponseHandler<TransportResponse.Empty> responseHandler) {
             sendTo(destination, e -> {
                 try {
                     e.handleApplyCommit(sender, applyCommit);
@@ -536,7 +536,7 @@ public class LegislatorTests extends ESTestCase {
 
                 @Override
                 public void sendApplyCommit(DiscoveryNode destination, ApplyCommit applyCommit,
-                                            EmptyTransportResponseHandler responseHandler) {
+                                            TransportResponseHandler<TransportResponse.Empty> responseHandler) {
                     if (isConnected) {
                         sendApplyCommitFrom(localNode, destination, applyCommit, responseHandler);
                     }
