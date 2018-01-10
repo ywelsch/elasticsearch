@@ -328,7 +328,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         WAITING_FOR_QUORUM,
         SENT_CATCH_UP,
         SENT_APPLY_COMMIT,
-        SUCCEEDED
+        APPLIED_COMMIT,
+        ALREADY_COMMITTED
     }
 
     /**
@@ -370,12 +371,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             NodeCollection possiblySuccessfulNodes = new NodeCollection();
             for (PublicationTarget publicationTarget : publicationTargets) {
                 if (publicationTarget.state == PublicationTargetState.SENT_PUBLISH_REQUEST
-                    || publicationTarget.state == PublicationTargetState.WAITING_FOR_QUORUM
-                    || publicationTarget.state == PublicationTargetState.SENT_CATCH_UP) {
+                    || publicationTarget.state == PublicationTargetState.SENT_CATCH_UP
+                    || publicationTarget.state == PublicationTargetState.WAITING_FOR_QUORUM) {
 
                     possiblySuccessfulNodes.add(publicationTarget.discoveryNode);
                 } else {
-                    assert publicationTarget.state == PublicationTargetState.FAILED;
+                    assert publicationTarget.state == PublicationTargetState.FAILED
+                        || publicationTarget.state == PublicationTargetState.ALREADY_COMMITTED;
                 }
             }
 
@@ -412,7 +414,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                     Optional<ApplyCommit> optionalCommit = consensusState.handlePublishResponse(discoveryNode, publishResponse);
                     optionalCommit.ifPresent(Publication.this::onCommitted);
                 }
-                // TODO: handle negative votes and move to candidate if leader
             }
 
             public void sendApplyCommit() {
@@ -452,10 +453,11 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                         state = PublicationTargetState.SENT_CATCH_UP;
                         transport.sendCatchUp(discoveryNode, catchUp, new CatchUpResponseHandler());
                     } else if (response.getFirstUncommittedSlot() > publishRequest.getSlot()) {
-                        logger.debug("PublishResponseHandler.handleResponse: [{}] is at newer slot {} (vs {}), marking as successful",
+                        logger.debug("PublishResponseHandler.handleResponse: [{}] is at newer slot {} (vs {}), marking ALREADY_COMMITTED",
                             discoveryNode, response.getFirstUncommittedSlot(), publishRequest.getSlot());
                         assert false == response.getPublishResponse().isPresent();
-                        state = PublicationTargetState.SUCCEEDED;
+                        state = PublicationTargetState.ALREADY_COMMITTED;
+                        onPossibleCommitFailure();
                     } else {
                         assert response.getPublishResponse().isPresent();
                         assert response.getFirstUncommittedSlot() == publishRequest.getSlot();
@@ -524,7 +526,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                     }
 
                     assert state == PublicationTargetState.SENT_APPLY_COMMIT;
-                    state = PublicationTargetState.SUCCEEDED;
+                    state = PublicationTargetState.APPLIED_COMMIT;
                 }
 
                 @Override
