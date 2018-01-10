@@ -249,14 +249,15 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      */
     public void handleCommit(ApplyCommit applyCommit) {
         if (applyCommit.getTerm() != lastAcceptedTerm()) {
-            logger.debug("handleCommit: ignored commit request due to term mismatch (expected: [{}], actual: [{}])",
-                lastAcceptedTerm(), applyCommit.getTerm());
+            logger.debug("handleCommit: ignored commit request due to term mismatch " +
+                    "(expected: [term {} slot {}], actual: [term {} slot {}])",
+                lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getTerm(), applyCommit.getSlot());
             throw new IllegalArgumentException("incoming term " + applyCommit.getTerm() + " does not match last accepted term " +
                 lastAcceptedTerm());
         }
         if (applyCommit.getSlot() != firstUncommittedSlot()) {
-            logger.debug("handleCommit: ignored commit request due to slot mismatch (expected: [{}], actual: [{}])",
-                firstUncommittedSlot(), applyCommit.getSlot());
+            logger.debug("handleCommit: ignored commit request due to slot mismatch (term {}, expected: [{}], actual: [{}])",
+                lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getSlot());
             throw new IllegalArgumentException("incoming slot " + applyCommit.getSlot() + " does not match current slot " +
                 firstUncommittedSlot());
         }

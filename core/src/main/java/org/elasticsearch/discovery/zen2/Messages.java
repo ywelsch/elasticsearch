@@ -297,24 +297,20 @@ public class Messages {
     }
 
     public static class LegislatorPublishResponse extends TransportResponse {
-        private final boolean needsCatchup; // whether node needs to catch up
+        private final long firstUncommittedSlot; // first uncommitted slot on sender - could indicate that the sender is ahead
         private final Optional<PublishResponse> publishResponse; // if node accepted publish request
         private final Optional<Vote> vote; // if vote was granted due to node having lower term
 
-        public LegislatorPublishResponse(boolean needsCatchup, Optional<PublishResponse> publishResponse, Optional<Vote> vote) {
-            this.needsCatchup = needsCatchup;
+        public LegislatorPublishResponse(long firstUncommittedSlot, Optional<PublishResponse> publishResponse, Optional<Vote> vote) {
+            this.firstUncommittedSlot = firstUncommittedSlot;
             this.publishResponse = publishResponse;
             this.vote = vote;
         }
 
         public LegislatorPublishResponse(StreamInput in) throws IOException {
-            this.needsCatchup = in.readBoolean();
+            this.firstUncommittedSlot = in.readLong();
             this.publishResponse = Optional.ofNullable(in.readOptionalWriteable(PublishResponse::new));
             this.vote = Optional.ofNullable(in.readOptionalWriteable(Vote::new));
-        }
-
-        public boolean isNeedsCatchup() {
-            return needsCatchup;
         }
 
         public Optional<PublishResponse> getPublishResponse() {
@@ -325,6 +321,9 @@ public class Messages {
             return vote;
         }
 
+        public long getFirstUncommittedSlot() {
+            return firstUncommittedSlot;
+        }
     }
 
     public static class PublishResponse extends SlotTermResponse {

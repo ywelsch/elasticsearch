@@ -232,7 +232,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     private void becomeCandidate(String method) {
-        logger.debug("{}: becoming candidate (lastKnownLeader was [{}])", method, lastKnownLeader);
+        logger.debug("{}: becoming candidate (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
         mode = Mode.CANDIDATE;
         currentDelayMillis = minDelay.getMillis();
         ignoreWakeUpsForRandomDelay();
@@ -241,7 +241,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     private void becomeOrRenewLeader(String method, LeaderMode newLeaderMode) {
         if (mode != Mode.LEADER) {
-            logger.debug("{}: becoming leader [{}] (lastKnownLeader was [{}])", method, newLeaderMode, lastKnownLeader);
+            logger.debug("{}: becoming leader [{}] (was {}, lastKnownLeader was [{}])", method, newLeaderMode, mode, lastKnownLeader);
         } else {
             assert newLeaderMode != leaderMode;
             // publishing always followed by delaying the heartbeat
@@ -265,8 +265,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     private void becomeOrRenewFollower(String method, DiscoveryNode leaderNode) {
         if (mode != Mode.FOLLOWER) {
-            logger.debug("{}: becoming follower of [{}] (lastKnownLeader was [{}])",
-                method, leaderNode, lastKnownLeader);
+            logger.debug("{}: becoming follower of [{}] (was {}, lastKnownLeader was [{}])",
+                method, leaderNode, mode, lastKnownLeader);
         }
         mode = Mode.FOLLOWER;
         lastKnownLeader = Optional.of(leaderNode);
@@ -320,6 +320,17 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         new Publication(publishRequest).start();
     }
 
+
+    public enum PublicationTargetState {
+        NOT_STARTED,
+        FAILED,
+        SENT_PUBLISH_REQUEST,
+        WAITING_FOR_QUORUM,
+        SENT_CATCH_UP,
+        SENT_APPLY_COMMIT,
+        SUCCEEDED
+    }
+
     /**
      * A single attempt to publish an update
      */
@@ -333,6 +344,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         private Publication(PublishRequest<T> publishRequest) {
             this.publishRequest = publishRequest;
             catchUp = new CatchupRequest<>(publishRequest.getTerm(), consensusState.generateCatchup());
+            assert catchUp.getFullState().getSlot() + 1 == publishRequest.getSlot();
             applyCommitReference = new AtomicReference<>();
 
             final List<DiscoveryNode> discoveryNodes = nodeSupplier.get();
@@ -347,21 +359,51 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         private void onCommitted(final ApplyCommit applyCommit) {
             assert applyCommitReference.get() == null;
             applyCommitReference.set(applyCommit);
-            publicationTargets.forEach(PublicationTarget::sendApplyCommit);
+            publicationTargets.stream().filter(PublicationTarget::isWaitingForQuorum).forEach(PublicationTarget::sendApplyCommit);
+        }
+
+        private void onPossibleCommitFailure() {
+            if (applyCommitReference.get() != null) {
+                return;
+            }
+
+            NodeCollection possiblySuccessfulNodes = new NodeCollection();
+            for (PublicationTarget publicationTarget : publicationTargets) {
+                if (publicationTarget.state == PublicationTargetState.SENT_PUBLISH_REQUEST
+                    || publicationTarget.state == PublicationTargetState.WAITING_FOR_QUORUM
+                    || publicationTarget.state == PublicationTargetState.SENT_CATCH_UP) {
+
+                    possiblySuccessfulNodes.add(publicationTarget.discoveryNode);
+                } else {
+                    assert publicationTarget.state == PublicationTargetState.FAILED;
+                }
+            }
+
+            if (false == consensusState.isQuorumInCurrentConfiguration(possiblySuccessfulNodes)) {
+                logger.debug("onPossibleCommitFailure: non-failed nodes do not form a quorum, so publication cannot succeed");
+                publicationTargets.forEach(publicationTarget -> publicationTarget.state = PublicationTargetState.FAILED);
+                becomeCandidate("onPossibleCommitFailure");
+            }
         }
 
         private class PublicationTarget {
             private final DiscoveryNode discoveryNode;
+            private PublicationTargetState state;
 
             private PublicationTarget(DiscoveryNode discoveryNode) {
                 this.discoveryNode = discoveryNode;
+                state = PublicationTargetState.NOT_STARTED;
             }
 
             public void sendPublishRequest() {
+                assert state == PublicationTargetState.NOT_STARTED;
+                state = PublicationTargetState.SENT_PUBLISH_REQUEST;
                 transport.sendPublishRequest(discoveryNode, publishRequest, new PublishResponseHandler());
             }
 
             void handlePublishResponse(PublishResponse publishResponse) {
+                assert state == PublicationTargetState.WAITING_FOR_QUORUM;
+
                 logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, discoveryNode);
                 assert consensusState.getCurrentTerm() >= publishResponse.getTerm();
                 if (applyCommitReference.get() != null) {
@@ -374,9 +416,16 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             }
 
             public void sendApplyCommit() {
+                assert state == PublicationTargetState.WAITING_FOR_QUORUM;
+                state = PublicationTargetState.SENT_APPLY_COMMIT;
+
                 ApplyCommit applyCommit = applyCommitReference.get();
                 assert applyCommit != null;
                 transport.sendApplyCommit(discoveryNode, applyCommit, new ApplyCommitResponseHandler());
+            }
+
+            public boolean isWaitingForQuorum() {
+                return state == PublicationTargetState.WAITING_FOR_QUORUM;
             }
 
             private class PublishResponseHandler implements TransportResponseHandler<LegislatorPublishResponse> {
@@ -387,15 +436,32 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleResponse(LegislatorPublishResponse response) {
+                    if (state == PublicationTargetState.FAILED) {
+                        logger.debug("PublishResponseHandler.handleResponse: already failed, ignoring response from [{}]", discoveryNode);
+                        return;
+                    }
+
+                    assert state == PublicationTargetState.SENT_PUBLISH_REQUEST;
+
                     if (response.getVote().isPresent()) {
                         handleVote(discoveryNode, response.getVote().get());
                     }
-                    if (response.isNeedsCatchup()) {
-                        logger.debug("handleRequestCatchUp: sending catch-up to {} with slot {}",
-                            discoveryNode, catchUp.getFullState().getSlot());
+                    if (response.getFirstUncommittedSlot() < publishRequest.getSlot()) {
+                        logger.debug("PublishResponseHandler.handleResponse: [{}] is at older slot {} (vs {}), sending catch-up",
+                            discoveryNode, response.getFirstUncommittedSlot(), publishRequest.getSlot());
+                        state = PublicationTargetState.SENT_CATCH_UP;
                         transport.sendCatchUp(discoveryNode, catchUp, new CatchUpResponseHandler());
+                    } else if (response.getFirstUncommittedSlot() > publishRequest.getSlot()) {
+                        logger.debug("PublishResponseHandler.handleResponse: [{}] is at newer slot {} (vs {}), marking as successful",
+                            discoveryNode, response.getFirstUncommittedSlot(), publishRequest.getSlot());
+                        assert false == response.getPublishResponse().isPresent();
+                        state = PublicationTargetState.SUCCEEDED;
+                    } else {
+                        assert response.getPublishResponse().isPresent();
+                        assert response.getFirstUncommittedSlot() == publishRequest.getSlot();
+                        state = PublicationTargetState.WAITING_FOR_QUORUM;
+                        handlePublishResponse(response.getPublishResponse().get());
                     }
-                    response.getPublishResponse().ifPresent(PublicationTarget.this::handlePublishResponse);
                 }
 
                 @Override
@@ -403,6 +469,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                     logger.trace(
                         (Supplier<?>) () -> new ParameterizedMessage(
                             "handlePublishResponse: failed to get publish response from [{}]", discoveryNode), exp);
+                    state = PublicationTargetState.FAILED;
+                    onPossibleCommitFailure();
                 }
 
                 @Override
@@ -420,6 +488,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleResponse(PublishResponse response) {
+                    if (state == PublicationTargetState.FAILED) {
+                        logger.debug("CatchUpResponseHandler.handleResponse: already failed, ignoring response from [{}]", discoveryNode);
+                        return;
+                    }
+
+                    assert state == PublicationTargetState.SENT_CATCH_UP;
+                    state = PublicationTargetState.WAITING_FOR_QUORUM;
                     handlePublishResponse(response);
                 }
 
@@ -428,6 +503,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                     logger.trace(
                         (Supplier<?>) () -> new ParameterizedMessage(
                             "handleCatchupResponse: failed to get catchup response from [{}]", discoveryNode), exp);
+                    state = PublicationTargetState.FAILED;
+                    onPossibleCommitFailure();
                 }
 
                 @Override
@@ -440,7 +517,14 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleResponse(TransportResponse.Empty response) {
-                    // TODO record success
+                    if (state == PublicationTargetState.FAILED) {
+                        logger.debug("ApplyCommitResponseHandler.handleResponse: already failed, ignoring response from [{}]",
+                            discoveryNode);
+                        return;
+                    }
+
+                    assert state == PublicationTargetState.SENT_APPLY_COMMIT;
+                    state = PublicationTargetState.SUCCEEDED;
                 }
 
                 @Override
@@ -448,6 +532,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                     logger.trace(
                         (Supplier<?>) () -> new ParameterizedMessage(
                             "ApplyCommitResponseHandler: failed to get response from [{}]", discoveryNode), exp);
+                    state = PublicationTargetState.FAILED;
                 }
 
                 @Override
@@ -489,10 +574,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         if (publishRequest.getTerm() < consensusState.getCurrentTerm()) {
             throw new IllegalArgumentException("incoming term too old");
         }
+
+        final Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
+        assert publishRequest.getTerm() == consensusState.getCurrentTerm();
+
         if (publishRequest.slot > consensusState.firstUncommittedSlot()) {
             logger.debug("handlePublishRequest: received request [{}] with future slot (expected [{}]): catching up",
                 publishRequest, consensusState.firstUncommittedSlot());
-            Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
             if (mode == Mode.LEADER) {
                 // we are a stale leader with same term as new leader and have not committed configuration change yet that tells us
                 // we're cannot become leader anymore.
@@ -503,21 +591,25 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                 becomeOrRenewFollower("handlePublishRequest", sourceNode);
             }
             storedPublishRequest = Optional.of(publishRequest);
-            return new LegislatorPublishResponse(true, Optional.empty(), optionalVote);
-        } else {
-            logger.trace("handlePublishRequest: handling [{}] from [{}])", publishRequest, sourceNode);
-            Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
-            Optional<PublishResponse> optionalPublishResponse = Optional.empty();
-            try {
-                optionalPublishResponse = Optional.of(consensusState.handlePublishRequest(publishRequest));
-                if (sourceNode.equals(localNode) == false) {
-                    becomeOrRenewFollower("handlePublishRequest", sourceNode);
-                }
-            } catch (IllegalArgumentException ignored) {
-
-            }
-            return new LegislatorPublishResponse(false, optionalPublishResponse, optionalVote);
+            return new LegislatorPublishResponse(consensusState.firstUncommittedSlot(), Optional.empty(), optionalVote);
         }
+
+        if (publishRequest.getSlot() < consensusState.firstUncommittedSlot()) {
+            logger.trace("handlePublishRequest: not handling [{}] from [{}], earlier slot than {}",
+                publishRequest, sourceNode, consensusState.firstUncommittedSlot());
+            return new LegislatorPublishResponse(consensusState.firstUncommittedSlot(), Optional.empty(), optionalVote);
+        }
+
+        assert publishRequest.getSlot() == consensusState.firstUncommittedSlot();
+
+        logger.trace("handlePublishRequest: handling [{}] from [{}]", publishRequest, sourceNode);
+
+        final PublishResponse publishResponse = consensusState.handlePublishRequest(publishRequest);
+        if (sourceNode.equals(localNode) == false) {
+            becomeOrRenewFollower("handlePublishRequest", sourceNode);
+        }
+
+        return new LegislatorPublishResponse(consensusState.firstUncommittedSlot(), Optional.of(publishResponse), optionalVote);
     }
 
     public HeartbeatResponse handleHeartbeatRequest(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
@@ -549,7 +641,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit) {
-        logger.trace("handleApplyCommit: applying {}", applyCommit);
+        logger.trace("handleApplyCommit: applying {} from [{}]", applyCommit, sourceNode);
 
         boolean prevElectionWon = consensusState.electionWon();
         consensusState.handleCommit(applyCommit);
