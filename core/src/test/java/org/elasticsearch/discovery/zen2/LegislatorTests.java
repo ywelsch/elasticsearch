@@ -261,7 +261,7 @@ public class LegislatorTests extends ESTestCase {
                     try {
                         clusterNode.legislator.handleWakeUp();
                         break; // There's a possibility that there's >1 node with the same wake-up time. Wake them up in order.
-                    } catch (IllegalArgumentException e) {
+                    } catch (ConsensusMessageRejectedException ignored) {
                         // This is ok: it just means a message couldn't currently be handled.
                     }
                 }
@@ -309,7 +309,7 @@ public class LegislatorTests extends ESTestCase {
                         logger.info("----> [safety {}] waking up [{}] at [{}]", iteration, clusterNode.getId(), currentTimeMillis);
                         clusterNode.legislator.handleWakeUp();
                     }
-                } catch (IllegalArgumentException e) {
+                } catch (ConsensusMessageRejectedException ignored) {
                     // This is ok: it just means a message couldn't currently be handled.
                 }
 
@@ -440,7 +440,7 @@ public class LegislatorTests extends ESTestCase {
             while (pendingActions.size() > 0) {
                 try {
                     deliverNextMessage();
-                } catch (IllegalArgumentException e) {
+                } catch (ConsensusMessageRejectedException ignored) {
                     // This is ok: it just means a message couldn't currently be handled.
                 }
                 assertConsistentStates();

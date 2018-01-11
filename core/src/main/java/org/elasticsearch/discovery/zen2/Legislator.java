@@ -311,7 +311,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     public void handleClientValue(Diff<T> diff) {
         if (mode != Mode.LEADER) {
-            throw new IllegalArgumentException("handleClientValue: not currently leading, so cannot handle client value.");
+            throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
         PublishRequest<T> publishRequest = consensusState.handleClientValue(diff);
         becomeOrRenewLeader("handleClientValue", LeaderMode.PUBLISH_IN_PROGRESS);
@@ -470,9 +470,12 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
-                    logger.trace(
-                        (Supplier<?>) () -> new ParameterizedMessage(
-                            "handlePublishResponse: failed to get publish response from [{}]", discoveryNode), exp);
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("PublishResponseHandler: [{}] failed: {}", discoveryNode, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug((Supplier<?>) () -> new ParameterizedMessage(
+                                "PublishResponseHandler: [{}] failed", discoveryNode), exp);
+                    }
                     state = PublicationTargetState.FAILED;
                     onPossibleCommitFailure();
                 }
@@ -504,9 +507,12 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
-                    logger.trace(
-                        (Supplier<?>) () -> new ParameterizedMessage(
-                            "handleCatchupResponse: failed to get catchup response from [{}]", discoveryNode), exp);
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("CatchUpResponseHandler: [{}] failed: {}", discoveryNode, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug((Supplier<?>) () -> new ParameterizedMessage(
+                            "CatchUpResponseHandler: [{}] failed", discoveryNode), exp);
+                    }
                     state = PublicationTargetState.FAILED;
                     onPossibleCommitFailure();
                 }
@@ -533,9 +539,12 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
-                    logger.trace(
-                        (Supplier<?>) () -> new ParameterizedMessage(
-                            "ApplyCommitResponseHandler: failed to get response from [{}]", discoveryNode), exp);
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("ApplyCommitResponseHandler: [{}] failed: {}", discoveryNode, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug((Supplier<?>) () -> new ParameterizedMessage(
+                            "ApplyCommitResponseHandler: [{}] failed", discoveryNode), exp);
+                    }
                     state = PublicationTargetState.FAILED;
                 }
 
@@ -576,7 +585,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     public LegislatorPublishResponse handlePublishRequest(DiscoveryNode sourceNode, PublishRequest<T> publishRequest) {
         if (publishRequest.getTerm() < consensusState.getCurrentTerm()) {
-            throw new IllegalArgumentException("incoming term too old");
+            throw new ConsensusMessageRejectedException("incoming term too old");
         }
 
         final Optional<Vote> optionalVote = ensureTermAtLeast(sourceNode, publishRequest.getTerm());
@@ -686,7 +695,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             logger.debug("handleSeekVotes: leader in term {} handling [{}] from [{}] by starting an election in term {}",
                 consensusState.getCurrentTerm(), seekVotes, sender, newTerm);
             sendStartVote(new StartVoteRequest(newTerm));
-            throw new IllegalArgumentException("I'm still a leader");
+            throw new ConsensusMessageRejectedException("I'm still a leader");
         } else {
             // TODO: remove this once it's taken care of by fault detection
             if (mode == Mode.LEADER && consensusState.canHandleClientValue()) {
@@ -695,7 +704,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             }
             logger.debug("handleSeekVotes: not offering vote: slot={}, term={}, mode={}",
                 consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), mode);
-            throw new IllegalArgumentException("not offering vote");
+            throw new ConsensusMessageRejectedException("not offering vote");
         }
     }
 
@@ -722,9 +731,12 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
-                    logger.trace(
-                        (Supplier<?>) () -> new ParameterizedMessage(
-                            "handleOfferVoteResponse: failed to get vote from [{}]", n), exp);
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("OfferVoteCollector: [{}] failed: {}", n, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug((Supplier<?>) () -> new ParameterizedMessage(
+                            "OfferVoteCollector: [{}] failed", n), exp);
+                    }
                 }
 
                 @Override
@@ -761,7 +773,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                             @Override
                             public void handleException(TransportException exp) {
-                                logger.trace(
+                                logger.debug(
                                     (Supplier<?>) () -> new ParameterizedMessage(
                                         "HeartbeatCollector.handleException: failed to get heartbeat from [{}]", n), exp);
                             }
@@ -779,7 +791,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public void handleOfferVote(DiscoveryNode sender, OfferVoteCollector offerVoteCollector, OfferVote offerVote) {
         if (currentOfferVoteCollector.isPresent() == false || currentOfferVoteCollector.get() != offerVoteCollector) {
             logger.debug("handleOfferVote: received OfferVote message from [{}] but not collecting offers.", sender);
-            throw new IllegalArgumentException("Received OfferVote but not collecting offers.");
+            throw new ConsensusMessageRejectedException("Received OfferVote but not collecting offers.");
         }
 
         assert currentOfferVoteCollector.get() == offerVoteCollector;
@@ -816,7 +828,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public PublishResponse handleCatchUp(DiscoveryNode sender, CatchupRequest<T> catchUp) {
         logger.debug("handleCatchUp: received catch-up from {} to slot {}", sender, catchUp.getFullState().getSlot());
         if (catchUp.getTerm() != consensusState.getCurrentTerm()) {
-            throw new IllegalArgumentException("catchup for wrong term");
+            throw new ConsensusMessageRejectedException("catchup for wrong term");
         }
         consensusState.applyCatchup(catchUp.getFullState());
         assert sender.equals(localNode) == false;
@@ -830,14 +842,14 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             storedPublishRequest = Optional.empty();
             return publishResponse.getPublishResponse().get();
         } else {
-            throw new IllegalArgumentException("publish state not stored");
+            throw new ConsensusMessageRejectedException("publish state not stored");
         }
     }
 
     public void abdicateTo(DiscoveryNode newLeader) {
         if (mode != Mode.LEADER) {
             logger.debug("abdicateTo: mode={} != LEADER, so cannot abdicate to [{}]", mode, newLeader);
-            throw new IllegalArgumentException("abdicateTo: not currently leading, so cannot abdicate.");
+            throw new ConsensusMessageRejectedException("abdicateTo: not currently leading, so cannot abdicate.");
         }
         logger.debug("abdicateTo: abdicating to [{}]", newLeader);
         transport.sendAbdication(newLeader, consensusState.getCurrentTerm());

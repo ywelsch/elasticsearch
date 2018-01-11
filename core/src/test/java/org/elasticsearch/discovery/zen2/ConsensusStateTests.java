@@ -76,13 +76,13 @@ public class ConsensusStateTests extends ESTestCase {
         assertFalse(invalidVote.isPresent());
 
         Diff<ClusterState> diff = diffWithValue(initialClusterState, 5);
-        expectThrows(IllegalArgumentException.class, () -> n1.handleClientValue(diff));
+        expectThrows(ConsensusMessageRejectedException.class, () -> n1.handleClientValue(diff));
         n1.handleVote(node1, v1);
 
         PublishRequest<ClusterState> slotTermDiff = n1.handleClientValue(diff);
 
         PublishResponse n1PublishResponse = n1.handlePublishRequest(slotTermDiff);
-        expectThrows(IllegalArgumentException.class, () -> n3.handlePublishRequest(slotTermDiff));
+        expectThrows(ConsensusMessageRejectedException.class, () -> n3.handlePublishRequest(slotTermDiff));
         n3.handleStartVote(1);
         PublishResponse n3PublishResponse = n3.handlePublishRequest(slotTermDiff);
 
@@ -95,7 +95,7 @@ public class ConsensusStateTests extends ESTestCase {
         assertThat(n1.firstUncommittedSlot(), equalTo(1L));
 
         assertThat(n2.firstUncommittedSlot(), equalTo(0L));
-        expectThrows(IllegalArgumentException.class, () -> n2.handleCommit(n1Commit.get()));
+        expectThrows(ConsensusMessageRejectedException.class, () -> n2.handleCommit(n1Commit.get()));
         assertThat(n2.firstUncommittedSlot(), equalTo(0L));
 
         assertThat(n3.firstUncommittedSlot(), equalTo(0L));

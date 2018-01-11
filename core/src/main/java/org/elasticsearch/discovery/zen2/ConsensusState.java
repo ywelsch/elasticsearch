@@ -105,13 +105,13 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      *
      * @param newTerm The new term
      * @return A Vote that must be sent to at most one other node.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public Vote handleStartVote(long newTerm) {
         if (newTerm <= getCurrentTerm()) {
             logger.debug("handleStartVote: ignored as term provided [{}] lower or equal than current term [{}]",
                 newTerm, getCurrentTerm());
-            throw new IllegalArgumentException("incoming term " + newTerm + " lower than current term " + getCurrentTerm());
+            throw new ConsensusMessageRejectedException("incoming term " + newTerm + " lower than current term " + getCurrentTerm());
         }
 
         logger.debug("handleStartVote: updating term from [{}] to [{}]", getCurrentTerm(), newTerm);
@@ -132,25 +132,26 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * @param sourceNode The sender of the Vote received.
      * @param vote       The Vote received.
      * @return An optional PublishRequest which, if present, can be broadcast to all peers.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public Optional<PublishRequest<T>> handleVote(DiscoveryNode sourceNode, Vote vote) {
         if (vote.getTerm() != getCurrentTerm()) {
             logger.debug("handleVote: ignored vote due to term mismatch (expected: [{}], actual: [{}])",
                 getCurrentTerm(), vote.getTerm());
-            throw new IllegalArgumentException("incoming term " + vote.getTerm() + " does not match current term " + getCurrentTerm());
+            throw new ConsensusMessageRejectedException(
+                "incoming term " + vote.getTerm() + " does not match current term " + getCurrentTerm());
         }
         if (vote.getFirstUncommittedSlot() > firstUncommittedSlot()) {
             logger.debug("handleVote: ignored vote due to slot mismatch (expected: <=[{}], actual: [{}])",
                 firstUncommittedSlot(), vote.getFirstUncommittedSlot());
-            throw new IllegalArgumentException("incoming slot " + vote.getFirstUncommittedSlot() + " higher than current slot " +
-                firstUncommittedSlot());
+            throw new ConsensusMessageRejectedException(
+                "incoming slot " + vote.getFirstUncommittedSlot() + " higher than current slot " + firstUncommittedSlot());
         }
         final long lastAcceptedTerm = lastAcceptedTerm();
         if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() > lastAcceptedTerm) {
             logger.debug("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
                 lastAcceptedTerm, vote.getLastAcceptedTerm());
-            throw new IllegalArgumentException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
+            throw new ConsensusMessageRejectedException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
                 "current last accepted term " + lastAcceptedTerm);
         }
 
@@ -177,19 +178,19 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      *
      * @param publishRequest The PublishRequest received.
      * @return A PublishResponse which can be sent back to the sender of the PublishRequest.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public PublishResponse handlePublishRequest(PublishRequest<T> publishRequest) {
         if (publishRequest.getTerm() != getCurrentTerm()) {
             logger.debug("handlePublishRequest: ignored publish request due to term mismatch (expected: [{}], actual: [{}])",
                 getCurrentTerm(), publishRequest.getTerm());
-            throw new IllegalArgumentException("incoming term " + publishRequest.getTerm() + " does not match current term " +
+            throw new ConsensusMessageRejectedException("incoming term " + publishRequest.getTerm() + " does not match current term " +
                 getCurrentTerm());
         }
         if (publishRequest.getSlot() != firstUncommittedSlot()) {
             logger.debug("handlePublishRequest: ignored publish request due to slot mismatch (expected: [{}], actual: [{}])",
                 firstUncommittedSlot(), publishRequest.getSlot());
-            throw new IllegalArgumentException("incoming slot " + publishRequest.getSlot() + " does not match current slot " +
+            throw new ConsensusMessageRejectedException("incoming slot " + publishRequest.getSlot() + " does not match current slot " +
                 firstUncommittedSlot());
         }
 
@@ -209,13 +210,13 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * @param publishResponse The PublishResponse received.
      * @return An optional ApplyCommit which, if present, may be broadcast to all peers, indicating that this publication
      * has been accepted at a quorum of peers and is therefore committed.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public Optional<ApplyCommit> handlePublishResponse(DiscoveryNode sourceNode, PublishResponse publishResponse) {
         if (publishResponse.getTerm() != getCurrentTerm()) {
             logger.debug("handlePublishResponse: ignored publish response due to term mismatch (expected: [{}], actual: [{}])",
                 getCurrentTerm(), publishResponse.getTerm());
-            throw new IllegalArgumentException("incoming term " + publishResponse.getTerm()
+            throw new ConsensusMessageRejectedException("incoming term " + publishResponse.getTerm()
                 + " does not match current term " + getCurrentTerm());
         }
         if (publishResponse.getSlot() != firstUncommittedSlot()) {
@@ -225,7 +226,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
                 logger.debug("handlePublishResponse: ignored publish response due to slot mismatch (expected: [{}], actual: [{}])",
                     firstUncommittedSlot(), publishResponse.getSlot());
             }
-            throw new IllegalArgumentException("incoming slot " + publishResponse.getSlot() + " does not match current slot " +
+            throw new ConsensusMessageRejectedException("incoming slot " + publishResponse.getSlot() + " does not match current slot " +
                 firstUncommittedSlot());
         }
 
@@ -245,20 +246,20 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * May be called on receipt of an ApplyCommit. Updates the committed state accordingly.
      *
      * @param applyCommit The ApplyCommit received.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public void handleCommit(ApplyCommit applyCommit) {
         if (applyCommit.getTerm() != lastAcceptedTerm()) {
             logger.debug("handleCommit: ignored commit request due to term mismatch " +
                     "(expected: [term {} slot {}], actual: [term {} slot {}])",
                 lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getTerm(), applyCommit.getSlot());
-            throw new IllegalArgumentException("incoming term " + applyCommit.getTerm() + " does not match last accepted term " +
+            throw new ConsensusMessageRejectedException("incoming term " + applyCommit.getTerm() + " does not match last accepted term " +
                 lastAcceptedTerm());
         }
         if (applyCommit.getSlot() != firstUncommittedSlot()) {
             logger.debug("handleCommit: ignored commit request due to slot mismatch (term {}, expected: [{}], actual: [{}])",
                 lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getSlot());
-            throw new IllegalArgumentException("incoming slot " + applyCommit.getSlot() + " does not match current slot " +
+            throw new ConsensusMessageRejectedException("incoming slot " + applyCommit.getSlot() + " does not match current slot " +
                 firstUncommittedSlot());
         }
 
@@ -295,13 +296,13 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
     /**
      * May be called on receipt of a catch-up message containing the current committed state from a peer.
      *
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public void applyCatchup(T newCommittedState) {
         if (newCommittedState.getSlot() <= getCommittedState().getSlot()) {
             logger.debug("applyCatchup: ignored catch up request due to slot mismatch (expected: >[{}], actual: [{}])",
                 getCommittedState().getSlot(), newCommittedState.getSlot());
-            throw new IllegalArgumentException("incoming slot " + newCommittedState.getSlot() + " no higher than current slot " +
+            throw new ConsensusMessageRejectedException("incoming slot " + newCommittedState.getSlot() + " no higher than current slot " +
                 getCommittedState().getSlot());
         }
 
@@ -320,16 +321,16 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      *
      * @param diff The RSM transition on which to achieve consensus.
      * @return A PublishRequest that may be broadcast to all peers.
-     * @throws IllegalArgumentException if the arguments were incompatible with the current state of this object.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public PublishRequest<T> handleClientValue(Diff<T> diff) {
         if (electionWon == false) {
             logger.debug("handleClientValue: ignored request as election not won");
-            throw new IllegalArgumentException("election not won");
+            throw new ConsensusMessageRejectedException("election not won");
         }
         if (publishPermitted == false) {
             logger.debug("handleClientValue: ignored request as publishing is not permitted");
-            throw new IllegalArgumentException("publishing not permitted");
+            throw new ConsensusMessageRejectedException("publishing not permitted");
         }
         assert lastAcceptedTerm() == NO_TERM; // see https://github.com/elastic/elasticsearch-formal-models/issues/24
 
