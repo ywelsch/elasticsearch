@@ -196,7 +196,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         try {
             if (remainingWakeUpDelay == 0L) {
                 final Level logLevel = mode == Mode.LEADER && leaderMode == LeaderMode.HEARTBEAT_DELAY ? Level.TRACE : Level.DEBUG;
-                logger.log(logLevel, "handleWakeUp: waking up as [{}] at [{}] with slot={}, term={}, lastAcceptedTerm={}", mode, now,
+                logger.log(logLevel, "handleWakeUp: waking up as [{}/{}] at [{}] with slot={}, term={}, lastAcceptedTerm={}",
+                    mode, leaderMode, now,
                     consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
                 switch (mode) {
                     case CANDIDATE:
@@ -232,7 +233,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     private void becomeCandidate(String method) {
-        logger.debug("{}: becoming candidate (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
+        logger.debug("{}: becoming candidate (was [{}/{}], lastKnownLeader was [{}])", method, mode, leaderMode, lastKnownLeader);
         mode = Mode.CANDIDATE;
         currentDelayMillis = minDelay.getMillis();
         ignoreWakeUpsForRandomDelay();
@@ -241,12 +242,14 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     private void becomeOrRenewLeader(String method, LeaderMode newLeaderMode) {
         if (mode != Mode.LEADER) {
-            logger.debug("{}: becoming leader [{}] (was {}, lastKnownLeader was [{}])", method, newLeaderMode, mode, lastKnownLeader);
+            logger.debug("{}: becoming [LEADER/{}] (was [{}/{}], lastKnownLeader was [{}])",
+                method, newLeaderMode, mode, leaderMode, lastKnownLeader);
         } else {
             assert newLeaderMode != leaderMode;
             // publishing always followed by delaying the heartbeat
             assert leaderMode != LeaderMode.PUBLISH_IN_PROGRESS || newLeaderMode == LeaderMode.HEARTBEAT_DELAY;
-            logger.trace("{}: switching leader mode (prev: [{}], now: [{}])", method, leaderMode, newLeaderMode);
+            logger.trace("{}: renewing as [LEADER/{}] (was [{}/{}], lastKnownLeader was [{}])",
+                method, newLeaderMode, mode, leaderMode, lastKnownLeader);
         }
         mode = Mode.LEADER;
         leaderMode = newLeaderMode;
@@ -265,8 +268,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     private void becomeOrRenewFollower(String method, DiscoveryNode leaderNode) {
         if (mode != Mode.FOLLOWER) {
-            logger.debug("{}: becoming follower of [{}] (was {}, lastKnownLeader was [{}])",
-                method, leaderNode, mode, lastKnownLeader);
+            logger.debug("{}: becoming follower of [{}] (was [{}/{}], lastKnownLeader was [{}])",
+                method, leaderNode, mode, leaderMode, lastKnownLeader);
         }
         mode = Mode.FOLLOWER;
         lastKnownLeader = Optional.of(leaderNode);
@@ -743,6 +746,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         public void start(HeartbeatRequest heartbeatRequest) {
             nodeSupplier.get().forEach(n -> {
                 if (n.equals(localNode) == false) {
+                    logger.trace("HeartbeatCollector.start: sending heartbeat to {}", n);
                     transport.sendHeartbeatRequest(n, heartbeatRequest,
                         new TransportResponseHandler<HeartbeatResponse>() {
                             @Override
@@ -752,6 +756,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                             @Override
                             public void handleResponse(HeartbeatResponse response) {
+                                logger.trace("HeartbeatCollector.handleResponse: received [{}]", response);
                                 handleHeartbeatResponse(n, HeartbeatCollector.this, response);
                             }
 
@@ -759,7 +764,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                             public void handleException(TransportException exp) {
                                 logger.trace(
                                     (Supplier<?>) () -> new ParameterizedMessage(
-                                        "handleHeartbeatResponse: failed to get heartbeat from [{}]", n), exp);
+                                        "HeartbeatCollector.handleException: failed to get heartbeat from [{}]", n), exp);
                             }
 
                             @Override
@@ -832,7 +837,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     public void abdicateTo(DiscoveryNode newLeader) {
         if (mode != Mode.LEADER) {
-            logger.debug("abdicateTo: mode={} so cannot abdicate to [{}]", mode, newLeader);
+            logger.debug("abdicateTo: mode={} != LEADER, so cannot abdicate to [{}]", mode, newLeader);
             throw new IllegalArgumentException("abdicateTo: not currently leading, so cannot abdicate.");
         }
         logger.debug("abdicateTo: abdicating to [{}]", newLeader);

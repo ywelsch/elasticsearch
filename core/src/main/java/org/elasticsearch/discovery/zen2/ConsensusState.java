@@ -193,7 +193,7 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
                 firstUncommittedSlot());
         }
 
-        logger.trace("handlePublishRequest: storing publish request for slot [{}] and term [{}]",
+        logger.trace("handlePublishRequest: accepting publish request for slot [{}] and term [{}]",
             publishRequest.getSlot(), publishRequest.getTerm());
         persistedState.setAcceptedState(publishRequest.getAcceptedState());
         assert persistedState.getAcceptedState().isPresent() &&

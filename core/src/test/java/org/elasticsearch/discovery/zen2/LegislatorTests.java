@@ -208,8 +208,9 @@ public class LegislatorTests extends ESTestCase {
                 deliverNextMessageUntilQuiescent();
             }
 
-            assertUniqueLeaderAndExpectedModes();
             logger.info("--> end of stabilisation phase");
+
+            assertUniqueLeaderAndExpectedModes();
         }
 
         /**
@@ -320,7 +321,7 @@ public class LegislatorTests extends ESTestCase {
 
         void setCurrentTimeForwards(long delayMillis) {
             if (delayMillis > 0) {
-                logger.debug("----> moving time from [{}] to [{}]", currentTimeMillis, currentTimeMillis + delayMillis);
+                logger.debug("----> advancing time from [{}ms] to [{}ms]", currentTimeMillis, currentTimeMillis + delayMillis);
                 currentTimeMillis += delayMillis;
             }
         }
