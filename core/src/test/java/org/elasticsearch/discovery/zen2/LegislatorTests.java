@@ -148,8 +148,12 @@ public class LegislatorTests extends ESTestCase {
             allNodes.add(clusterNode.localNode);
         }
 
+        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
+
         leader.legislator.handleClientValue(diffWithVotingNodes(leader.legislator.getCommittedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
+
+        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
 
         final long disconnectionTime = cluster.currentTimeMillis;
         leader.isConnected = false;
@@ -157,10 +161,18 @@ public class LegislatorTests extends ESTestCase {
 
         for (ClusterNode clusterNode : cluster.clusterNodes) {
             if (clusterNode != leader) {
+                logger.info("--> notifying {} of leader disconnection", clusterNode.getLocalNode());
                 clusterNode.legislator.handleDisconnectedNode(leader.localNode);
             }
         }
+        logger.info("--> performing next wake-up");
         cluster.doNextWakeUp();
+        cluster.deliverNextMessageUntilQuiescent();
+        logger.info("--> next wake-up completed");
+
+        logger.info("--> failing old leader");
+        leader.legislator.handleFailure();
+        logger.info("--> finished failing old leader");
 
         // The nodes all entered mode CANDIDATE, so the next WakeUp was after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
         final long minDelayMillis = CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis();
@@ -169,6 +181,7 @@ public class LegislatorTests extends ESTestCase {
         // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
         // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
         cluster.assertConsistentStates();
+        cluster.assertUniqueLeaderAndExpectedModes();
     }
 
     class Cluster {
@@ -301,6 +314,11 @@ public class LegislatorTests extends ESTestCase {
                         logger.info("----> [safety {}] [{}] abdicating to [{}]",
                             iteration, oldLeader.getId(), newLeader.getId());
                         oldLeader.legislator.abdicateTo(newLeader.localNode);
+                    } else if (rarely()) {
+                        // deal with an externally-detected failure
+                        final ClusterNode clusterNode = randomLegislator();
+                        logger.info("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
+                        clusterNode.legislator.handleFailure();
                     } else {
                         // wake up random node
                         final ClusterNode clusterNode = randomLegislator();
@@ -321,7 +339,7 @@ public class LegislatorTests extends ESTestCase {
 
         void setCurrentTimeForwards(long delayMillis) {
             if (delayMillis > 0) {
-                logger.debug("----> advancing time from [{}ms] to [{}ms]", currentTimeMillis, currentTimeMillis + delayMillis);
+                logger.info("----> advancing time from [{}ms] to [{}ms]", currentTimeMillis, currentTimeMillis + delayMillis);
                 currentTimeMillis += delayMillis;
             }
         }

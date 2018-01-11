@@ -232,6 +232,14 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
     }
 
+    public void handleFailure() {
+        if (mode == Mode.CANDIDATE) {
+            logger.debug("handleFailure: already a candidate");
+        } else {
+            becomeCandidate("handleFailure");
+        }
+    }
+
     private void becomeCandidate(String method) {
         logger.debug("{}: becoming candidate (was [{}/{}], lastKnownLeader was [{}])", method, mode, leaderMode, lastKnownLeader);
         mode = Mode.CANDIDATE;
