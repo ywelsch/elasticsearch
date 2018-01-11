@@ -286,11 +286,10 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private void sendHeartBeat() {
         HeartbeatRequest heartbeatRequest =
             new HeartbeatRequest(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm());
-        currentHeartbeatCollector = Optional.of(new HeartbeatCollector());
-        safeAddHeartbeatResponse(localNode, currentHeartbeatCollector.get());
-        if (currentHeartbeatCollector.isPresent()) {
-            currentHeartbeatCollector.get().start(heartbeatRequest);
-        }
+        final HeartbeatCollector heartbeatCollector = new HeartbeatCollector();
+        currentHeartbeatCollector = Optional.of(heartbeatCollector);
+        heartbeatCollector.start(heartbeatRequest);
+        safeAddHeartbeatResponse(localNode, heartbeatCollector);
     }
 
     public Vote handleStartVote(DiscoveryNode sourceNode, StartVoteRequest startVoteRequest) {
