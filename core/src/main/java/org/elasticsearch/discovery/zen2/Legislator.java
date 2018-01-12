@@ -96,6 +96,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private final TimeValue leaderTimeout;
     private final TimeValue followerTimeout;
     private final TimeValue heartbeatDelay;
+    private final FutureExecutor futureExecutor;
     private final LongSupplier currentTimeSupplier;
     private final Random random;
 
@@ -119,7 +120,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     public Legislator(Settings settings, ConsensusState.PersistedState<T> persistedState,
                       Transport<T> transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
-                      Supplier<List<DiscoveryNode>> nodeSupplier, Function<T, Diff<T>> noOpCreator) {
+                      FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier, Function<T, Diff<T>> noOpCreator) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
@@ -132,6 +133,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         this.transport = transport;
         this.localNode = localNode;
         this.currentTimeSupplier = currentTimeSupplier;
+        this.futureExecutor = futureExecutor;
         this.nodeSupplier = nodeSupplier;
         this.noOpCreator = noOpCreator;
         currentHeartbeatCollector = Optional.empty();
@@ -153,13 +155,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         return consensusState.getCommittedState();
     }
 
-    /**
-     * Returns the (non-negative) remaining delay from now when the next relevant wakeup should happen
-     */
-    public long getNextWakeUpDelayMillis() {
-        return getNextWakeUpDelayMillis(currentTimeSupplier.getAsLong());
-    }
-
     private long getNextWakeUpDelayMillis(long now) {
         return Math.max(nextWakeUpTimeMillis - now, 0L);
     }
@@ -179,17 +174,20 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     private void ignoreWakeUpsForRandomDelay() {
-        nextWakeUpTimeMillis = currentTimeSupplier.getAsLong() + randomLongBetween(minDelay.getMillis(), currentDelayMillis + 1);
+        final long delay = randomLongBetween(minDelay.getMillis(), currentDelayMillis + 1);
+        nextWakeUpTimeMillis = currentTimeSupplier.getAsLong() + delay;
+        futureExecutor.schedule(TimeValue.timeValueMillis(delay), this::handleWakeUp);
     }
 
     public void ignoreWakeUpsForAtLeast(TimeValue delay) {
         final long newWakeUpTimeMillis = currentTimeSupplier.getAsLong() + delay.getMillis();
         if (newWakeUpTimeMillis - nextWakeUpTimeMillis > 0L) {
             nextWakeUpTimeMillis = newWakeUpTimeMillis;
+            futureExecutor.schedule(delay, this::handleWakeUp);
         }
     }
 
-    public void handleWakeUp() {
+    private void handleWakeUp() {
         long now = currentTimeSupplier.getAsLong();
         final long remainingWakeUpDelay = getNextWakeUpDelayMillis(now);
 
@@ -882,9 +880,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
             @Override
             public void handleException(TransportException exp) {
-                logger.debug(
-                    (Supplier<?>) () -> new ParameterizedMessage(
-                        "handleVoteResponse: failed to get vote from [{}]", n), exp);
+                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                    logger.debug("handleVoteResponse: [{}] failed: {}", n, exp.getRootCause().getMessage());
+                } else {
+                    logger.debug(
+                        (Supplier<?>) () -> new ParameterizedMessage(
+                            "handleVoteResponse: failed to get vote from [{}]", n), exp);
+                }
             }
 
             @Override
@@ -907,7 +909,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             assert (leaderMode != LeaderMode.PUBLISH_IN_PROGRESS) == consensusState.canHandleClientValue();
             assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
         } else if (mode == Mode.FOLLOWER) {
-            assert consensusState.electionWon() == false;
+            assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
             assert consensusState.canHandleClientValue() == false; // follows from electionWon == false, but explicitly stated here again
             assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
         }
@@ -941,5 +943,9 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         void sendPreVoteHandover(DiscoveryNode destination);
 
         void sendAbdication(DiscoveryNode destination, long currentTerm);
+    }
+
+    public interface FutureExecutor {
+        void schedule(TimeValue delay, Runnable task);
     }
 }

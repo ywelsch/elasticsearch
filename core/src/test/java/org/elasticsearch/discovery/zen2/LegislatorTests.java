@@ -42,7 +42,6 @@ import org.elasticsearch.discovery.zen2.Messages.StartVoteRequest;
 import org.elasticsearch.discovery.zen2.Messages.Vote;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
-import org.elasticsearch.transport.EmptyTransportResponseHandler;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseHandler;
@@ -95,7 +94,7 @@ public class LegislatorTests extends ESTestCase {
         final ClusterNode leader = cluster.getAnyLeader();
         final long stabilisedSlot = leader.legislator.getCommittedState().getSlot();
 
-        final ClusterNode newLeader = cluster.randomLegislator();;
+        final ClusterNode newLeader = cluster.randomLegislator();
         logger.info("--> abdicating from [{}] to [{}]", leader.getId(), newLeader.getId());
         leader.legislator.abdicateTo(newLeader.localNode);
         cluster.deliverNextMessageUntilQuiescent();
@@ -188,14 +187,18 @@ public class LegislatorTests extends ESTestCase {
         private final List<ClusterNode> clusterNodes;
         private final List<Runnable> pendingActions = new ArrayList<>();
         private long currentTimeMillis = 0L;
+        private static final long DEFAULT_DELAY_VARIABILITY = 100L;
 
         Cluster(int nodeCount) {
             clusterNodes = new ArrayList<>(nodeCount);
+            logger.info("--> creating cluster of {} nodes", nodeCount);
+
             for (int i = 0; i < nodeCount; i++) {
                 clusterNodes.add(new ClusterNode(i));
             }
 
             final NodeCollection initialConfiguration = randomConfiguration();
+            logger.info("--> initial configuration: {}", initialConfiguration);
             for (final ClusterNode clusterNode : clusterNodes) {
                 clusterNode.initialise(initialConfiguration);
             }
@@ -215,12 +218,14 @@ public class LegislatorTests extends ESTestCase {
                 CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2;
 
             logger.info("--> start of stabilisation phase: run until time {}ms", catchUpPhaseEndMillis);
+            setDelayVariability(0L);
 
             while (currentTimeMillis < catchUpPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
 
+            setDelayVariability(DEFAULT_DELAY_VARIABILITY);
             logger.info("--> end of stabilisation phase");
 
             assertUniqueLeaderAndExpectedModes();
@@ -263,20 +268,20 @@ public class LegislatorTests extends ESTestCase {
         }
 
         private void doNextWakeUp() {
-            final long firstWakeUpDelay = clusterNodes.stream()
-                .map(clusterNode -> clusterNode.legislator.getNextWakeUpDelayMillis()).min(Long::compareTo).get();
+            final long firstExecutionTime = tasks.stream()
+                .map(TaskWithExecutionTime::getExecutionTimeMillis).min(Long::compareTo).get();
 
-            setCurrentTimeForwards(firstWakeUpDelay);
+            assert firstExecutionTime >= currentTimeMillis;
+            logger.info("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
+                firstExecutionTime - currentTimeMillis, currentTimeMillis, firstExecutionTime);
+            currentTimeMillis = firstExecutionTime;
 
-            for (final ClusterNode clusterNode : clusterNodes) {
-                if (clusterNode.legislator.getNextWakeUpDelayMillis() == 0L) {
-                    logger.info("waking up {} at {}ms", clusterNode.getId(), currentTimeMillis);
-                    try {
-                        clusterNode.legislator.handleWakeUp();
-                        break; // There's a possibility that there's >1 node with the same wake-up time. Wake them up in order.
-                    } catch (ConsensusMessageRejectedException ignored) {
-                        // This is ok: it just means a message couldn't currently be handled.
-                    }
+            for (final TaskWithExecutionTime task : tasks) {
+                if (task.getExecutionTimeMillis() == firstExecutionTime) {
+                    tasks.remove(task);
+                    logger.info("----> executing {}", task);
+                    task.task.run();
+                    break; // in case there is more than one task with the same execution time
                 }
             }
         }
@@ -284,6 +289,7 @@ public class LegislatorTests extends ESTestCase {
         private void runRandomly(boolean reconfigure) {
             // Safety phase: behave quite randomly and verify that there is no divergence, but without any expectation of progress.
             logger.info("--> start of safety phase");
+            setDelayVariability(10000L);
 
             for (int iteration = 0; iteration < 10000; iteration++) {
                 try {
@@ -320,12 +326,9 @@ public class LegislatorTests extends ESTestCase {
                         logger.info("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
                         clusterNode.legislator.handleFailure();
                     } else {
-                        // wake up random node
-                        final ClusterNode clusterNode = randomLegislator();
-                        long nextWakeUpDelayMillis = clusterNode.legislator.getNextWakeUpDelayMillis();
-                        setCurrentTimeForwards(nextWakeUpDelayMillis);
-                        logger.info("----> [safety {}] waking up [{}] at [{}]", iteration, clusterNode.getId(), currentTimeMillis);
-                        clusterNode.legislator.handleWakeUp();
+                        // execute next scheduled task
+                        logger.info("----> [safety {}] executing first task scheduled after time [{}ms]", iteration, currentTimeMillis);
+                        doNextWakeUp();
                     }
                 } catch (ConsensusMessageRejectedException ignored) {
                     // This is ok: it just means a message couldn't currently be handled.
@@ -334,15 +337,12 @@ public class LegislatorTests extends ESTestCase {
                 assertConsistentStates();
             }
 
+            setDelayVariability(DEFAULT_DELAY_VARIABILITY);
             logger.info("--> end of safety phase");
         }
 
-        void setCurrentTimeForwards(long delayMillis) {
-            if (delayMillis > 0) {
-                logger.info("----> advancing time from [{}ms] to [{}ms]", currentTimeMillis, currentTimeMillis + delayMillis);
-                currentTimeMillis += delayMillis;
-            }
-        }
+        private final List<TaskWithExecutionTime> tasks = new ArrayList<>();
+        private long delayVariability = DEFAULT_DELAY_VARIABILITY;
 
         void sendTo(DiscoveryNode destination, Consumer<Legislator<ClusterState>> action) {
             pendingActions.add(() -> {
@@ -494,6 +494,10 @@ public class LegislatorTests extends ESTestCase {
             return randomLegislator();
         }
 
+        public void setDelayVariability(long delayVariability) {
+            this.delayVariability = delayVariability;
+        }
+
         class ClusterNode {
             final DiscoveryNode localNode;
             PersistedState<ClusterState> persistedState;
@@ -515,6 +519,7 @@ public class LegislatorTests extends ESTestCase {
 
             // TODO: have some tests that use the on-disk data for persistence across reboots.
             void reboot() {
+                tasks.removeIf(tasks -> tasks.legislator == legislator);
                 legislator = createLegislator();
             }
 
@@ -522,7 +527,8 @@ public class LegislatorTests extends ESTestCase {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
-                return new Legislator<>(settings, persistedState, transport, localNode, new CurrentTimeSupplier(),
+                return new Legislator<>(settings, persistedState, transport, localNode,
+                    new CurrentTimeSupplier(), new FutureExecutor(),
                     () -> clusterNodes.stream().map(ClusterNode::getLocalNode).collect(Collectors.toList()),
                     ConsensusStateTests::noOpDiff);
             }
@@ -533,6 +539,20 @@ public class LegislatorTests extends ESTestCase {
 
             public DiscoveryNode getLocalNode() {
                 return localNode;
+            }
+
+            private class FutureExecutor implements Legislator.FutureExecutor {
+
+                @Override
+                public void schedule(TimeValue delay, Runnable task) {
+                    assert delay.getMillis() >= 0;
+                    final long actualDelay = delay.getMillis() + randomLongBetween(0L, delayVariability);
+                    final long executionTimeMillis = currentTimeMillis + actualDelay;
+                    logger.debug("[{}] schedule: requested delay [{}ms] after [{}ms], " +
+                            "scheduling with delay [{}ms] at [{}ms]",
+                        localNode.getId(), delay.getMillis(), currentTimeMillis, actualDelay, executionTimeMillis);
+                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, legislator));
+                }
             }
 
             private class MockTransport implements Transport<ClusterState> {
@@ -605,6 +625,27 @@ public class LegislatorTests extends ESTestCase {
             @Override
             public long getAsLong() {
                 return currentTimeMillis;
+            }
+        }
+
+        private class TaskWithExecutionTime {
+            final long executionTimeMillis;
+            final Runnable task;
+            private final Legislator<ClusterState> legislator;
+
+            TaskWithExecutionTime(long executionTimeMillis, Runnable task, Legislator<ClusterState> legislator) {
+                this.executionTimeMillis = executionTimeMillis;
+                this.task = task;
+                this.legislator = legislator;
+            }
+
+            public long getExecutionTimeMillis() {
+                return executionTimeMillis;
+            }
+
+            @Override
+            public String toString() {
+                return "task on [" + legislator.getLocalNode() + "] scheduled at time [" + executionTimeMillis + "ms]";
             }
         }
     }
