@@ -164,18 +164,26 @@ public class LegislatorTests extends ESTestCase {
                 clusterNode.legislator.handleDisconnectedNode(leader.localNode);
             }
         }
-        logger.info("--> performing next wake-up");
-        cluster.doNextWakeUp();
-        cluster.deliverNextMessageUntilQuiescent();
-        logger.info("--> next wake-up completed");
+
+
+        // The nodes all entered mode CANDIDATE, so the next wake-up should be after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
+        final long minDelayMillis = CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis();
+        final long firstWakeUpTime = cluster.clusterNodes.stream()
+            .map(ClusterNode::getLegislator).map(Legislator::getNextWakeUpTimeMillis).min(Long::compare).get();
+        assertThat("re-election time is short", firstWakeUpTime - disconnectionTime, lessThan(minDelayMillis * 2));
+
+        // Run until the first wake-up time, accounting for variability in the scheduler.
+        final long stabilisationTime = disconnectionTime + minDelayMillis * 2 + Cluster.DEFAULT_DELAY_VARIABILITY;
+        logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
+        while (cluster.getNextTaskExecutionTime() < stabilisationTime) {
+            cluster.doNextWakeUp();
+            cluster.deliverNextMessageUntilQuiescent();
+        }
+        logger.info("--> next wake-ups completed");
 
         logger.info("--> failing old leader");
         leader.legislator.handleFailure();
         logger.info("--> finished failing old leader");
-
-        // The nodes all entered mode CANDIDATE, so the next WakeUp was after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
-        final long minDelayMillis = CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis();
-        assertThat("re-election time is short", cluster.currentTimeMillis - disconnectionTime, lessThan(minDelayMillis * 2));
 
         // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
         // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
@@ -188,6 +196,7 @@ public class LegislatorTests extends ESTestCase {
         private final List<Runnable> pendingActions = new ArrayList<>();
         private long currentTimeMillis = 0L;
         private static final long DEFAULT_DELAY_VARIABILITY = 100L;
+        private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
 
         Cluster(int nodeCount) {
             clusterNodes = new ArrayList<>(nodeCount);
@@ -215,17 +224,17 @@ public class LegislatorTests extends ESTestCase {
             // because we run to quiescence before waking any other nodes up.
             final long catchUpPhaseEndMillis = currentTimeMillis +
                 CONSENSUS_FOLLOWER_TIMEOUT_SETTING.get(Settings.EMPTY).millis() +
-                CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2;
+                CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2 +
+                RANDOM_MODE_DELAY_VARIABILITY + DEFAULT_DELAY_VARIABILITY;
 
             logger.info("--> start of stabilisation phase: run until time {}ms", catchUpPhaseEndMillis);
-            setDelayVariability(0L);
+            setDelayVariability(DEFAULT_DELAY_VARIABILITY);
 
             while (currentTimeMillis < catchUpPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
 
-            setDelayVariability(DEFAULT_DELAY_VARIABILITY);
             logger.info("--> end of stabilisation phase");
 
             assertUniqueLeaderAndExpectedModes();
@@ -267,29 +276,12 @@ public class LegislatorTests extends ESTestCase {
             return randomFrom(leaders);
         }
 
-        private void doNextWakeUp() {
-            final long firstExecutionTime = tasks.stream()
-                .map(TaskWithExecutionTime::getExecutionTimeMillis).min(Long::compareTo).get();
-
-            assert firstExecutionTime >= currentTimeMillis;
-            logger.info("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
-                firstExecutionTime - currentTimeMillis, currentTimeMillis, firstExecutionTime);
-            currentTimeMillis = firstExecutionTime;
-
-            for (final TaskWithExecutionTime task : tasks) {
-                if (task.getExecutionTimeMillis() == firstExecutionTime) {
-                    tasks.remove(task);
-                    logger.info("----> executing {}", task);
-                    task.task.run();
-                    break; // in case there is more than one task with the same execution time
-                }
-            }
-        }
+        private final List<ClusterNode.TaskWithExecutionTime> tasks = new ArrayList<>();
 
         private void runRandomly(boolean reconfigure) {
             // Safety phase: behave quite randomly and verify that there is no divergence, but without any expectation of progress.
             logger.info("--> start of safety phase");
-            setDelayVariability(10000L);
+            setDelayVariability(RANDOM_MODE_DELAY_VARIABILITY);
 
             for (int iteration = 0; iteration < 10000; iteration++) {
                 try {
@@ -341,7 +333,29 @@ public class LegislatorTests extends ESTestCase {
             logger.info("--> end of safety phase");
         }
 
-        private final List<TaskWithExecutionTime> tasks = new ArrayList<>();
+        private void doNextWakeUp() {
+            final long nextTaskExecutionTime = getNextTaskExecutionTime();
+
+            assert nextTaskExecutionTime >= currentTimeMillis;
+            logger.info("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
+                nextTaskExecutionTime - currentTimeMillis, currentTimeMillis, nextTaskExecutionTime);
+            currentTimeMillis = nextTaskExecutionTime;
+
+            for (final ClusterNode.TaskWithExecutionTime task : tasks) {
+                if (task.getExecutionTimeMillis() == nextTaskExecutionTime) {
+                    tasks.remove(task);
+                    logger.info("----> executing {}", task);
+                    task.task.run();
+                    break; // in case there is more than one task with the same execution time
+                }
+            }
+        }
+
+        private Long getNextTaskExecutionTime() {
+            return tasks.stream()
+                .map(ClusterNode.TaskWithExecutionTime::getExecutionTimeMillis).min(Long::compareTo).get();
+        }
+
         private long delayVariability = DEFAULT_DELAY_VARIABILITY;
 
         void sendTo(DiscoveryNode destination, Consumer<Legislator<ClusterState>> action) {
@@ -519,7 +533,7 @@ public class LegislatorTests extends ESTestCase {
 
             // TODO: have some tests that use the on-disk data for persistence across reboots.
             void reboot() {
-                tasks.removeIf(tasks -> tasks.legislator == legislator);
+                tasks.removeIf(task -> task.getLegislator() == legislator);
                 legislator = createLegislator();
             }
 
@@ -541,6 +555,10 @@ public class LegislatorTests extends ESTestCase {
                 return localNode;
             }
 
+            public Legislator<ClusterState> getLegislator() {
+                return legislator;
+            }
+
             private class FutureExecutor implements Legislator.FutureExecutor {
 
                 @Override
@@ -551,7 +569,7 @@ public class LegislatorTests extends ESTestCase {
                     logger.debug("[{}] schedule: requested delay [{}ms] after [{}ms], " +
                             "scheduling with delay [{}ms] at [{}ms]",
                         localNode.getId(), delay.getMillis(), currentTimeMillis, actualDelay, executionTimeMillis);
-                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, legislator));
+                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task));
                 }
             }
 
@@ -619,33 +637,35 @@ public class LegislatorTests extends ESTestCase {
                     }
                 }
             }
+
+            private class TaskWithExecutionTime {
+                final long executionTimeMillis;
+                final Runnable task;
+
+                TaskWithExecutionTime(long executionTimeMillis, Runnable task) {
+                    this.executionTimeMillis = executionTimeMillis;
+                    this.task = task;
+                }
+
+                public long getExecutionTimeMillis() {
+                    return executionTimeMillis;
+                }
+
+                @Override
+                public String toString() {
+                    return "task on [" + legislator.getLocalNode() + "] scheduled at time [" + executionTimeMillis + "ms]";
+                }
+
+                public Legislator<ClusterState> getLegislator() {
+                    return legislator;
+                }
+            }
         }
 
         private class CurrentTimeSupplier implements LongSupplier {
             @Override
             public long getAsLong() {
                 return currentTimeMillis;
-            }
-        }
-
-        private class TaskWithExecutionTime {
-            final long executionTimeMillis;
-            final Runnable task;
-            private final Legislator<ClusterState> legislator;
-
-            TaskWithExecutionTime(long executionTimeMillis, Runnable task, Legislator<ClusterState> legislator) {
-                this.executionTimeMillis = executionTimeMillis;
-                this.task = task;
-                this.legislator = legislator;
-            }
-
-            public long getExecutionTimeMillis() {
-                return executionTimeMillis;
-            }
-
-            @Override
-            public String toString() {
-                return "task on [" + legislator.getLocalNode() + "] scheduled at time [" + executionTimeMillis + "ms]";
             }
         }
     }

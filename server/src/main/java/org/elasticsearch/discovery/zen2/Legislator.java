@@ -85,6 +85,10 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         Setting.timeSetting("discovery.zen2.heartbeat_delay",
             settings -> TimeValue.timeValueMillis((CONSENSUS_LEADER_TIMEOUT_SETTING.get(settings).millis() / 3) + 1),
             TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
+    // the timeout for the publication of each value
+    public static final Setting<TimeValue> CONSENSUS_PUBLISH_TIMEOUT_SETTING =
+        Setting.timeSetting("discovery.zen2.publication_timeout",
+            TimeValue.timeValueMillis(30000), TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
 
     private final ConsensusState<T> consensusState;
     private final Transport<T> transport;
@@ -96,6 +100,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private final TimeValue leaderTimeout;
     private final TimeValue followerTimeout;
     private final TimeValue heartbeatDelay;
+    private final TimeValue publishTimeout;
     private final FutureExecutor futureExecutor;
     private final LongSupplier currentTimeSupplier;
     private final Random random;
@@ -127,6 +132,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         leaderTimeout = CONSENSUS_LEADER_TIMEOUT_SETTING.get(settings);
         followerTimeout = CONSENSUS_FOLLOWER_TIMEOUT_SETTING.get(settings);
         heartbeatDelay = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(settings);
+        publishTimeout = CONSENSUS_PUBLISH_TIMEOUT_SETTING.get(settings);
         random = Randomness.get();
 
         consensusState = new ConsensusState<>(settings, persistedState);
@@ -206,7 +212,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                     case LEADER:
                         switch (leaderMode) {
-                            case PUBLISH_IN_PROGRESS:
                             case HEARTBEAT_IN_PROGRESS:
                                 becomeCandidate("handleWakeUp");
                                 break;
@@ -222,8 +227,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                         break;
                 }
             } else {
-                logger.trace("handleWakeUp: ignoring wake-up at [{}], next wake-up delay is [{}]", now,
-                    TimeValue.timeValueMillis(getNextWakeUpDelayMillis(now)));
+                logger.trace("handleWakeUp: ignoring wake-up at [{}], next wake-up is after [{}] at [{}ms]", now,
+                    TimeValue.timeValueMillis(getNextWakeUpDelayMillis(now)), nextWakeUpTimeMillis);
             }
         } finally {
             assert getNextWakeUpDelayMillis(now) > 0L;
@@ -251,16 +256,15 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             logger.debug("{}: becoming [LEADER/{}] (was [{}/{}], lastKnownLeader was [{}])",
                 method, newLeaderMode, mode, leaderMode, lastKnownLeader);
         } else {
-            assert newLeaderMode != leaderMode;
+            // assert newLeaderMode != leaderMode;
             // publishing always followed by delaying the heartbeat
-            assert leaderMode != LeaderMode.PUBLISH_IN_PROGRESS || newLeaderMode == LeaderMode.HEARTBEAT_DELAY;
+            // assert newLeaderMode == LeaderMode.HEARTBEAT_DELAY;
             logger.trace("{}: renewing as [LEADER/{}] (was [{}/{}], lastKnownLeader was [{}])",
                 method, newLeaderMode, mode, leaderMode, lastKnownLeader);
         }
         mode = Mode.LEADER;
         leaderMode = newLeaderMode;
         switch (newLeaderMode) {
-            case PUBLISH_IN_PROGRESS:
             case HEARTBEAT_IN_PROGRESS:
                 ignoreWakeUpsForAtLeast(leaderTimeout);
                 break;
@@ -320,12 +324,17 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
         PublishRequest<T> publishRequest = consensusState.handleClientValue(diff);
-        becomeOrRenewLeader("handleClientValue", LeaderMode.PUBLISH_IN_PROGRESS);
         publish(publishRequest);
     }
 
     private void publish(PublishRequest<T> publishRequest) {
-        new Publication(publishRequest).start();
+        final Publication publication = new Publication(publishRequest);
+        publication.start();
+        futureExecutor.schedule(publishTimeout, publication::onTimeout);
+    }
+
+    public long getNextWakeUpTimeMillis() {
+        return nextWakeUpTimeMillis;
     }
 
 
@@ -391,8 +400,20 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
             if (false == consensusState.isQuorumInCurrentConfiguration(possiblySuccessfulNodes)) {
                 logger.debug("onPossibleCommitFailure: non-failed nodes do not form a quorum, so publication cannot succeed");
-                publicationTargets.forEach(publicationTarget -> publicationTarget.state = PublicationTargetState.FAILED);
-                becomeCandidate("onPossibleCommitFailure");
+                failActiveTargets();
+                becomeCandidate("Publication.onPossibleCommitFailure");
+            }
+        }
+
+        private void failActiveTargets() {
+            publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::setFailed);
+        }
+
+        public void onTimeout() {
+            failActiveTargets();
+
+            if (mode == Mode.LEADER && applyCommitReference.get() == null) {
+                becomeCandidate("Publication.onTimeout()");
             }
         }
 
@@ -435,6 +456,17 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
             public boolean isWaitingForQuorum() {
                 return state == PublicationTargetState.WAITING_FOR_QUORUM;
+            }
+
+            public boolean isActive() {
+                return state != PublicationTargetState.FAILED
+                    && state != PublicationTargetState.APPLIED_COMMIT
+                    && state != PublicationTargetState.ALREADY_COMMITTED;
+            }
+
+            public void setFailed() {
+                assert isActive();
+                state = PublicationTargetState.FAILED;
             }
 
             private class PublishResponseHandler implements TransportResponseHandler<LegislatorPublishResponse> {
@@ -578,7 +610,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         if (prevElectionWon == false && consensusState.electionWon()) {
             assert mode == Mode.CANDIDATE : "expected candidate but was " + mode;
 
-            becomeOrRenewLeader("handleVote", LeaderMode.PUBLISH_IN_PROGRESS);
+            becomeOrRenewLeader("handleVote", LeaderMode.HEARTBEAT_DELAY);
 
             if (maybePublishRequest.isPresent()) {
                 publish(maybePublishRequest.get());
@@ -684,7 +716,22 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public OfferVote handleSeekVotes(DiscoveryNode sender, SeekVotes seekVotes) {
         logger.debug("handleSeekVotes: received [{}] from [{}]", seekVotes, sender);
 
+        boolean shouldOfferVote = false;
+
         if (mode == Mode.CANDIDATE) {
+            shouldOfferVote = true;
+        } else if (mode == Mode.FOLLOWER && lastKnownLeader.isPresent() && lastKnownLeader.get().equals(sender)) {
+            // This is a _rare_ case where our leader has detected a failure and stepped down, but we are still a
+            // follower. It's possible that the leader lost its quorum, but while we're still a follower we will not
+            // offer votes to any other node so there is no major drawback in offering a vote to our old leader. The
+            // advantage of this is that it makes it slightly more likely that the leader won't change, and also that
+            // its re-election will happen more quickly than if it had to wait for a quorum of followers to also detect
+            // its failure.
+            logger.debug("handleSeekVotes: following a failed leader");
+            shouldOfferVote = true;
+        }
+
+        if (shouldOfferVote) {
             OfferVote offerVote = new OfferVote(consensusState.firstUncommittedSlot(),
                 consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
             logger.debug("handleSeekVotes: candidate received [{}] from [{}] and responding with [{}]", seekVotes, sender, offerVote);
@@ -705,7 +752,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         } else {
             // TODO: remove this once it's taken care of by fault detection
             if (mode == Mode.LEADER && consensusState.canHandleClientValue()) {
-                becomeOrRenewLeader("handleSeekVotes", LeaderMode.PUBLISH_IN_PROGRESS);
+                becomeOrRenewLeader("handleSeekVotes", LeaderMode.HEARTBEAT_DELAY);
                 publish(consensusState.handleClientValue(noOpCreator.apply(consensusState.getCommittedState())));
             }
             logger.debug("handleSeekVotes: not offering vote: slot={}, term={}, mode={}",
@@ -906,7 +953,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public void invariant() {
         if (mode == Mode.LEADER) {
             assert consensusState.electionWon();
-            assert (leaderMode != LeaderMode.PUBLISH_IN_PROGRESS) == consensusState.canHandleClientValue();
             assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
         } else if (mode == Mode.FOLLOWER) {
             assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
@@ -921,7 +967,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     public enum LeaderMode {
-        PUBLISH_IN_PROGRESS, HEARTBEAT_DELAY, HEARTBEAT_IN_PROGRESS
+        HEARTBEAT_DELAY, HEARTBEAT_IN_PROGRESS
     }
 
     public interface Transport<T> {
