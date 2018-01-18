@@ -127,7 +127,9 @@ public class LegislatorTests extends ESTestCase {
         cluster.deliverNextMessageUntilQuiescent();
 
         leader.isConnected = false;
-        cluster.runRandomly(false);
+        if (randomBoolean()) {
+            cluster.runRandomly(false);
+        }
         cluster.stabilise();
         final ClusterNode newLeader = cluster.getAnyLeader();
 
@@ -156,7 +158,6 @@ public class LegislatorTests extends ESTestCase {
 
         final long disconnectionTime = cluster.currentTimeMillis;
         leader.isConnected = false;
-        leader.legislator.ignoreWakeUpsForAtLeast(TimeValue.timeValueSeconds(10));
 
         for (ClusterNode clusterNode : cluster.clusterNodes) {
             if (clusterNode != leader) {
@@ -165,15 +166,9 @@ public class LegislatorTests extends ESTestCase {
             }
         }
 
-
         // The nodes all entered mode CANDIDATE, so the next wake-up should be after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
-        final long minDelayMillis = CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis();
-        final long firstWakeUpTime = cluster.clusterNodes.stream()
-            .map(ClusterNode::getLegislator).map(Legislator::getNextWakeUpTimeMillis).min(Long::compare).get();
-        assertThat("re-election time is short", firstWakeUpTime - disconnectionTime, lessThan(minDelayMillis * 2));
-
-        // Run until the first wake-up time, accounting for variability in the scheduler.
-        final long stabilisationTime = disconnectionTime + minDelayMillis * 2 + Cluster.DEFAULT_DELAY_VARIABILITY;
+        final long stabilisationTime = disconnectionTime + CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2
+            + Cluster.DEFAULT_DELAY_VARIABILITY;
         logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
         while (cluster.getNextTaskExecutionTime() < stabilisationTime) {
             cluster.doNextWakeUp();
@@ -222,15 +217,15 @@ public class LegislatorTests extends ESTestCase {
             // before waking up again. Then they wake up, become candidates, and wait for up to
             // 2 * CONSENSUS_MIN_DELAY_SETTING before attempting an election. The first election is expected to succeed, however,
             // because we run to quiescence before waking any other nodes up.
-            final long catchUpPhaseEndMillis = currentTimeMillis +
+            final long stabilisationPhaseEndMillis = currentTimeMillis +
                 CONSENSUS_FOLLOWER_TIMEOUT_SETTING.get(Settings.EMPTY).millis() +
                 CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2 +
                 RANDOM_MODE_DELAY_VARIABILITY + DEFAULT_DELAY_VARIABILITY;
 
-            logger.info("--> start of stabilisation phase: run until time {}ms", catchUpPhaseEndMillis);
+            logger.info("--> start of stabilisation phase: run until time {}ms", stabilisationPhaseEndMillis);
             setDelayVariability(DEFAULT_DELAY_VARIABILITY);
 
-            while (currentTimeMillis < catchUpPhaseEndMillis) {
+            while (getNextTaskExecutionTime() < stabilisationPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
