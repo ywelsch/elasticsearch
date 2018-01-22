@@ -511,6 +511,24 @@ public class Messages {
             return "StartVoteRequest{" +
                 "term=" + term + "}";
         }
+    }
 
+    public static class LeaderCheckResponse extends TransportResponse {
+        private final long slot;
+
+        public LeaderCheckResponse(long slot) {
+            this.slot = slot;
+        }
+
+        @Override
+        public String toString() {
+            return "LeaderCheckResponse{" +
+                "slot=" + slot +
+                '}';
+        }
+
+        public long getSlot() {
+            return slot;
+        }
     }
 }

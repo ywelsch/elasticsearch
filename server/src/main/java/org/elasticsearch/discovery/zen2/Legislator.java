@@ -35,6 +35,7 @@ import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.CatchupRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferVote;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
@@ -64,6 +65,7 @@ import java.util.function.Supplier;
  * @param <T> The state tracked in the replicated state machine.
  */
 public class Legislator<T extends CommittedState> extends AbstractComponent {
+    // TODO On the happy path (publish-and-commit) we log at TRACE and everything else is logged at DEBUG. Increase levels as appropriate.
 
     public static final Setting<TimeValue> CONSENSUS_MIN_DELAY_SETTING =
         Setting.timeSetting("discovery.zen2.min_delay",
@@ -72,9 +74,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         Setting.timeSetting("discovery.zen2.max_delay",
             TimeValue.timeValueMillis(10000), TimeValue.timeValueMillis(1000), Setting.Property.NodeScope);
     // the time in follower state without receiving new values or heartbeats from a leader before becoming a candidate again
-    public static final Setting<TimeValue> CONSENSUS_FOLLOWER_TIMEOUT_SETTING =
-        Setting.timeSetting("discovery.zen2.follower_timeout",
-            TimeValue.timeValueMillis(90000), TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
+    public static final Setting<Integer> CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING =
+        Setting.intSetting("discovery.zen2.leader_check_retry_count", 3, 1, Setting.Property.NodeScope);
     // the time between heartbeats sent by the leader
     public static final Setting<TimeValue> CONSENSUS_HEARTBEAT_DELAY_SETTING =
         Setting.timeSetting("discovery.zen2.heartbeat_delay",
@@ -83,7 +84,6 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     public static final Setting<TimeValue> CONSENSUS_HEARTBEAT_TIMEOUT_SETTING =
         Setting.timeSetting("discovery.zen2.heartbeat_timeout",
             TimeValue.timeValueMillis(10000), TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
-
     // the timeout for the publication of each value
     public static final Setting<TimeValue> CONSENSUS_PUBLISH_TIMEOUT_SETTING =
         Setting.timeSetting("discovery.zen2.publication_timeout",
@@ -96,10 +96,10 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private final Function<T, Diff<T>> noOpCreator;
     private final TimeValue minDelay;
     private final TimeValue maxDelay;
-    private final TimeValue followerTimeout;
     private final TimeValue heartbeatDelay;
     private final TimeValue heartbeatTimeout;
     private final TimeValue publishTimeout;
+    private final int leaderCheckRetryCount;
     private final FutureExecutor futureExecutor;
     private final LongSupplier currentTimeSupplier;
     private final Random random;
@@ -110,7 +110,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     private Optional<DiscoveryNode> lastKnownLeader;
     private Optional<SeekVotesScheduler> seekVotesScheduler;
     private Optional<HeartbeatScheduler> heartbeatScheduler;
-    private Optional<PassiveFollowerFailureDetector> passiveFollowerFailureDetector;
+    private Optional<ActiveFollowerFailureDetector> activeFollowerFailureDetector;
     // TODO use nanoseconds throughout instead
 
     // Present if we are in the pre-voting phase, used to collect vote offers.
@@ -118,6 +118,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     // Present if we are catching-up.
     private Optional<PublishRequest<T>> storedPublishRequest = Optional.empty();
+    private boolean republishing;
 
     public Legislator(Settings settings, ConsensusState.PersistedState<T> persistedState,
                       Transport<T> transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
@@ -125,7 +126,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
-        followerTimeout = CONSENSUS_FOLLOWER_TIMEOUT_SETTING.get(settings);
+        leaderCheckRetryCount = CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(settings);
         heartbeatDelay = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(settings);
         heartbeatTimeout = CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(settings);
         publishTimeout = CONSENSUS_PUBLISH_TIMEOUT_SETTING.get(settings);
@@ -142,7 +143,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         currentOfferVoteCollector = Optional.empty();
         seekVotesScheduler = Optional.empty();
         heartbeatScheduler = Optional.empty();
-        passiveFollowerFailureDetector = Optional.empty();
+        activeFollowerFailureDetector = Optional.empty();
 
         becomeCandidate("init");
     }
@@ -168,7 +169,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
     }
 
     private void becomeCandidate(String method) {
-        logger.debug("{}: becoming candidate (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
+        logger.debug("{}: becoming CANDIDATE (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
 
         if (mode != Mode.CANDIDATE) {
             mode = Mode.CANDIDATE;
@@ -177,37 +178,40 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             seekVotesScheduler = Optional.of(new SeekVotesScheduler());
 
             stopHeartbeatScheduler();
-            stopPassiveFollowerFailureDetector();
+            stopActiveFollowerFailureDetector();
+            republishing = false;
         }
     }
 
     private void becomeLeader(String method) {
         assert mode != Mode.LEADER;
 
-        logger.debug("{}: becoming LEADER] (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
+        logger.debug("{}: becoming LEADER (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
 
         mode = Mode.LEADER;
 
         assert heartbeatScheduler.isPresent() == false;
         heartbeatScheduler = Optional.of(new HeartbeatScheduler());
         stopSeekVotesScheduler();
-        stopPassiveFollowerFailureDetector();
+        stopActiveFollowerFailureDetector();
         lastKnownLeader = Optional.of(localNode);
     }
 
-    private void becomeOrRenewFollower(String method, DiscoveryNode leaderNode) {
+    private void becomeFollower(String method, DiscoveryNode leaderNode) {
         if (mode != Mode.FOLLOWER) {
-            logger.debug("{}: becoming follower of [{}] (was {}, lastKnownLeader was [{}])", method, leaderNode, mode, lastKnownLeader);
+            logger.debug("{}: becoming FOLLOWER of [{}] (was {}, lastKnownLeader was [{}])", method, leaderNode, mode, lastKnownLeader);
 
-            assert passiveFollowerFailureDetector.isPresent() == false;
+            assert activeFollowerFailureDetector.isPresent() == false;
+            mode = Mode.FOLLOWER;
+            final ActiveFollowerFailureDetector activeFollowerFailureDetector = new ActiveFollowerFailureDetector();
+            this.activeFollowerFailureDetector = Optional.of(activeFollowerFailureDetector);
+            activeFollowerFailureDetector.start();
         }
 
-        mode = Mode.FOLLOWER;
         lastKnownLeader = Optional.of(leaderNode);
         stopSeekVotesScheduler();
         stopHeartbeatScheduler();
-        stopPassiveFollowerFailureDetector();
-        passiveFollowerFailureDetector = Optional.of(new PassiveFollowerFailureDetector());
+        republishing = false;
     }
 
     private void stopSeekVotesScheduler() {
@@ -224,10 +228,10 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
     }
 
-    private void stopPassiveFollowerFailureDetector() {
-        if (passiveFollowerFailureDetector.isPresent()) {
-            passiveFollowerFailureDetector.get().stop();
-            passiveFollowerFailureDetector = Optional.empty();
+    private void stopActiveFollowerFailureDetector() {
+        if (activeFollowerFailureDetector.isPresent()) {
+            activeFollowerFailureDetector.get().stop();
+            activeFollowerFailureDetector = Optional.empty();
         }
     }
 
@@ -260,6 +264,20 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
         PublishRequest<T> publishRequest = consensusState.handleClientValue(diff);
         publish(publishRequest);
+    }
+
+    public LeaderCheckResponse handleLeaderCheckRequest(DiscoveryNode sender) {
+        if (mode != Mode.LEADER) {
+            logger.debug("handleLeaderCheckRequest: currently {}, rejecting message from [{}]", mode, sender);
+            throw new ConsensusMessageRejectedException("handleLeaderCheckRequest: currently {}, rejecting message from [{}]",
+                mode, sender);
+        }
+
+        // TODO reject if sender is not a publication target
+
+        LeaderCheckResponse response = new LeaderCheckResponse(consensusState.firstUncommittedSlot());
+        logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
+        return response;
     }
 
     private void publish(PublishRequest<T> publishRequest) {
@@ -382,6 +400,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                 ApplyCommit applyCommit = applyCommitReference.get();
                 assert applyCommit != null;
+
                 transport.sendApplyCommit(discoveryNode, applyCommit, new ApplyCommitResponseHandler());
             }
 
@@ -545,6 +564,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
             if (maybePublishRequest.isPresent()) {
                 publish(maybePublishRequest.get());
+                logger.debug("handleVote: republishing previously-published value");
+                republishing = true;
             } else {
                 assert consensusState.canHandleClientValue();
                 publish(consensusState.handleClientValue(noOpCreator.apply(consensusState.getCommittedState())));
@@ -570,7 +591,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
                 assert false;
             }
             if (sourceNode.equals(localNode) == false) {
-                becomeOrRenewFollower("handlePublishRequest", sourceNode);
+                becomeFollower("handlePublishRequest", sourceNode);
             }
             storedPublishRequest = Optional.of(publishRequest);
             return new LegislatorPublishResponse(consensusState.firstUncommittedSlot(), Optional.empty(), optionalVote);
@@ -588,7 +609,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
         final PublishResponse publishResponse = consensusState.handlePublishRequest(publishRequest);
         if (sourceNode.equals(localNode) == false) {
-            becomeOrRenewFollower("handlePublishRequest", sourceNode);
+            becomeFollower("handlePublishRequest", sourceNode);
         }
 
         return new LegislatorPublishResponse(consensusState.firstUncommittedSlot(), Optional.of(publishResponse), optionalVote);
@@ -607,7 +628,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
         if (matchesNextSlot(heartbeatRequest)) {
             // TODO why only if matchesNextSlot()?
-            becomeOrRenewFollower("handleHeartbeatRequest", sourceNode);
+            becomeFollower("handleHeartbeatRequest", sourceNode);
         }
 
         return new HeartbeatResponse(consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm());
@@ -618,6 +639,7 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
         boolean prevElectionWon = consensusState.electionWon();
         consensusState.handleCommit(applyCommit);
+        republishing = false;
         if (prevElectionWon && consensusState.electionWon() && mode == Mode.LEADER) {
             logger.trace("handleApplyCommit: renewing leader lease");
             assert consensusState.canHandleClientValue();
@@ -832,14 +854,20 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         if (mode == Mode.LEADER) {
             assert consensusState.electionWon();
             assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
+            assert (republishing && consensusState.canHandleClientValue()) == false;
         } else if (mode == Mode.FOLLOWER) {
             assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
             assert consensusState.canHandleClientValue() == false; // follows from electionWon == false, but explicitly stated here again
             assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
+            assert republishing == false;
+        } else {
+            assert mode == Mode.CANDIDATE;
+            assert republishing == false;
         }
-        //assert currentHeartbeatCollector.isPresent() == (mode == Mode.LEADER && leaderMode == LeaderMode.HEARTBEAT_IN_PROGRESS);
 
         assert (seekVotesScheduler.isPresent()) == (mode == Mode.CANDIDATE);
+        assert (activeFollowerFailureDetector.isPresent()) == (mode == Mode.FOLLOWER);
+        assert (heartbeatScheduler.isPresent()) == (mode == Mode.LEADER);
     }
 
     public enum Mode {
@@ -865,6 +893,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         void sendPreVoteHandover(DiscoveryNode destination);
 
         void sendAbdication(DiscoveryNode destination, long currentTerm);
+
+        void sendLeaderCheckRequest(DiscoveryNode discoveryNode, TransportResponseHandler<LeaderCheckResponse> responseHandler);
     }
 
     public interface FutureExecutor {
@@ -935,7 +965,8 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         private void scheduleNextWakeUp() {
             assert running;
             assert mode == Mode.LEADER;
-            assert consensusState.getCurrentTerm() == term;
+            assert consensusState.getCurrentTerm() == term
+                : "HeartbeatScheduler#term = " + term + " != consensusState#term = " + consensusState.getCurrentTerm();
             futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
         }
 
@@ -978,8 +1009,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                                 @Override
                                 public void handleResponse(HeartbeatResponse heartbeatResponse) {
-                                    logger.trace("Heartbeat.handleResponse: received [{}]", heartbeatResponse);
+                                    logger.trace("Heartbeat.handleResponse: received [{}] from [{}]", heartbeatResponse, n);
                                     assert heartbeatResponse.getTerm() <= term;
+                                    if (republishing == false && heartbeatResponse.getSlot() > consensusState.firstUncommittedSlot()) {
+                                        logger.debug("Heartbeat.handleResponse: follower has committed a later slot than the leader's {}",
+                                            consensusState.firstUncommittedSlot());
+                                        becomeCandidate("Heartbeat.handleResponse");
+                                    }
                                     successfulNodes.add(n);
                                     onPossibleCompletion();
                                 }
@@ -1044,12 +1080,19 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
     }
 
-    private class PassiveFollowerFailureDetector {
+    private class ActiveFollowerFailureDetector {
 
-        private boolean running = true;
+        private boolean running = false;
+        private int failureCountSinceLastSuccess = 0;
 
-        PassiveFollowerFailureDetector() {
-            futureExecutor.schedule(followerTimeout, this::handleWakeUp);
+        public void start() {
+            assert running == false;
+            running = true;
+            scheduleNextWakeUp();
+        }
+
+        private void scheduleNextWakeUp() {
+            futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
         }
 
         void stop() {
@@ -1058,14 +1101,94 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         }
 
         private void handleWakeUp() {
-            logger.trace("PassiveFollowerFailureDetector.handleWakeUp: " +
+            logger.trace("ActiveFollowerFailureDetector.handleWakeUp: " +
                     "waking up as {} at [{}] with running={}, slot={}, term={}, lastAcceptedTerm={}",
                 mode, currentTimeSupplier.getAsLong(), running,
                 consensusState.firstUncommittedSlot(), consensusState.getCurrentTerm(), consensusState.lastAcceptedTerm());
 
             if (running) {
                 assert mode == Mode.FOLLOWER;
-                becomeCandidate("PassiveFollowerFailureDetector.handleWakeUp");
+                new LeaderCheck(lastKnownLeader.get()).start();
+            }
+        }
+
+        private void onCheckFailure() {
+            if (running) {
+                failureCountSinceLastSuccess++;
+                if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
+                    logger.debug("ActiveFollowerFailureDetector.onCheckFailure: {} consecutive failures to check the leader",
+                        failureCountSinceLastSuccess);
+                    becomeCandidate("ActiveFollowerFailureDetector.onCheckFailure");
+                } else {
+                    scheduleNextWakeUp();
+                }
+            }
+        }
+
+        private void onCheckSuccess() {
+            if (running) {
+                failureCountSinceLastSuccess = 0;
+                scheduleNextWakeUp();
+            }
+        }
+
+        private class LeaderCheck {
+
+            private final DiscoveryNode leader;
+            private boolean inFlight = false;
+
+            LeaderCheck(DiscoveryNode leader) {
+                this.leader = leader;
+            }
+
+            void start() {
+                logger.trace("LeaderCheck: sending leader check to [{}]", leader);
+                assert inFlight == false;
+                inFlight = true;
+                futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
+
+                transport.sendLeaderCheckRequest(leader, new TransportResponseHandler<LeaderCheckResponse>() {
+                    @Override
+                    public void handleResponse(LeaderCheckResponse leaderCheckResponse) {
+                        logger.trace("LeaderCheck.handleResponse: received {} from [{}]", leaderCheckResponse, leader);
+                        inFlight = false;
+                        onCheckSuccess();
+
+                        final long leaderSlot = leaderCheckResponse.getSlot();
+                        if (leaderSlot > consensusState.firstUncommittedSlot()) {
+                            logger.trace("LeaderCheck.handleResponse: heartbeat for slot {} > local slot {}, starting lag detector",
+                                leaderSlot, consensusState.firstUncommittedSlot());
+                            futureExecutor.schedule(publishTimeout, () -> {
+                                if (leaderSlot > consensusState.firstUncommittedSlot()) {
+                                    logger.debug("LeaderCheck.handleResponse: lag detected: local slot {} < leader's slot {} after {}",
+                                        leaderSlot, consensusState.firstUncommittedSlot(), publishTimeout);
+                                    becomeCandidate("LeaderCheck.handleResponse");
+                                }
+                            });
+                        }                    }
+
+                    @Override
+                    public void handleException(TransportException exp) {
+                        logger.debug(
+                            (Supplier<?>) () -> new ParameterizedMessage(
+                                "LeaderCheck.handleException: received exception from [{}]", leader), exp);
+                        inFlight = false;
+                        onCheckFailure();
+                    }
+
+                    @Override
+                    public String executor() {
+                        return ThreadPool.Names.SAME;
+                    }
+                });
+            }
+
+            private void onTimeout() {
+                if (inFlight) {
+                    logger.debug("LeaderCheck.onTimeout: no response received from [{}]", leader);
+                    inFlight = false;
+                    onCheckFailure();
+                }
             }
         }
     }
