@@ -191,7 +191,9 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
         mode = Mode.LEADER;
 
         assert heartbeatScheduler.isPresent() == false;
-        heartbeatScheduler = Optional.of(new HeartbeatScheduler());
+        final HeartbeatScheduler heartbeatScheduler = new HeartbeatScheduler();
+        this.heartbeatScheduler = Optional.of(heartbeatScheduler);
+        heartbeatScheduler.start();
         stopSeekVotesScheduler();
         stopActiveFollowerFailureDetector();
         lastKnownLeader = Optional.of(localNode);
@@ -563,9 +565,10 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
             becomeLeader("handleVote");
 
             if (maybePublishRequest.isPresent()) {
-                publish(maybePublishRequest.get());
-                logger.debug("handleVote: republishing previously-published value");
+                final PublishRequest<T> publishRequest = maybePublishRequest.get();
+                logger.debug("handleVote: republishing previously-published value: {}", publishRequest);
                 republishing = true;
+                publish(publishRequest);
             } else {
                 assert consensusState.canHandleClientValue();
                 publish(consensusState.handleClientValue(noOpCreator.apply(consensusState.getCommittedState())));
@@ -949,11 +952,17 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
     private class HeartbeatScheduler {
 
-        private boolean running = true;
+        private boolean running = false;
         private final long term; // for assertions that a new term gets a new scheduler
 
         HeartbeatScheduler() {
             term = consensusState.getCurrentTerm();
+        }
+
+        void start() {
+            logger.trace("HeartbeatScheduler[{}].start(): starting", term);
+            assert running == false;
+            running = true;
             scheduleNextWakeUp();
         }
 
@@ -1022,9 +1031,14 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                                 @Override
                                 public void handleException(TransportException exp) {
-                                    logger.debug(
-                                        (Supplier<?>) () -> new ParameterizedMessage(
-                                            "Heartbeat.handleException: failed to get heartbeat from [{}]", n), exp);
+                                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                                        logger.debug("Heartbeat.handleException: failed to get heartbeat from [{}]: {}", n,
+                                            exp.getRootCause().getMessage());
+                                    } else {
+                                        logger.debug(
+                                            (Supplier<?>) () -> new ParameterizedMessage(
+                                                "Heartbeat.handleException: failed to get heartbeat from [{}]", n), exp);
+                                    }
                                     failedNodes.add(n);
                                     onPossibleCompletion();
                                 }
@@ -1169,9 +1183,13 @@ public class Legislator<T extends CommittedState> extends AbstractComponent {
 
                     @Override
                     public void handleException(TransportException exp) {
-                        logger.debug(
-                            (Supplier<?>) () -> new ParameterizedMessage(
-                                "LeaderCheck.handleException: received exception from [{}]", leader), exp);
+                        if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                            logger.debug("LeaderCheck.handleException: {}", exp.getRootCause().getMessage());
+                        } else {
+                            logger.debug(
+                                (Supplier<?>) () -> new ParameterizedMessage(
+                                    "LeaderCheck.handleException: received exception from [{}]", leader), exp);
+                        }
                         inFlight = false;
                         onCheckFailure();
                     }

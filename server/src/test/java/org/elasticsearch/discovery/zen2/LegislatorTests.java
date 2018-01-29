@@ -190,7 +190,7 @@ public class LegislatorTests extends ESTestCase {
 
     class Cluster {
         private final List<ClusterNode> clusterNodes;
-        private final List<PendingAction> pendingActions = new ArrayList<>();
+        private final List<InFlightMessage> inFlightMessages = new ArrayList<>();
         private long currentTimeMillis = 0L;
         private static final long DEFAULT_DELAY_VARIABILITY = 100L;
         private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
@@ -287,7 +287,7 @@ public class LegislatorTests extends ESTestCase {
 
             for (int iteration = 0; iteration < 10000; iteration++) {
                 try {
-                    if (pendingActions.size() > 0 && usually()) {
+                    if (inFlightMessages.size() > 0 && usually()) {
                         deliverRandomMessage();
                     } else if (rarely()) {
                         // send a client value to a random node, preferring leaders
@@ -360,105 +360,113 @@ public class LegislatorTests extends ESTestCase {
 
         private long delayVariability = DEFAULT_DELAY_VARIABILITY;
 
-        void sendTo(DiscoveryNode destination, Consumer<Legislator<ClusterState>> action) {
-            pendingActions.add(new PendingAction(() -> {
+        void sendFromTo(DiscoveryNode sender, DiscoveryNode destination, Consumer<Legislator<ClusterState>> action) {
+            final InFlightMessage inFlightMessage = new InFlightMessage(sender, destination, () -> {
                 for (final ClusterNode clusterNode : clusterNodes) {
-                    if (clusterNode.localNode == destination && clusterNode.isConnected) {
+                    if (clusterNode.localNode.equals(destination) && clusterNode.isConnected) {
                         action.accept(clusterNode.legislator);
                     }
                 }
-            }, destination));
+            });
+
+            if (inFlightMessage.isLocalAction() && randomBoolean()) {
+                // TODO be more sensitive about which local actions are run inline and which are deferred
+                inFlightMessage.run();
+            } else {
+                inFlightMessages.add(inFlightMessage);
+            }
         }
+
 
         void sendPublishRequestFrom(DiscoveryNode sender, DiscoveryNode destination, PublishRequest<ClusterState> publishRequest,
                                     TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     LegislatorPublishResponse publishResponse = e.handlePublishRequest(sender, publishRequest);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(publishResponse));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(publishResponse));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendHeartbeatRequestFrom(DiscoveryNode sender, DiscoveryNode destination, HeartbeatRequest heartbeatRequest,
                                       TransportResponseHandler<HeartbeatResponse> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     HeartbeatResponse heartbeatResponse = e.handleHeartbeatRequest(sender, heartbeatRequest);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(heartbeatResponse));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(heartbeatResponse));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendApplyCommitFrom(DiscoveryNode sender, DiscoveryNode destination, ApplyCommit applyCommit,
                                  TransportResponseHandler<TransportResponse.Empty> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     e.handleApplyCommit(sender, applyCommit);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendSeekVotesFrom(DiscoveryNode sender, DiscoveryNode destination, SeekVotes seekVotes,
                                TransportResponseHandler<OfferVote> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     OfferVote offerVote = e.handleSeekVotes(sender, seekVotes);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(offerVote));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(offerVote));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendStartVoteFrom(DiscoveryNode sender, DiscoveryNode destination, StartVoteRequest startVoteRequest,
                                TransportResponseHandler<Vote> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     Vote vote = e.handleStartVote(sender, startVoteRequest);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(vote));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(vote));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendPreVoteHandoverFrom(DiscoveryNode sender, DiscoveryNode destination) {
-            sendTo(destination, e -> e.handlePreVoteHandover(sender));
+            sendFromTo(sender, destination, e -> e.handlePreVoteHandover(sender));
         }
 
         void sendCatchUpFrom(DiscoveryNode sender, DiscoveryNode destination, CatchupRequest<ClusterState> catchUp,
                              TransportResponseHandler<PublishResponse> responseHandler) {
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     PublishResponse publishResponse = e.handleCatchUp(sender, catchUp);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(publishResponse));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(publishResponse));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
         void sendAbdicationFrom(DiscoveryNode sender, DiscoveryNode destination, long currentTerm) {
-            sendTo(destination, e -> e.handleAbdication(sender, currentTerm));
+            sendFromTo(sender, destination, e -> e.handleAbdication(sender, currentTerm));
         }
 
         void sendLeaderCheckRequestFrom(DiscoveryNode sender, DiscoveryNode destination,
                                         TransportResponseHandler<LeaderCheckResponse> responseHandler) {
 
-            sendTo(destination, e -> {
+            sendFromTo(sender, destination, e -> {
                 try {
                     LeaderCheckResponse response = e.handleLeaderCheckRequest(sender);
-                    sendTo(sender, e2 -> responseHandler.handleResponse(response));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(response));
                 } catch (Exception ex) {
-                    sendTo(sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
@@ -480,11 +488,11 @@ public class LegislatorTests extends ESTestCase {
 
         private void deliverNextMessage() {
             // TODO count message delays and assert bounds on this number
-            pendingActions.remove(0).run();
+            inFlightMessages.remove(0).run();
         }
 
         private void deliverNextMessageUntilQuiescent() {
-            while (pendingActions.size() > 0) {
+            while (inFlightMessages.size() > 0) {
                 try {
                     deliverNextMessage();
                 } catch (ConsensusMessageRejectedException ignored) {
@@ -495,8 +503,8 @@ public class LegislatorTests extends ESTestCase {
         }
 
         private void deliverRandomMessage() {
-            Runnable action = pendingActions.remove(randomInt(pendingActions.size() - 1));
-            if (usually()) {
+            InFlightMessage action = inFlightMessages.remove(randomInt(inFlightMessages.size() - 1));
+            if (usually() || action.isLocalAction()) {
                 action.run();
             }
         }
@@ -527,35 +535,48 @@ public class LegislatorTests extends ESTestCase {
             this.delayVariability = delayVariability;
         }
 
-        class PendingAction implements Runnable {
-            final Runnable action;
-            final DiscoveryNode actionNode;
+        class InFlightMessage implements Runnable {
+            private final DiscoveryNode sender;
+            private final DiscoveryNode destination;
+            private final Runnable doDelivery;
 
-            PendingAction(Runnable action, DiscoveryNode actionNode) {
-                this.action = action;
-                this.actionNode = actionNode;
+            InFlightMessage(DiscoveryNode sender, DiscoveryNode destination, Runnable doDelivery) {
+                this.sender = sender;
+                this.destination = destination;
+                this.doDelivery = doDelivery;
             }
 
             @Override
             public void run() {
-                action.run();
+                doDelivery.run();
             }
 
-            boolean scheduledFor(DiscoveryNode discoveryNode) {
-                return actionNode.equals(discoveryNode);
+            boolean hasDestination(DiscoveryNode discoveryNode) {
+                return destination.equals(discoveryNode);
+            }
+
+            boolean isLocalAction() {
+                return sender.equals(destination);
             }
         }
 
         class ClusterNode {
-            final DiscoveryNode localNode;
+            private final int index;
+            private final MockTransport transport;
+
             PersistedState<ClusterState> persistedState;
-            final MockTransport transport;
             Legislator<ClusterState> legislator;
             boolean isConnected = true;
+            DiscoveryNode localNode;
 
             ClusterNode(int index) {
-                localNode = new DiscoveryNode("node" + index, buildNewFakeTransportAddress(), Version.CURRENT);
+                this.index = index;
+                localNode = createDiscoveryNode();
                 transport = new MockTransport();
+            }
+
+            private DiscoveryNode createDiscoveryNode() {
+                return new DiscoveryNode("node" + this.index, buildNewFakeTransportAddress(), Version.CURRENT);
             }
 
             void initialise(NodeCollection initialVotingNodes) {
@@ -568,7 +589,8 @@ public class LegislatorTests extends ESTestCase {
             // TODO: have some tests that use the on-disk data for persistence across reboots.
             void reboot() {
                 tasks.removeIf(task -> task.scheduledFor(localNode));
-                pendingActions.removeIf(action -> action.scheduledFor(localNode));
+                inFlightMessages.removeIf(action -> action.hasDestination(localNode));
+                localNode = createDiscoveryNode();
                 legislator = createLegislator();
             }
 
