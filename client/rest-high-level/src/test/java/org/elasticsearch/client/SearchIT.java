@@ -34,6 +34,7 @@ import org.elasticsearch.action.search.MultiSearchResponse;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.SearchScrollRequest;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.query.MatchQueryBuilder;
@@ -65,6 +66,8 @@ import org.junit.Before;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.hamcrest.Matchers.both;
@@ -431,11 +434,52 @@ public class SearchIT extends ESRestHighLevelClientTestCase {
         }
     }
 
+    public void testSearchWithWeirdScriptFields() throws Exception {
+        HttpEntity entity = new NStringEntity("{ \"field\":\"value\"}", ContentType.APPLICATION_JSON);
+        client().performRequest("PUT", "test/type/1", Collections.emptyMap(), entity);
+        client().performRequest("POST", "/test/_refresh");
+
+        {
+            SearchRequest searchRequest = new SearchRequest("test").source(SearchSourceBuilder.searchSource()
+                    .scriptField("result", new Script("null")));
+            SearchResponse searchResponse = execute(searchRequest, highLevelClient()::search, highLevelClient()::searchAsync);
+            SearchHit searchHit = searchResponse.getHits().getAt(0);
+            List<Object> values = searchHit.getFields().get("result").getValues();
+            assertNotNull(values);
+            assertEquals(1, values.size());
+            assertNull(values.get(0));
+        }
+        {
+            SearchRequest searchRequest = new SearchRequest("test").source(SearchSourceBuilder.searchSource()
+                    .scriptField("result", new Script("new HashMap()")));
+            SearchResponse searchResponse = execute(searchRequest, highLevelClient()::search, highLevelClient()::searchAsync);
+            SearchHit searchHit = searchResponse.getHits().getAt(0);
+            List<Object> values = searchHit.getFields().get("result").getValues();
+            assertNotNull(values);
+            assertEquals(1, values.size());
+            assertThat(values.get(0), instanceOf(Map.class));
+            Map<?, ?> map = (Map<?, ?>) values.get(0);
+            assertEquals(0, map.size());
+        }
+        {
+            SearchRequest searchRequest = new SearchRequest("test").source(SearchSourceBuilder.searchSource()
+                    .scriptField("result", new Script("new String[]{}")));
+            SearchResponse searchResponse = execute(searchRequest, highLevelClient()::search, highLevelClient()::searchAsync);
+            SearchHit searchHit = searchResponse.getHits().getAt(0);
+            List<Object> values = searchHit.getFields().get("result").getValues();
+            assertNotNull(values);
+            assertEquals(1, values.size());
+            assertThat(values.get(0), instanceOf(List.class));
+            List<?> list = (List<?>) values.get(0);
+            assertEquals(0, list.size());
+        }
+    }
+
     public void testSearchScroll() throws Exception {
 
         for (int i = 0; i < 100; i++) {
             XContentBuilder builder = jsonBuilder().startObject().field("field", i).endObject();
-            HttpEntity entity = new NStringEntity(builder.string(), ContentType.APPLICATION_JSON);
+            HttpEntity entity = new NStringEntity(Strings.toString(builder), ContentType.APPLICATION_JSON);
             client().performRequest(HttpPut.METHOD_NAME, "test/type1/" + Integer.toString(i), Collections.emptyMap(), entity);
         }
         client().performRequest(HttpPost.METHOD_NAME, "/test/_refresh");

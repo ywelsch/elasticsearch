@@ -21,9 +21,10 @@ package org.elasticsearch.plugins;
 
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
+
 import org.apache.lucene.search.spell.LevensteinDistance;
 import org.apache.lucene.util.CollectionUtil;
-import org.apache.lucene.util.IOUtils;
+import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.Version;
 import org.elasticsearch.bootstrap.JarHell;
 import org.elasticsearch.cli.EnvironmentAwareCommand;
@@ -52,6 +53,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -60,13 +62,9 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
-import java.security.Permission;
-import java.security.PermissionCollection;
-import java.security.Permissions;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -221,17 +219,17 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
             throw new UserException(ExitCodes.USAGE, "plugin id is required");
         }
 
-        Path pluginZip = download(terminal, pluginId, env.tmpFile());
+        Path pluginZip = download(terminal, pluginId, env.tmpFile(), env.pluginsFile());
         Path extractedZip = unzip(pluginZip, env.pluginsFile());
         install(terminal, isBatch, extractedZip, env);
     }
 
     /** Downloads the plugin and returns the file it was downloaded to. */
-    private Path download(Terminal terminal, String pluginId, Path tmpDir) throws Exception {
+    private Path download(Terminal terminal, String pluginId, Path tmpDir, Path pluginsDir) throws Exception {
         if (OFFICIAL_PLUGINS.contains(pluginId)) {
             final String url = getElasticUrl(terminal, getStagingHash(), Version.CURRENT, pluginId, Platforms.PLATFORM_NAME);
             terminal.println("-> Downloading " + pluginId + " from elastic");
-            return downloadZipAndChecksum(terminal, url, tmpDir, false);
+            return downloadZipAndChecksum(terminal, url, tmpDir, pluginsDir, false);
         }
 
         // now try as maven coordinates, a valid URL would only have a colon and slash
@@ -239,7 +237,7 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
         if (coordinates.length == 3 && pluginId.contains("/") == false && pluginId.startsWith("file:") == false) {
             String mavenUrl = getMavenUrl(terminal, coordinates, Platforms.PLATFORM_NAME);
             terminal.println("-> Downloading " + pluginId + " from maven central");
-            return downloadZipAndChecksum(terminal, mavenUrl, tmpDir, true);
+            return downloadZipAndChecksum(terminal, mavenUrl, tmpDir, pluginsDir, true);
         }
 
         // fall back to plain old URL
@@ -253,7 +251,7 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
             throw new UserException(ExitCodes.USAGE, msg);
         }
         terminal.println("-> Downloading " + URLDecoder.decode(pluginId, "UTF-8"));
-        return downloadZip(terminal, pluginId, tmpDir);
+        return downloadZip(terminal, pluginId, tmpDir, pluginsDir);
     }
 
     // pkg private so tests can override
@@ -327,9 +325,17 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
     /** Downloads a zip from the url, into a temp file under the given temp dir. */
     // pkg private for tests
     @SuppressForbidden(reason = "We use getInputStream to download plugins")
-    Path downloadZip(Terminal terminal, String urlString, Path tmpDir) throws IOException {
+    Path downloadZip(Terminal terminal, String urlString, Path tmpDir, Path pluginsDir) throws IOException {
         terminal.println(VERBOSE, "Retrieving zip from " + urlString);
         URL url = new URL(urlString);
+        if (url.getProtocol().equals("file")) {
+            Path pluginsFile = Paths.get(url.getFile());
+            if (pluginsFile.startsWith(pluginsDir)) {
+                throw new IllegalStateException("Installation failed! " +
+                    "Make sure the plugins directory [" + pluginsDir + "] can not contain the plugin distribution [" +
+                    pluginsFile + "]; move the distribution to an alternate location!");
+            }
+        }
         Path zip = Files.createTempFile(tmpDir, null, ".zip");
         URLConnection urlConnection = url.openConnection();
         urlConnection.addRequestProperty("User-Agent", "elasticsearch-plugin-installer");
@@ -378,8 +384,9 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
     /** Downloads a zip from the url, as well as a SHA512 (or SHA1) checksum, and checks the checksum. */
     // pkg private for tests
     @SuppressForbidden(reason = "We use openStream to download plugins")
-    private Path downloadZipAndChecksum(Terminal terminal, String urlString, Path tmpDir, boolean allowSha1) throws Exception {
-        Path zip = downloadZip(terminal, urlString, tmpDir);
+    private Path downloadZipAndChecksum(Terminal terminal, String urlString, Path tmpDir, Path pluginsDir, boolean allowSha1)
+            throws Exception {
+        Path zip = downloadZip(terminal, urlString, tmpDir, pluginsDir);
         pathsToDeleteOnShutdown.add(zip);
         String checksumUrlString = urlString + ".sha512";
         URL checksumUrl = openUrl(checksumUrlString);
@@ -465,17 +472,15 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
         final Path target = stagingDirectory(pluginsDir);
         pathsToDeleteOnShutdown.add(target);
 
-        boolean hasEsDir = false;
         try (ZipInputStream zipInput = new ZipInputStream(Files.newInputStream(zip))) {
             ZipEntry entry;
             byte[] buffer = new byte[8192];
             while ((entry = zipInput.getNextEntry()) != null) {
-                if (entry.getName().startsWith("elasticsearch/") == false) {
-                    // only extract the elasticsearch directory
-                    continue;
+                if (entry.getName().startsWith("elasticsearch/")) {
+                    throw new UserException(PLUGIN_MALFORMED, "This plugin was built with an older plugin structure." +
+                        " Contact the plugin author to remove the intermediate \"elasticsearch\" directory within the plugin zip.");
                 }
-                hasEsDir = true;
-                Path targetFile = target.resolve(entry.getName().substring("elasticsearch/".length()));
+                Path targetFile = target.resolve(entry.getName());
 
                 // Using the entry name as a path can result in an entry outside of the plugin dir,
                 // either if the name starts with the root of the filesystem, or it is a relative
@@ -502,13 +507,11 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
                 }
                 zipInput.closeEntry();
             }
+        } catch (UserException e) {
+            IOUtils.rm(target);
+            throw e;
         }
         Files.delete(zip);
-        if (hasEsDir == false) {
-            IOUtils.rm(target);
-            throw new UserException(PLUGIN_MALFORMED,
-                                    "`elasticsearch` directory is missing in the plugin zip");
-        }
         return target;
     }
 
@@ -572,6 +575,7 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
     /** Load information about the plugin, and verify it can be installed with no errors. */
     private PluginInfo loadPluginInfo(Terminal terminal, Path pluginRoot, boolean isBatch, Environment env) throws Exception {
         final PluginInfo info = PluginInfo.readFromProperties(pluginRoot);
+        PluginsService.verifyCompatibility(info);
 
         // checking for existing version of the plugin
         verifyPluginName(env.pluginsFile(), info.getName(), pluginRoot);
@@ -656,6 +660,7 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
                     continue;
                 }
                 final PluginInfo info = PluginInfo.readFromProperties(plugin);
+                PluginsService.verifyCompatibility(info);
                 verifyPluginName(env.pluginsFile(), info.getName(), plugin);
                 pluginPaths.add(plugin);
             }
@@ -691,12 +696,6 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
             }
         }
         movePlugin(tmpRoot, destination);
-        for (PluginInfo info : pluginInfos) {
-            if (info.requiresKeystore()) {
-                createKeystoreIfNeeded(terminal, env, info);
-                break;
-            }
-        }
         String[] plugins = pluginInfos.stream().map(PluginInfo::getName).toArray(String[]::new);
         terminal.println("-> Installed " + metaInfo.getName() + " with: " + Strings.arrayToCommaDelimitedString(plugins));
     }
@@ -721,9 +720,6 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
         installPluginSupportFiles(info, tmpRoot, env.binFile().resolve(info.getName()),
                                   env.configFile().resolve(info.getName()), deleteOnFailure);
         movePlugin(tmpRoot, destination);
-        if (info.requiresKeystore()) {
-            createKeystoreIfNeeded(terminal, env, info);
-        }
         terminal.println("-> Installed " + info.getName());
     }
 
@@ -827,15 +823,6 @@ class InstallPluginCommand extends EnvironmentAwareCommand {
             }
         }
         IOUtils.rm(tmpConfigDir); // clean up what we just copied
-    }
-
-    private void createKeystoreIfNeeded(Terminal terminal, Environment env, PluginInfo info) throws Exception {
-        KeyStoreWrapper keystore = KeyStoreWrapper.load(env.configFile());
-        if (keystore == null) {
-            terminal.println("Elasticsearch keystore is required by plugin [" + info.getName() + "], creating...");
-            keystore = KeyStoreWrapper.create();
-            keystore.save(env.configFile(), new char[0]);
-        }
     }
 
     private static void setOwnerGroup(final Path path, final PosixFileAttributes attributes) throws IOException {
