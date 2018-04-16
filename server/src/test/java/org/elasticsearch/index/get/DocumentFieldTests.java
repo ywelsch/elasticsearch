@@ -26,9 +26,8 @@ import org.elasticsearch.common.document.DocumentField;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentType;
-import org.elasticsearch.index.mapper.ParentFieldMapper;
+import org.elasticsearch.index.mapper.IdFieldMapper;
 import org.elasticsearch.index.mapper.RoutingFieldMapper;
-import org.elasticsearch.index.mapper.UidFieldMapper;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.RandomObjects;
 
@@ -55,7 +54,6 @@ public class DocumentFieldTests extends ESTestCase {
                 DocumentFieldTests::mutateDocumentField);
     }
 
-    @AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/29080")
     public void testToAndFromXContent() throws Exception {
         XContentType xContentType = randomFrom(XContentType.values());
         Tuple<DocumentField, DocumentField> tuple = randomDocumentField(xContentType);
@@ -101,7 +99,7 @@ public class DocumentFieldTests extends ESTestCase {
 
     public static Tuple<DocumentField, DocumentField> randomDocumentField(XContentType xContentType) {
         if (randomBoolean()) {
-            String fieldName = randomFrom(ParentFieldMapper.NAME, RoutingFieldMapper.NAME, UidFieldMapper.NAME);
+            String fieldName = randomFrom(RoutingFieldMapper.NAME);
             DocumentField documentField = new DocumentField(fieldName, Collections.singletonList(randomAlphaOfLengthBetween(3, 10)));
             return Tuple.tuple(documentField, documentField);
         }
