@@ -20,27 +20,25 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.elasticsearch.Version;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
-import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
-import org.elasticsearch.discovery.zen2.ConsensusStateTests.ClusterState;
 import org.elasticsearch.discovery.zen2.Legislator.Transport;
 import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
-import org.elasticsearch.discovery.zen2.Messages.CatchupRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
 import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
-import org.elasticsearch.discovery.zen2.Messages.OfferVote;
+import org.elasticsearch.discovery.zen2.Messages.OfferJoin;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
-import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
-import org.elasticsearch.discovery.zen2.Messages.SeekVotes;
-import org.elasticsearch.discovery.zen2.Messages.StartVoteRequest;
-import org.elasticsearch.discovery.zen2.Messages.Vote;
+import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
+import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.transport.TransportException;
@@ -53,12 +51,11 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
-import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithValue;
-import static org.elasticsearch.discovery.zen2.ConsensusStateTests.diffWithVotingNodes;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_DELAY_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_TIMEOUT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING;
@@ -73,18 +70,18 @@ public class LegislatorTests extends ESTestCase {
         cluster.runRandomly(true);
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
-        final long stabilisedSlot = leader.legislator.getCommittedState().getSlot();
+        final long stabilisedVersion = leader.legislator.getLastAcceptedState().getVersion();
 
-        final int finalValue = randomInt();
+        final long finalValue = randomInt();
         logger.info("--> proposing final value [{}] to [{}]", finalValue, leader.getId());
-        leader.legislator.handleClientValue(diffWithValue(leader.legislator.getCommittedState(), finalValue));
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             final String legislatorId = clusterNode.getId();
-            final ClusterState committedState = clusterNode.legislator.getCommittedState();
-            assertThat(legislatorId + " is at the next slot", committedState.getSlot(), is(stabilisedSlot + 1));
-            assertThat(legislatorId + " has the right value", committedState.getValue(), is(finalValue));
+            final ClusterState committedState = clusterNode.legislator.getLastAcceptedState();
+            assertThat(legislatorId + " is at the next version", committedState.getVersion(), is(stabilisedVersion + 1));
+            assertThat(legislatorId + " has the right value", ConsensusStateTests.value(committedState), is(finalValue));
         }
     }
 
@@ -94,7 +91,7 @@ public class LegislatorTests extends ESTestCase {
         cluster.runRandomly(true);
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
-        final long stabilisedSlot = leader.legislator.getCommittedState().getSlot();
+        final long stabilisedVersion = leader.legislator.getLastAcceptedState().getVersion();
 
         final ClusterNode newLeader = cluster.randomLegislator();
         logger.info("--> abdicating from [{}] to [{}]", leader.getId(), newLeader.getId());
@@ -103,8 +100,8 @@ public class LegislatorTests extends ESTestCase {
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             final String legislatorId = clusterNode.getId();
-            final Legislator<ClusterState> legislator = clusterNode.legislator;
-            assertThat(legislatorId + " is at the next slot", legislator.getCommittedState().getSlot(), is(stabilisedSlot + 1));
+            final Legislator legislator = clusterNode.legislator;
+            assertThat(legislatorId + " is at the next version", legislator.getLastAcceptedState().getVersion(), is(stabilisedVersion + 1));
             if (clusterNode == newLeader) {
                 assertThat(legislatorId + " is the leader", legislator.getMode(), is(Legislator.Mode.LEADER));
             } else {
@@ -120,12 +117,10 @@ public class LegislatorTests extends ESTestCase {
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
 
-        final NodeCollection allNodes = new NodeCollection();
-        for (ClusterNode clusterNode : cluster.clusterNodes) {
-            allNodes.add(clusterNode.localNode);
-        }
+        final VotingConfiguration allNodes = new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
 
-        leader.legislator.handleClientValue(diffWithVotingNodes(leader.legislator.getCommittedState(), allNodes));
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         leader.isConnected = false;
@@ -146,14 +141,12 @@ public class LegislatorTests extends ESTestCase {
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
 
-        final NodeCollection allNodes = new NodeCollection();
-        for (ClusterNode clusterNode : cluster.clusterNodes) {
-            allNodes.add(clusterNode.localNode);
-        }
+        final VotingConfiguration allNodes = new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.legislator.handleClientValue(diffWithVotingNodes(leader.legislator.getCommittedState(), allNodes));
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -192,6 +185,7 @@ public class LegislatorTests extends ESTestCase {
         private final List<ClusterNode> clusterNodes;
         private final List<InFlightMessage> inFlightMessages = new ArrayList<>();
         private long currentTimeMillis = 0L;
+        Map<Long, ClusterState> committedStatesByVersion = new HashMap<>();
         private static final long DEFAULT_DELAY_VARIABILITY = 100L;
         private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
 
@@ -203,7 +197,7 @@ public class LegislatorTests extends ESTestCase {
                 clusterNodes.add(new ClusterNode(i));
             }
 
-            final NodeCollection initialConfiguration = randomConfiguration();
+            final VotingConfiguration initialConfiguration = randomConfiguration();
             logger.info("--> initial configuration: {}", initialConfiguration);
             for (final ClusterNode clusterNode : clusterNodes) {
                 clusterNode.initialise(initialConfiguration);
@@ -243,12 +237,12 @@ public class LegislatorTests extends ESTestCase {
         }
 
         /**
-         * Assert that there is a unique leader node (in mode LEADER/INCUMBENT) and all other nodes are in mode FOLLOWER (if isConnected)
+         * Assert that there is a unique leader node (in mode LEADER) and all other nodes are in mode FOLLOWER (if isConnected)
          * or CANDIDATE (if not isConnected). This is the expected steady state for a cluster in a network that's behaving normally.
          */
         private void assertUniqueLeaderAndExpectedModes() {
             final ClusterNode leader = getAnyLeader();
-            final Matcher<Long> isSameAsLeaderSlot = is(leader.legislator.getCommittedState().getSlot());
+            final Matcher<Long> isSameAsLeaderVersion = is(leader.legislator.getLastAcceptedState().getVersion());
             for (final ClusterNode clusterNode : clusterNodes) {
                 if (clusterNode == leader) {
                     continue;
@@ -260,8 +254,8 @@ public class LegislatorTests extends ESTestCase {
                     assertThat(legislatorId + " is a candidate", clusterNode.legislator.getMode(), is(Legislator.Mode.CANDIDATE));
                 } else {
                     assertThat(legislatorId + " is a follower", clusterNode.legislator.getMode(), is(Legislator.Mode.FOLLOWER));
-                    assertThat(legislatorId + " is at the same slot as the leader",
-                        clusterNode.legislator.getCommittedState().getSlot(), isSameAsLeaderSlot);
+                    assertThat(legislatorId + " is at the same version as the leader",
+                        clusterNode.legislator.getLastAcceptedState().getVersion(), isSameAsLeaderVersion);
                 }
             }
         }
@@ -294,14 +288,15 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
                         logger.info("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
-                        clusterNode.legislator.handleClientValue(diffWithValue(clusterNode.legislator.getCommittedState(), newValue));
+                        clusterNode.legislator.handleClientValue(
+                            ConsensusStateTests.nextStateWithValue(clusterNode.legislator.getLastAcceptedState(), newValue));
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
-                        final NodeCollection newConfig = randomConfiguration();
+                        final VotingConfiguration newConfig = randomConfiguration();
                         logger.info("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
                         clusterNode.legislator.handleClientValue(
-                            diffWithVotingNodes(clusterNode.legislator.getCommittedState(), newConfig));
+                            ConsensusStateTests.nextStateWithConfig(clusterNode.legislator.getLastAcceptedState(), newConfig));
                     } else if (rarely()) {
                         // reboot random node
                         final ClusterNode clusterNode = randomLegislator();
@@ -360,7 +355,7 @@ public class LegislatorTests extends ESTestCase {
 
         private long delayVariability = DEFAULT_DELAY_VARIABILITY;
 
-        void sendFromTo(DiscoveryNode sender, DiscoveryNode destination, Consumer<Legislator<ClusterState>> action) {
+        void sendFromTo(DiscoveryNode sender, DiscoveryNode destination, Consumer<Legislator> action) {
             final InFlightMessage inFlightMessage = new InFlightMessage(sender, destination, () -> {
                 for (final ClusterNode clusterNode : clusterNodes) {
                     if (clusterNode.localNode.equals(destination) && clusterNode.isConnected) {
@@ -378,7 +373,7 @@ public class LegislatorTests extends ESTestCase {
         }
 
 
-        void sendPublishRequestFrom(DiscoveryNode sender, DiscoveryNode destination, PublishRequest<ClusterState> publishRequest,
+        void sendPublishRequestFrom(DiscoveryNode sender, DiscoveryNode destination, PublishRequest publishRequest,
                                     TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
@@ -414,44 +409,32 @@ public class LegislatorTests extends ESTestCase {
             });
         }
 
-        void sendSeekVotesFrom(DiscoveryNode sender, DiscoveryNode destination, SeekVotes seekVotes,
-                               TransportResponseHandler<OfferVote> responseHandler) {
+        void sendSeekJoinsFrom(DiscoveryNode sender, DiscoveryNode destination, SeekJoins seekJoins,
+                               TransportResponseHandler<OfferJoin> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    OfferVote offerVote = e.handleSeekVotes(sender, seekVotes);
-                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(offerVote));
+                    OfferJoin offerJoin = e.handleSeekJoins(sender, seekJoins);
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(offerJoin));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
-        void sendStartVoteFrom(DiscoveryNode sender, DiscoveryNode destination, StartVoteRequest startVoteRequest,
-                               TransportResponseHandler<Vote> responseHandler) {
+        void sendStartJoinFrom(DiscoveryNode sender, DiscoveryNode destination, StartJoinRequest startJoinRequest,
+                               TransportResponseHandler<Join> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    Vote vote = e.handleStartVote(sender, startVoteRequest);
-                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(vote));
+                    Messages.Join join = e.handleStartJoin(sender, startJoinRequest);
+                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(join));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
             });
         }
 
-        void sendPreVoteHandoverFrom(DiscoveryNode sender, DiscoveryNode destination) {
-            sendFromTo(sender, destination, e -> e.handlePreVoteHandover(sender));
-        }
-
-        void sendCatchUpFrom(DiscoveryNode sender, DiscoveryNode destination, CatchupRequest<ClusterState> catchUp,
-                             TransportResponseHandler<PublishResponse> responseHandler) {
-            sendFromTo(sender, destination, e -> {
-                try {
-                    PublishResponse publishResponse = e.handleCatchUp(sender, catchUp);
-                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(publishResponse));
-                } catch (Exception ex) {
-                    sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
-                }
-            });
+        void sendPreJoinHandoverFrom(DiscoveryNode sender, DiscoveryNode destination) {
+            sendFromTo(sender, destination, e -> e.handlePreJoinHandover(sender));
         }
 
         void sendAbdicationFrom(DiscoveryNode sender, DiscoveryNode destination, long currentTerm) {
@@ -472,15 +455,15 @@ public class LegislatorTests extends ESTestCase {
         }
 
         private void assertConsistentStates() {
-            Map<Long, ClusterState> statesBySlot = new HashMap<>();
             for (final ClusterNode clusterNode : clusterNodes) {
-                ClusterState committedState = clusterNode.legislator.getCommittedState();
-                ClusterState storedState = statesBySlot.get(committedState.getSlot());
-                if (storedState == null) {
-                    statesBySlot.put(committedState.getSlot(), committedState);
-                } else {
-                    assertEquals(committedState.getVotingNodes(), storedState.getVotingNodes());
-                    assertEquals(committedState.getValue(), storedState.getValue());
+                Optional<ClusterState> committedState = clusterNode.legislator.getLastCommittedState();
+                if (committedState.isPresent()) {
+                    ClusterState storedState = committedStatesByVersion.get(committedState.get().getVersion());
+                    if (storedState == null) {
+                        committedStatesByVersion.put(committedState.get().getVersion(), committedState.get());
+                    } else {
+                        assertEquals(ConsensusStateTests.value(committedState.get()), ConsensusStateTests.value(storedState));
+                    }
                 }
                 clusterNode.legislator.invariant();
             }
@@ -509,12 +492,9 @@ public class LegislatorTests extends ESTestCase {
             }
         }
 
-        private NodeCollection randomConfiguration() {
-            final NodeCollection configuration = new NodeCollection();
-            for (final ClusterNode clusterNode : randomSubsetOf(randomIntBetween(1, clusterNodes.size()), clusterNodes)) {
-                configuration.add(clusterNode.localNode);
-            }
-            return configuration;
+        private VotingConfiguration randomConfiguration() {
+            return new VotingConfiguration(randomSubsetOf(randomIntBetween(1, clusterNodes.size()), clusterNodes)
+                .stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
         }
 
         private ClusterNode randomLegislator() {
@@ -564,8 +544,8 @@ public class LegislatorTests extends ESTestCase {
             private final int index;
             private final MockTransport transport;
 
-            PersistedState<ClusterState> persistedState;
-            Legislator<ClusterState> legislator;
+            PersistedState persistedState;
+            Legislator legislator;
             boolean isConnected = true;
             DiscoveryNode localNode;
 
@@ -579,10 +559,11 @@ public class LegislatorTests extends ESTestCase {
                 return new DiscoveryNode("node" + this.index, buildNewFakeTransportAddress(), Version.CURRENT);
             }
 
-            void initialise(NodeCollection initialVotingNodes) {
+            void initialise(VotingConfiguration initialConfiguration) {
                 assert persistedState == null;
                 assert legislator == null;
-                persistedState = new BasePersistedState<>(0L, new ClusterState(-1, initialVotingNodes, 0));
+                persistedState = new BasePersistedState(0L,
+                    ConsensusStateTests.clusterState(0L, 0L, initialConfiguration, initialConfiguration, 42L));
                 legislator = createLegislator();
             }
 
@@ -594,14 +575,13 @@ public class LegislatorTests extends ESTestCase {
                 legislator = createLegislator();
             }
 
-            private Legislator<ClusterState> createLegislator() {
+            private Legislator createLegislator() {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
-                return new Legislator<>(settings, persistedState, transport, localNode,
+                return new Legislator(settings, persistedState, transport, localNode,
                     new CurrentTimeSupplier(), new FutureExecutor(),
-                    () -> clusterNodes.stream().map(ClusterNode::getLocalNode).collect(Collectors.toList()),
-                    ConsensusStateTests::noOpDiff);
+                    () -> clusterNodes.stream().map(ClusterNode::getLocalNode).collect(Collectors.toList()));
             }
 
             String getId() {
@@ -626,10 +606,10 @@ public class LegislatorTests extends ESTestCase {
                 }
             }
 
-            private class MockTransport implements Transport<ClusterState> {
+            private class MockTransport implements Transport {
 
                 @Override
-                public void sendPublishRequest(DiscoveryNode destination, PublishRequest<ClusterState> publishRequest,
+                public void sendPublishRequest(DiscoveryNode destination, PublishRequest publishRequest,
                                                TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
                     if (isConnected) {
                         sendPublishRequestFrom(localNode, destination, publishRequest, responseHandler);
@@ -653,33 +633,25 @@ public class LegislatorTests extends ESTestCase {
                 }
 
                 @Override
-                public void sendSeekVotes(DiscoveryNode destination, SeekVotes seekVotes,
-                                          TransportResponseHandler<OfferVote> responseHandler) {
+                public void sendSeekJoins(DiscoveryNode destination, SeekJoins seekJoins,
+                                          TransportResponseHandler<OfferJoin> responseHandler) {
                     if (isConnected) {
-                        sendSeekVotesFrom(localNode, destination, seekVotes, responseHandler);
+                        sendSeekJoinsFrom(localNode, destination, seekJoins, responseHandler);
                     }
                 }
 
                 @Override
-                public void sendStartVote(DiscoveryNode destination, StartVoteRequest startVoteRequest,
-                                          TransportResponseHandler<Vote> responseHandler) {
+                public void sendStartJoin(DiscoveryNode destination, StartJoinRequest startJoinRequest,
+                                          TransportResponseHandler<Join> responseHandler) {
                     if (isConnected) {
-                        sendStartVoteFrom(localNode, destination, startVoteRequest, responseHandler);
+                        sendStartJoinFrom(localNode, destination, startJoinRequest, responseHandler);
                     }
                 }
 
                 @Override
-                public void sendPreVoteHandover(DiscoveryNode destination) {
+                public void sendPreJoinHandover(DiscoveryNode destination) {
                     if (isConnected) {
-                        sendPreVoteHandoverFrom(localNode, destination);
-                    }
-                }
-
-                @Override
-                public void sendCatchUp(DiscoveryNode destination, CatchupRequest<ClusterState> catchUp,
-                                        TransportResponseHandler<PublishResponse> responseHandler) {
-                    if (isConnected) {
-                        sendCatchUpFrom(localNode, destination, catchUp, responseHandler);
+                        sendPreJoinHandoverFrom(localNode, destination);
                     }
                 }
 

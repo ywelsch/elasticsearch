@@ -25,14 +25,17 @@ import org.apache.lucene.index.IndexFormatTooOldException;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.InputStreamDataInput;
 import org.apache.lucene.store.OutputStreamDataOutput;
-import org.apache.lucene.util.IOUtils;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.Diff;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.bytes.ReleasablePagedBytesReference;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.io.Channels;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
+import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
+import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.ReleasableBytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -42,6 +45,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
 import org.elasticsearch.index.translog.BufferedChecksumStreamInput;
@@ -62,11 +66,10 @@ import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-public class ConsensusStorage<T extends ConsensusState.CommittedState> extends AbstractComponent implements PersistedState<T>, Closeable {
+public class ConsensusStorage extends AbstractComponent implements PersistedState, Closeable {
 
     public static final int VERSION = 1;
     public static final String LOG_CODEC = "cslog";
@@ -79,15 +82,17 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         Setting.byteSizeSetting("discovery.zen2.retention.size", new ByteSizeValue(128, ByteSizeUnit.MB), Setting.Property.NodeScope);
 
     private final Path path;
+    private final DiscoveryNode localNode;
     private final BigArrays bigArrays = BigArrays.NON_RECYCLING_INSTANCE;
 
-    private PersistedState<T> persistedState;
+    private PersistedState persistedState;
     private Writer writer;
     private boolean closed = false;
 
-    public ConsensusStorage(Settings settings, Path path) {
+    public ConsensusStorage(Settings settings, Path path, DiscoveryNode localNode) {
         super(settings);
         this.path = path;
+        this.localNode = localNode;
     }
 
     public Path getPath() {
@@ -99,11 +104,11 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         return Files.exists(path.resolve(CHECKPOINT_FILE_NAME));
     }
 
-    public void createFreshStore(long term, T clusterState) {
+    public void createFreshStore(long term, ClusterState clusterState) {
         ensureOpen();
         assert hasStore() == false;
         try {
-            persistedState = new BasePersistedState<>(term, clusterState);
+            persistedState = new BasePersistedState(term, clusterState);
             createFreshGeneration(clusterState);
             writeCheckpoint(persistedState, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
         } catch (Exception e) {
@@ -112,11 +117,11 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    public void recoverFromExistingStore(Writeable.Reader<T> reader, Writeable.Reader<Diff<T>> diffReader) {
+    public void recoverFromExistingStore(NamedWriteableRegistry registry) {
         ensureOpen();
         try {
             final Checkpoint checkpoint = Checkpoint.read(path.resolve(CHECKPOINT_FILE_NAME));
-            persistedState = new Reader<T>(path, checkpoint).recover(getChannelFactory(), reader, diffReader);
+            persistedState = new Reader(path, checkpoint, registry).recover(getChannelFactory(), localNode);
             /* Clean up previous failures only after we've successfully recovered.
              *
              * There might be a dangling log file from the previous generation (n - 1) if we crashed just after
@@ -141,7 +146,7 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    private void writeCheckpoint(PersistedState<T> persistedState, OpenOption... extraOptions) {
+    private void writeCheckpoint(PersistedState persistedState, OpenOption... extraOptions) {
         try {
             Checkpoint.write(getChannelFactory(), path.resolve(CHECKPOINT_FILE_NAME),
                 new Checkpoint(writer.generation, writer.getCurrentOffset(), persistedState.getCurrentTerm()),
@@ -159,11 +164,11 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         return writer.generation;
     }
 
-    private void createFreshGeneration(T clusterState) {
+    private void createFreshGeneration(ClusterState clusterState) {
         try {
             final long nextGeneration = writer == null ? 0L : writer.generation + 1;
             writer = new Writer(path, getChannelFactory(), nextGeneration, 0L);
-            try (ReleasablePagedBytesReference bytes = serialize(new FullClusterState<>(clusterState))) {
+            try (ReleasablePagedBytesReference bytes = serialize(new FullClusterState(clusterState))) {
                 writer.add(bytes);
             }
             IOUtils.fsync(path, true);
@@ -187,40 +192,32 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
     @Override
     public void setCurrentTerm(long term) {
         ensureOpen();
-        PersistedState<T> newPersistedState = new BasePersistedState<>(persistedState);
+        PersistedState newPersistedState = new BasePersistedState(persistedState);
         newPersistedState.setCurrentTerm(term);
         writeCheckpoint(newPersistedState, StandardOpenOption.WRITE);
         this.persistedState = newPersistedState;
     }
 
     @Override
-    public void setCommittedState(T committedState) {
+    public void setLastAcceptedState(ClusterState acceptedState) {
         ensureOpen();
-        PersistedState<T> newPersistedState = new BasePersistedState<>(persistedState);
-        newPersistedState.setCommittedState(committedState);
-        rollOver(newPersistedState);
+        PersistedState newPersistedState = new BasePersistedState(persistedState);
+        newPersistedState.setLastAcceptedState(acceptedState);
+        ClusterDiff diff = new ClusterDiff(acceptedState.diff(persistedState.getLastAcceptedState()));
+        appendOrRollover(newPersistedState, diff);
         this.persistedState = newPersistedState;
     }
 
     @Override
-    public void setAcceptedState(ConsensusState.AcceptedState<T> acceptedState) {
+    public void markLastAcceptedConfigAsCommitted() {
         ensureOpen();
-        PersistedState<T> newPersistedState = new BasePersistedState<>(persistedState);
-        newPersistedState.setAcceptedState(acceptedState);
-        appendOrRollover(newPersistedState, new ClusterDiff<>(acceptedState));
+        PersistedState newPersistedState = new BasePersistedState(persistedState);
+        newPersistedState.markLastAcceptedConfigAsCommitted();
+        appendOrRollover(newPersistedState, new Commit());
         this.persistedState = newPersistedState;
     }
 
-    @Override
-    public void markLastAcceptedStateAsCommitted() {
-        ensureOpen();
-        PersistedState<T> newPersistedState = new BasePersistedState<>(persistedState);
-        newPersistedState.markLastAcceptedStateAsCommitted();
-        appendOrRollover(newPersistedState, new Commit<>());
-        this.persistedState = newPersistedState;
-    }
-
-    private void appendOrRollover(PersistedState<T> persistedState, Entry<T> entry) {
+    private void appendOrRollover(PersistedState persistedState, Entry entry) {
         boolean rollOver = false;
         try (ReleasablePagedBytesReference bytes = serialize(entry)) {
             ByteSizeValue maxSize = CS_LOG_RETENTION_SIZE_SETTING.get(settings);
@@ -245,15 +242,10 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    private void rollOver(PersistedState<T> persistedState) {
+    private void rollOver(PersistedState persistedState) {
         try {
             writer.close();
-            createFreshGeneration(persistedState.getCommittedState());
-            if (persistedState.getAcceptedState().isPresent()) {
-                try (ReleasablePagedBytesReference bytes = serialize(new ClusterDiff<>(persistedState.getAcceptedState().get()))) {
-                    writer.add(bytes);
-                }
-            }
+            createFreshGeneration(persistedState.getLastAcceptedState());
             writeCheckpoint(persistedState, StandardOpenOption.WRITE);
             Files.delete(path.resolve(logFileName(writer.generation - 1)));
         } catch (IOException e) {
@@ -271,13 +263,8 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
     }
 
     @Override
-    public T getCommittedState() {
-        return persistedState.getCommittedState();
-    }
-
-    @Override
-    public Optional<ConsensusState.AcceptedState<T>> getAcceptedState() {
-        return persistedState.getAcceptedState();
+    public ClusterState getLastAcceptedState() {
+        return persistedState.getLastAcceptedState();
     }
 
     boolean isOpen() {
@@ -388,35 +375,37 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    public static class Reader<T extends ConsensusState.CommittedState> {
+    public static class Reader {
 
         private final Checkpoint checkpoint;
         private final Path path;
+        private final NamedWriteableRegistry registry;
 
         private long currentOffset;
         private long firstOperationOffset;
         private FileChannel channel;
 
-        public Reader(Path path, Checkpoint checkpoint) {
+        public Reader(Path path, Checkpoint checkpoint, NamedWriteableRegistry registry) {
             this.path = path;
             this.checkpoint = checkpoint;
+            this.registry = registry;
         }
 
-        private PersistedState<T> recover(ChannelFactory channelFactory, Writeable.Reader<T> reader,
-                                          Writeable.Reader<Diff<T>> diffReader) throws IOException {
-            final AtomicReference<PersistedState<T>> persistedState = new AtomicReference<>();
+        private PersistedState recover(ChannelFactory channelFactory, DiscoveryNode localNode) throws IOException {
+            final AtomicReference<PersistedState> persistedState = new AtomicReference<>();
             currentOffset = checkpoint.offset;
-            final Consumer<Entry<T>> stateRecovery = entry -> {
+            final Consumer<Entry> stateRecovery = entry -> {
                 if (persistedState.get() == null) {
                     assert entry instanceof FullClusterState;
                     persistedState.set(
-                        new BasePersistedState<>(checkpoint.term, ((FullClusterState<T>) entry).clusterState));
+                        new BasePersistedState(checkpoint.term, ((FullClusterState) entry).clusterState));
                 } else {
                     assert entry instanceof FullClusterState == false;
                     if (entry instanceof ClusterDiff) {
-                        persistedState.get().setAcceptedState(((ClusterDiff<T>) entry).acceptedState);
+                        persistedState.get().setLastAcceptedState(((ClusterDiff) entry).clusterStateDiff
+                            .apply(persistedState.get().getLastAcceptedState()));
                     } else if (entry instanceof Commit) {
-                        persistedState.get().markLastAcceptedStateAsCommitted();
+                        persistedState.get().markLastAcceptedConfigAsCommitted();
                     } else {
                         assert false;
                         throw new IllegalStateException("Unexpected class " + entry.getClass().getName());
@@ -434,7 +423,7 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
                 while (position < checkpoint.offset) {
                     final int opSize = readSize(reusableBuffer, position);
                     reuse = checksummedStream(reusableBuffer, position, opSize, reuse);
-                    stateRecovery.accept(readEntry(reuse, reader, diffReader));
+                    stateRecovery.accept(readEntry(reuse, localNode, registry));
                     position += opSize;
                 }
             } finally {
@@ -476,7 +465,8 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
             buffer.limit(opSize);
             readBytes(buffer, position);
             buffer.flip();
-            return new BufferedChecksumStreamInput(new ByteBufferStreamInput(buffer), reuse);
+            StreamInput in = new ByteBufferStreamInput(buffer);
+            return new BufferedChecksumStreamInput(in, reuse);
         }
 
         protected void readBytes(ByteBuffer buffer, long position) throws IOException {
@@ -509,10 +499,9 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
             return size;
         }
 
-        static <T extends ConsensusState.CommittedState> Entry<T> readEntry(BufferedChecksumStreamInput in,
-                                                                            Writeable.Reader<T> reader,
-                                                                            Writeable.Reader<Diff<T>> diffReader) throws IOException {
-            final Entry<T> entry;
+        static Entry readEntry(BufferedChecksumStreamInput in, DiscoveryNode localNode,
+                               NamedWriteableRegistry registry) throws IOException {
+            final Entry entry;
             try {
                 final int opSize = in.readInt();
                 if (opSize < 4) { // 4byte for the checksum
@@ -524,8 +513,8 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
                 in.skip(opSize - 4);
                 verifyChecksum(in);
                 in.reset();
-                
-                entry = Entry.readEntry(in, reader, diffReader);
+
+                entry = Entry.readEntry(new NamedWriteableAwareStreamInput(in, registry), localNode);
                 verifyChecksum(in);
             } catch (TranslogCorruptedException e) {
                 throw e;
@@ -546,45 +535,43 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    interface Entry<T extends ConsensusState.CommittedState> extends Writeable {
+    interface Entry extends Writeable {
 
-        static <T extends ConsensusState.CommittedState> Entry<T> readEntry(StreamInput streamInput,
-                                                                            Writeable.Reader<T> reader,
-                                                                            Writeable.Reader<Diff<T>> diffReader) throws IOException {
+        static Entry readEntry(StreamInput streamInput, DiscoveryNode localNode) throws IOException {
             byte type = streamInput.readByte();
             switch (type) {
-                case ClusterDiff.TYPE_ID: return new ClusterDiff<>(streamInput, diffReader);
-                case Commit.TYPE_ID: return new Commit<>();
-                case FullClusterState.TYPE_ID: return new FullClusterState<>(streamInput, reader);
+                case ClusterDiff.TYPE_ID: return new ClusterDiff(streamInput, localNode);
+                case Commit.TYPE_ID: return new Commit();
+                case FullClusterState.TYPE_ID: return new FullClusterState(streamInput, localNode);
                 default: throw new IllegalArgumentException();
             }
         }
     }
 
 
-    static class ClusterDiff<T extends ConsensusState.CommittedState> implements Entry<T> {
+    static class ClusterDiff implements Entry {
 
         static final byte TYPE_ID = 0;
 
-        private final ConsensusState.AcceptedState<T> acceptedState;
+        private final Diff<ClusterState> clusterStateDiff;
 
-        ClusterDiff(ConsensusState.AcceptedState<T> slotTermDiff) {
-            this.acceptedState = slotTermDiff;
+        ClusterDiff(Diff<ClusterState> clusterStateDiff) {
+            this.clusterStateDiff = clusterStateDiff;
         }
 
-        ClusterDiff(StreamInput streamInput, Writeable.Reader<Diff<T>> reader) throws IOException {
-            this.acceptedState = new ConsensusState.AcceptedState<>(streamInput, reader);
+        ClusterDiff(StreamInput streamInput, DiscoveryNode localNode) throws IOException {
+            this.clusterStateDiff = ClusterState.readDiffFrom(streamInput, localNode);
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             out.writeByte(TYPE_ID);
-            acceptedState.writeTo(out);
+            clusterStateDiff.writeTo(out);
         }
 
     }
 
-    static class Commit<T extends ConsensusState.CommittedState> implements Entry<T> {
+    static class Commit implements Entry {
 
         static final byte TYPE_ID = 1;
 
@@ -598,18 +585,18 @@ public class ConsensusStorage<T extends ConsensusState.CommittedState> extends A
         }
     }
 
-    static class FullClusterState<T extends ConsensusState.CommittedState> implements Entry<T> {
+    static class FullClusterState implements Entry {
 
         static final byte TYPE_ID = 2;
 
-        private final T clusterState;
+        private final ClusterState clusterState;
 
-        FullClusterState(T clusterState) {
+        FullClusterState(ClusterState clusterState) {
             this.clusterState = clusterState;
         }
 
-        FullClusterState(StreamInput streamInput, Writeable.Reader<T> reader) throws IOException {
-            this.clusterState = reader.read(streamInput);
+        FullClusterState(StreamInput streamInput, DiscoveryNode localNode) throws IOException {
+            this.clusterState = ClusterState.readFrom(streamInput, localNode);
         }
 
         @Override

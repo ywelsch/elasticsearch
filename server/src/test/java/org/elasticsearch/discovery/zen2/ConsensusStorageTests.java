@@ -19,12 +19,14 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.lucene.store.MockDirectoryWrapper;
-import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.Version;
+import org.elasticsearch.cluster.ClusterModule;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
+import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.discovery.zen2.ConsensusState.AcceptedState;
-import org.elasticsearch.discovery.zen2.ConsensusStateTests.ClusterState;
+import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.index.translog.ChannelFactory;
 import org.elasticsearch.index.translog.TranslogTests;
 import org.elasticsearch.index.translog.TranslogTests.FailSwitch;
@@ -37,9 +39,10 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Optional;
+import java.util.Collections;
 import java.util.stream.Stream;
 
+import static org.elasticsearch.discovery.zen2.ConsensusStateTests.value;
 import static org.hamcrest.Matchers.either;
 import static org.hamcrest.core.IsEqual.equalTo;
 
@@ -47,76 +50,80 @@ public class ConsensusStorageTests extends ESTestCase {
 
     public void testRollover() {
         DiscoveryNode node = new DiscoveryNode("node1", buildNewFakeTransportAddress(), Version.CURRENT);
-        ConsensusState.NodeCollection initialConfig = new ConsensusState.NodeCollection();
-        initialConfig.add(node);
-        ClusterState clusterState1 = new ClusterState(1L, initialConfig, 42);
+        VotingConfiguration initialConfig = new VotingConfiguration(Collections.singleton(node.getId()));
+        DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
+        VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
+
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
         final Path path;
         final ClusterState clusterState3;
-        try (ConsensusStorage<ClusterState> st = createFreshStore(Settings.builder().put(
-            ConsensusStorage.CS_LOG_RETENTION_SIZE_SETTING.getKey(), "1b").build(), clusterState1)) {
+        try (ConsensusStorage st = createFreshStore(Settings.builder().put(
+            ConsensusStorage.CS_LOG_RETENTION_SIZE_SETTING.getKey(), "1b").build(), clusterState1, node)) {
 
             path = st.getPath();
 
             assertThat(st.getGeneration(), equalTo(0L));
 
-            ClusterState clusterState2 = new ClusterState(2L, initialConfig, 43);
-            st.setCommittedState(clusterState2);
+            ClusterState clusterState2 = ConsensusStateTests.nextStateWithValue(clusterState1, 43);
+            st.setLastAcceptedState(clusterState2);
             assertThat(st.getGeneration(), equalTo(1L));
 
-            clusterState3 = new ClusterState(3L, initialConfig, 44);
-            AcceptedState<ClusterState> acceptedState = new AcceptedState<>(3L, clusterState3.diff(clusterState2));
-            st.setAcceptedState(acceptedState);
+            clusterState3 = ConsensusStateTests.nextStateWithTermValueAndConfig(clusterState2, 1L, 44, newConfig);
+            st.setLastAcceptedState(clusterState3);
             assertThat(st.getGeneration(), equalTo(2L));
 
             st.setCurrentTerm(2L);
             assertThat(st.getGeneration(), equalTo(2L));
 
-            st.markLastAcceptedStateAsCommitted();
+            st.markLastAcceptedConfigAsCommitted();
             assertThat(st.getGeneration(), equalTo(3L));
         }
 
-        try (ConsensusStorage<ClusterState> st = createExistingStore(Settings.EMPTY, path)) {
+        try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
             assertEquals(st.getCurrentTerm(), 2L);
-            assertEquals(st.getCommittedState(), clusterState3);
-            assertEquals(st.getAcceptedState(), Optional.empty());
+            assertEquals(value(st.getLastAcceptedState()), 44L);
+            assertEquals(st.getLastAcceptedState().getLastAcceptedConfiguration(), newConfig);
+            assertEquals(st.getLastAcceptedState().getLastCommittedConfiguration(), newConfig);
             assertThat(st.getGeneration(), equalTo(3L));
         }
     }
 
     public void testNoRollover() {
         DiscoveryNode node = new DiscoveryNode("node1", buildNewFakeTransportAddress(), Version.CURRENT);
-        ConsensusState.NodeCollection initialConfig = new ConsensusState.NodeCollection();
-        initialConfig.add(node);
-        ClusterState clusterState1 = new ClusterState(1L, initialConfig, 42);
+        VotingConfiguration initialConfig = new VotingConfiguration(Collections.singleton(node.getId()));
+        DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
+        VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
+
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
         final Path path;
         final ClusterState clusterState3;
-        try (ConsensusStorage<ClusterState> st = createFreshStore(Settings.EMPTY, clusterState1)) {
+        try (ConsensusStorage st = createFreshStore(Settings.EMPTY, clusterState1, node)) {
 
             path = st.getPath();
 
             assertThat(st.getGeneration(), equalTo(0L));
 
-            ClusterState clusterState2 = new ClusterState(2L, initialConfig, 43);
-            st.setCommittedState(clusterState2);
-            assertThat(st.getGeneration(), equalTo(1L)); // we always rollover on full CS update
+            ClusterState clusterState2 = ConsensusStateTests.nextStateWithValue(clusterState1, 43);
+            st.setLastAcceptedState(clusterState2);
+            assertThat(st.getGeneration(), equalTo(0L));
 
-            clusterState3 = new ClusterState(3L, initialConfig, 44);
-            AcceptedState<ClusterState> acceptedState = new AcceptedState<>(3L, clusterState3.diff(clusterState2));
-            st.setAcceptedState(acceptedState);
-            assertThat(st.getGeneration(), equalTo(1L));
+            clusterState3 = ConsensusStateTests.nextStateWithTermValueAndConfig(clusterState2, 1L, 44, newConfig);
+            st.setLastAcceptedState(clusterState3);
+            assertThat(st.getGeneration(), equalTo(0L));
 
             st.setCurrentTerm(2L);
-            assertThat(st.getGeneration(), equalTo(1L));
+            assertThat(st.getGeneration(), equalTo(0L));
 
-            st.markLastAcceptedStateAsCommitted();
-            assertThat(st.getGeneration(), equalTo(1L));
+            st.markLastAcceptedConfigAsCommitted();
+            assertThat(st.getGeneration(), equalTo(0L));
         }
 
-        try (ConsensusStorage<ClusterState> st = createExistingStore(Settings.EMPTY, path)) {
+        try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
             assertEquals(st.getCurrentTerm(), 2L);
-            assertEquals(st.getCommittedState(), clusterState3);
-            assertEquals(st.getAcceptedState(), Optional.empty());
-            assertThat(st.getGeneration(), equalTo(1L));
+            assertEquals(value(st.getLastAcceptedState()), 44L);
+            assertEquals(st.getLastAcceptedState().getLastAcceptedConfiguration(), newConfig);
+            assertEquals(st.getLastAcceptedState().getLastCommittedConfiguration(), newConfig);
+            assertThat(st.getGeneration(), equalTo(0L));
         }
 
     }
@@ -126,19 +133,26 @@ public class ConsensusStorageTests extends ESTestCase {
         FailSwitch fail = new FailSwitch();
 
         DiscoveryNode node = new DiscoveryNode("node1", buildNewFakeTransportAddress(), Version.CURRENT);
-        ConsensusState.NodeCollection initialConfig = new ConsensusState.NodeCollection();
-        initialConfig.add(node);
-        ClusterState clusterState1 = new ClusterState(1L, initialConfig, 42);
+        VotingConfiguration initialConfig = new VotingConfiguration(Collections.singleton(node.getId()));
 
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
+
+        boolean rollOver = randomBoolean();
+        Settings storageSettings = rollOver ? Settings.builder().put(
+            ConsensusStorage.CS_LOG_RETENTION_SIZE_SETTING.getKey(), "1b").build() : Settings.EMPTY;
         boolean partialWrites = randomBoolean();
         boolean throwUnknownExceptions = randomBoolean();
 
-        ClusterState clusterState2 = new ClusterState(2L, initialConfig, 43);
+        DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
+        VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
+
+        ClusterState clusterState2 = ConsensusStateTests.nextStateWithTermValueAndConfig(clusterState1, 1L, 43, newConfig);
         boolean hasFailure;
+        boolean committed = false;
 
-        try (ConsensusStorage st = getFailableConsensusStorage(Settings.EMPTY, path, fail, partialWrites, throwUnknownExceptions)) {
+        try (ConsensusStorage st = getFailableConsensusStorage(storageSettings, path, node, fail, partialWrites, throwUnknownExceptions)) {
 
-            st.createFreshStore(0L, clusterState1);
+            st.createFreshStore(1L, clusterState1);
 
             assertEquals(st.getGeneration(), 0L);
             assertTrue(Files.exists(path.resolve(ConsensusStorage.logFileName(0L))));
@@ -146,15 +160,14 @@ public class ConsensusStorageTests extends ESTestCase {
             fail.failRandomly();
 
             hasFailure = catchExpectedFailures(st, throwUnknownExceptions, () -> {
-                if (randomBoolean()) {
-                    st.setCommittedState(clusterState2);
+                if (rollOver) {
+                    st.setLastAcceptedState(clusterState2);
                     assertEquals(1L, st.getGeneration());
                     assertTrue(Files.exists(path.resolve(ConsensusStorage.logFileName(1L))));
                     assertFalse(Files.exists(path.resolve(ConsensusStorage.logFileName(0L))));
                     logger.info("successfully updated to cluster state 2");
                 } else if (randomBoolean()) {
-                    st.setAcceptedState(new AcceptedState(4L, clusterState2.diff(clusterState1)));
-                    st.markLastAcceptedStateAsCommitted();
+                    st.setLastAcceptedState(clusterState2);
                     assertEquals(0L, st.getGeneration());
                     assertTrue(Files.exists(path.resolve(ConsensusStorage.logFileName(0L))));
                     assertFalse(Files.exists(path.resolve(ConsensusStorage.logFileName(1L))));
@@ -166,48 +179,58 @@ public class ConsensusStorageTests extends ESTestCase {
 
             if (hasFailure) {
                 // check that state is not changed
-                assertEquals(0L, st.getCurrentTerm());
-                assertEquals(clusterState1, st.getCommittedState());
+                assertEquals(1L, st.getCurrentTerm());
+                assertEquals(value(clusterState1), value(st.getLastAcceptedState()));
+            } else {
+                if (value(clusterState2) == value(st.getLastAcceptedState())) {
+                    committed = !catchExpectedFailures(st, throwUnknownExceptions, () -> {
+                        st.markLastAcceptedConfigAsCommitted();
+                        logger.info("successfully committed cluster state 2");
+                    });
+                }
             }
         }
 
         // try recovery with injected failures, to make sure that clean up actions only happen after successful recovery
-        try (ConsensusStorage st = getFailableConsensusStorage(Settings.EMPTY, path, fail, partialWrites, throwUnknownExceptions)) {
+        try (ConsensusStorage st = getFailableConsensusStorage(Settings.EMPTY, path, node, fail, partialWrites, throwUnknownExceptions)) {
 
             fail.failRandomly();
 
-            catchExpectedFailures(st, throwUnknownExceptions,
-                () -> st.recoverFromExistingStore(ClusterState::new, in -> ClusterState.<ClusterState>readDiffFrom(ClusterState::new, in)));
+            NamedWriteableRegistry registry = new NamedWriteableRegistry(ClusterModule.getNamedWriteables());
+
+            catchExpectedFailures(st, throwUnknownExceptions, () -> st.recoverFromExistingStore(registry));
         }
 
         // try recovery without injecting failures
-        AcceptedState<ClusterState> acceptedState;
-        try (ConsensusStorage<ClusterState> st = createExistingStore(Settings.EMPTY, path)) {
+        try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
             if (hasFailure) {
-                assertThat(st.getCommittedState(), either(equalTo(clusterState1)).or(equalTo(clusterState2)));
+                assertThat(value(st.getLastAcceptedState()), either(equalTo(value(clusterState1))).or(equalTo(value(clusterState2))));
+                assertThat(st.getLastAcceptedState().getLastCommittedConfiguration(), equalTo(initialConfig));
                 // check that orphaned files have been deleted upon recovery
                 try (Stream<Path> fileList = Files.list(path)) {
                     assertEquals(1L, fileList.filter(file -> file.getFileName().toString().endsWith(ConsensusStorage.LOG_SUFFIX)).count());
                 }
             } else {
                 if (st.getCurrentTerm() != 4L) {
-                    assertEquals(st.getCommittedState(), clusterState2);
+                    assertEquals(value(st.getLastAcceptedState()), value(clusterState2));
+                }
+                if (committed) {
+                    assertThat(st.getLastAcceptedState().getLastCommittedConfiguration(), equalTo(newConfig));
                 }
             }
 
             // check that we can write to recovered state
-            ClusterState clusterState3 = new ClusterState(3L, initialConfig, 44);
-            acceptedState = new AcceptedState<>(4L, clusterState3.diff(st.getCommittedState()));
-            st.setAcceptedState(acceptedState);
+            ClusterState clusterState3 = ConsensusStateTests.nextStateWithValue(clusterState2, 44);
+            st.setLastAcceptedState(clusterState3);
         }
 
-        try (ConsensusStorage<ClusterState> st = createExistingStore(Settings.EMPTY, path)) {
-            assertEquals(Optional.of(acceptedState), st.getAcceptedState());
+        try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
+            assertEquals(value(st.getLastAcceptedState()), 44L);
         }
 
     }
 
-    private boolean catchExpectedFailures(ConsensusStorage<ClusterState> st, boolean throwUnknownExceptions, Runnable runnable) {
+    private boolean catchExpectedFailures(ConsensusStorage st, boolean throwUnknownExceptions, Runnable runnable) {
         try {
             runnable.run();
             return false;
@@ -261,10 +284,10 @@ public class ConsensusStorageTests extends ESTestCase {
         assertEquals(read, checkpoint);
     }
 
-    public static ConsensusStorage<ClusterState> getFailableConsensusStorage(Settings settings, Path path, FailSwitch fail,
-                                                                             boolean partialWrites, boolean throwUnknownException)
+    public static ConsensusStorage getFailableConsensusStorage(Settings settings, Path path, DiscoveryNode localNode, FailSwitch fail,
+                                                               boolean partialWrites, boolean throwUnknownException)
         throws IOException {
-        return new ConsensusStorage<ClusterState>(settings, path) {
+        return new ConsensusStorage(settings, path, localNode) {
             @Override
             ChannelFactory getChannelFactory() {
                 final ChannelFactory factory = super.getChannelFactory();
@@ -289,15 +312,16 @@ public class ConsensusStorageTests extends ESTestCase {
         };
     }
 
-    public static ConsensusStorage<ClusterState> createFreshStore(Settings settings, ClusterState initialClusterState) {
-        final ConsensusStorage storage = new ConsensusStorage(settings, createTempDir());
-        storage.createFreshStore(0L, initialClusterState);
+    public static ConsensusStorage createFreshStore(Settings settings, ClusterState initialClusterState, DiscoveryNode localNode) {
+        final ConsensusStorage storage = new ConsensusStorage(settings, createTempDir(), localNode);
+        storage.createFreshStore(1L, initialClusterState);
         return storage;
     }
 
-    public static ConsensusStorage<ClusterState> createExistingStore(Settings settings, Path path) {
-        final ConsensusStorage storage = new ConsensusStorage(settings, path);
-        storage.recoverFromExistingStore(ClusterState::new, in -> ClusterState.<ClusterState>readDiffFrom(ClusterState::new, in));
+    public static ConsensusStorage createExistingStore(Settings settings, Path path, DiscoveryNode localNode) {
+        final ConsensusStorage storage = new ConsensusStorage(settings, path, localNode);
+        NamedWriteableRegistry registry = new NamedWriteableRegistry(ClusterModule.getNamedWriteables());
+        storage.recoverFromExistingStore(registry);
         return storage;
     }
 

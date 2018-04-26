@@ -18,45 +18,37 @@
  */
 package org.elasticsearch.discovery.zen2;
 
-import org.elasticsearch.cluster.Diff;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.common.component.AbstractComponent;
-import org.elasticsearch.common.io.stream.StreamInput;
-import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
-import org.elasticsearch.discovery.zen2.Messages.Vote;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 
-import java.io.IOException;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 
-import static org.elasticsearch.discovery.zen2.Messages.NO_TERM;
-
 /**
- * The safety core of the consensus algorithm, which ensures that any two instances
- * of this object anywhere in the cluster have the same committedState if they are
- * at the same slot.
- *
- * @param <T> The state on which we achieve consensus.
+ * The safety core of the consensus algorithm
  */
-public class ConsensusState<T extends ConsensusState.CommittedState> extends AbstractComponent {
+public class ConsensusState extends AbstractComponent {
 
     // persisted state
-    final PersistedState<T> persistedState;
+    final PersistedState persistedState;
 
     // transient state
-    private boolean electionWon;
     private NodeCollection joinVotes;
-    private boolean publishPermitted;
+    private boolean startedJoinSinceLastReboot;
+    private boolean electionWon;
+    private long lastPublishedVersion;
+    private VotingConfiguration lastPublishedConfiguration;
     private NodeCollection publishVotes;
 
-    public ConsensusState(Settings settings, PersistedState<T> persistedState) {
+    public ConsensusState(Settings settings, PersistedState persistedState) {
         super(settings);
 
         // persisted state
@@ -65,142 +57,205 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         // transient state
         this.electionWon = false;
         this.joinVotes = new NodeCollection();
-        this.publishPermitted = false;
+        this.startedJoinSinceLastReboot = false;
         this.publishVotes = new NodeCollection();
-    }
-
-    public T getCommittedState() {
-        return persistedState.getCommittedState();
+        this.lastPublishedVersion = 0L;
+        this.lastPublishedConfiguration = persistedState.getLastAcceptedConfiguration();
     }
 
     public long getCurrentTerm() {
         return persistedState.getCurrentTerm();
     }
 
-    public Optional<AcceptedState<T>> getAcceptedState() {
-        return persistedState.getAcceptedState();
+    public ClusterState getLastAcceptedState() {
+        return persistedState.getLastAcceptedState();
     }
 
-    boolean canHandleClientValue() {
-        return electionWon && publishPermitted;
+    public boolean isElectionQuorum(NodeCollection votes) {
+        return votes.isQuorum(getLastCommittedConfiguration()) && votes.isQuorum(getLastAcceptedConfiguration());
     }
 
-    public boolean isQuorumInCurrentConfiguration(NodeCollection votes) {
-        final HashSet<String> intersection = new HashSet<>(getCommittedState().getVotingNodes().nodes.keySet());
-        intersection.retainAll(votes.nodes.keySet());
-        return intersection.size() * 2 > getCommittedState().getVotingNodes().nodes.size();
+    public boolean isPublishQuorum(NodeCollection votes) {
+        return votes.isQuorum(getLastCommittedConfiguration()) && votes.isQuorum(lastPublishedConfiguration);
     }
 
-    public long firstUncommittedSlot() {
-        return getCommittedState().getSlot() + 1;
+    public VotingConfiguration getLastCommittedConfiguration() {
+        return persistedState.getLastCommittedConfiguration();
     }
 
-    public long lastAcceptedTerm() {
-        return persistedState.lastAcceptedTerm();
+    public VotingConfiguration getLastAcceptedConfiguration() {
+        return persistedState.getLastAcceptedConfiguration();
+    }
+
+    public long getLastAcceptedVersion() {
+        return persistedState.getLastAcceptedVersion();
+    }
+
+    public long getLastAcceptedTerm() {
+        return persistedState.getLastAcceptedTerm();
+    }
+
+    public boolean electionWon() {
+        return electionWon;
+    }
+
+    public long getLastPublishedVersion() {
+        return lastPublishedVersion;
     }
 
     /**
      * May be safely called at any time to move this instance to a new term. It is vitally important for safety that
-     * the resulting Vote is sent to no more than one node.
+     * the resulting Join is sent to no more than one node.
      *
+     * @param targetNode The node to join
      * @param newTerm The new term
-     * @return A Vote that must be sent to at most one other node.
+     * @return A Join that must be sent to at most one other node.
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
-    public Vote handleStartVote(long newTerm) {
+    public Join handleStartJoin(DiscoveryNode targetNode, long newTerm) {
         if (newTerm <= getCurrentTerm()) {
-            logger.debug("handleStartVote: ignored as term provided [{}] lower or equal than current term [{}]",
+            logger.debug("handleStartJoin: ignored as term provided [{}] lower or equal than current term [{}]",
                 newTerm, getCurrentTerm());
             throw new ConsensusMessageRejectedException("incoming term " + newTerm + " lower than current term " + getCurrentTerm());
         }
 
-        logger.debug("handleStartVote: updating term from [{}] to [{}]", getCurrentTerm(), newTerm);
+        logger.debug("handleStartJoin: updating term from [{}] to [{}]", getCurrentTerm(), newTerm);
 
         persistedState.setCurrentTerm(newTerm);
         assert persistedState.getCurrentTerm() == newTerm;
         joinVotes = new NodeCollection();
         electionWon = false;
-        publishPermitted = true;
+        startedJoinSinceLastReboot = true;
+        lastPublishedVersion = 0L;
+        lastPublishedConfiguration = persistedState.getLastAcceptedConfiguration();
         publishVotes = new NodeCollection();
 
-        return new Vote(firstUncommittedSlot(), getCurrentTerm(), lastAcceptedTerm());
+        return new Join(targetNode, getLastAcceptedVersion(), getCurrentTerm(), getLastAcceptedTerm());
     }
 
     /**
-     * May be called on receipt of a Vote from the given sourceNode.
+     * May be called on receipt of a Join from the given sourceNode.
      *
-     * @param sourceNode The sender of the Vote received.
-     * @param vote       The Vote received.
-     * @return An optional PublishRequest which, if present, can be broadcast to all peers.
+     * @param sourceNode The sender of the Join received.
+     * @param join       The Join received.
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
-    public Optional<PublishRequest<T>> handleVote(DiscoveryNode sourceNode, Vote vote) {
-        if (vote.getTerm() != getCurrentTerm()) {
-            logger.debug("handleVote: ignored vote due to term mismatch (expected: [{}], actual: [{}])",
-                getCurrentTerm(), vote.getTerm());
-            throw new ConsensusMessageRejectedException(
-                "incoming term " + vote.getTerm() + " does not match current term " + getCurrentTerm());
-        }
-        if (vote.getFirstUncommittedSlot() > firstUncommittedSlot()) {
-            logger.debug("handleVote: ignored vote due to slot mismatch (expected: <=[{}], actual: [{}])",
-                firstUncommittedSlot(), vote.getFirstUncommittedSlot());
-            throw new ConsensusMessageRejectedException(
-                "incoming slot " + vote.getFirstUncommittedSlot() + " higher than current slot " + firstUncommittedSlot());
-        }
-        final long lastAcceptedTerm = lastAcceptedTerm();
-        if (vote.getFirstUncommittedSlot() == firstUncommittedSlot() && vote.getLastAcceptedTerm() > lastAcceptedTerm) {
-            logger.debug("handleVote: ignored vote as voter has better last accepted term (expected: <=[{}], actual: [{}])",
-                lastAcceptedTerm, vote.getLastAcceptedTerm());
-            throw new ConsensusMessageRejectedException("incoming last accepted term " + vote.getLastAcceptedTerm() + " higher than " +
-                "current last accepted term " + lastAcceptedTerm);
+    public void handleJoin(DiscoveryNode sourceNode, Join join) {
+        if (startedJoinSinceLastReboot == false) {
+            logger.debug("handleJoin: ignored join as term was not incremented yet after reboot");
+            throw new ConsensusMessageRejectedException("ignored join as term was not incremented yet after reboot");
         }
 
-        logger.debug("handleVote: adding vote {} from [{}] for election at slot {}", vote, sourceNode, firstUncommittedSlot());
+        if (join.getTerm() != getCurrentTerm()) {
+            logger.debug("handleJoin: ignored join due to term mismatch (expected: [{}], actual: [{}])",
+                getCurrentTerm(), join.getTerm());
+            throw new ConsensusMessageRejectedException(
+                "incoming term " + join.getTerm() + " does not match current term " + getCurrentTerm());
+        }
+
+        final long lastAcceptedTerm = getLastAcceptedTerm();
+        if (join.getLastAcceptedTerm() > lastAcceptedTerm) {
+            logger.debug("handleJoin: ignored join as joiner has better last accepted term (expected: <=[{}], actual: [{}])",
+                lastAcceptedTerm, join.getLastAcceptedTerm());
+            throw new ConsensusMessageRejectedException("incoming last accepted term " + join.getLastAcceptedTerm() +
+                " of join higher than current last accepted term " + lastAcceptedTerm);
+        }
+
+        if (join.getLastAcceptedTerm() == lastAcceptedTerm && join.getLastAcceptedVersion() > getLastAcceptedVersion()) {
+            logger.debug("handleJoin: ignored join due to version mismatch (expected: <=[{}], actual: [{}])",
+                getLastAcceptedVersion(), join.getLastAcceptedVersion());
+            throw new ConsensusMessageRejectedException(
+                "incoming version " + join.getLastAcceptedVersion() + " of join higher than current version " + getLastAcceptedVersion());
+        }
+
         joinVotes.add(sourceNode);
+        boolean prevElectionWon = electionWon;
+        electionWon = isElectionQuorum(joinVotes);
+        logger.debug("handleJoin: added join {} from [{}] for election, electionWon={} lastAcceptedTerm={} lastAcceptedVersion={}", join,
+            sourceNode, electionWon, lastAcceptedTerm, getLastAcceptedVersion());
 
-        electionWon = isQuorumInCurrentConfiguration(joinVotes);
+        if (electionWon && prevElectionWon == false) {
+            lastPublishedVersion = getLastAcceptedVersion();
+        }
+    }
 
-        logger.debug("handleVote: electionWon={} publishPermitted={} lastAcceptedTerm={}",
-            electionWon, publishPermitted, lastAcceptedTerm);
-        if (electionWon && publishPermitted && lastAcceptedTerm != NO_TERM) {
-            logger.debug("handleVote: sending PublishRequest");
-
-            publishPermitted = false;
-            assert getAcceptedState().isPresent(); // must be true because lastAcceptedTerm != NO_TERM
-            return Optional.of(new PublishRequest<>(firstUncommittedSlot(), getCurrentTerm(), getAcceptedState().get().getDiff()));
+    /**
+     * May be called in order to check if the given cluster state can be published
+     *
+     * @param clusterState The cluster state which to publish.
+     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
+     */
+    public PublishRequest handleClientValue(ClusterState clusterState) {
+        if (electionWon == false) {
+            logger.debug("handleClientValue: ignored request as election not won");
+            throw new ConsensusMessageRejectedException("election not won");
+        }
+        if (lastPublishedVersion != getLastAcceptedVersion()) {
+            logger.debug("handleClientValue: cannot start publishing next value before accepting previous one");
+            throw new ConsensusMessageRejectedException("cannot start publishing next value before accepting previous one");
+        }
+        if (clusterState.term() != getCurrentTerm()) {
+            logger.debug("handleClientValue: ignored request due to term mismatch " +
+                    "(expected: [term {} version {}], actual: [term {} version {}])",
+                getCurrentTerm(), lastPublishedVersion, clusterState.term(), clusterState.version());
+            throw new ConsensusMessageRejectedException("incoming term " + clusterState.term() + " does not match current term " +
+                getCurrentTerm());
+        }
+        if (clusterState.version() <= lastPublishedVersion) {
+            logger.debug("handleClientValue: ignored request due to version mismatch " +
+                    "(expected: [term {} version >{}], actual: [term {} version {}])",
+                getCurrentTerm(), lastPublishedVersion, clusterState.term(), clusterState.version());
+            throw new ConsensusMessageRejectedException("incoming term " + clusterState.term() + " does not match current term " +
+                getCurrentTerm());
         }
 
-        return Optional.empty();
+        if (clusterState.getLastAcceptedConfiguration().equals(getLastAcceptedConfiguration()) == false
+            && getLastCommittedConfiguration().equals(getLastAcceptedConfiguration()) == false) {
+            logger.debug("handleClientValue: only allow reconfiguration while not already reconfiguring");
+            throw new ConsensusMessageRejectedException("only allow reconfiguration while not already reconfiguring");
+        }
+        if (clusterState.getLastAcceptedConfiguration().hasQuorum(joinVotes.nodes.keySet()) == false) {
+            logger.debug("handleClientValue: only allow reconfiguration if join quorum available for new config");
+            throw new ConsensusMessageRejectedException("only allow reconfiguration if join quorum available for new config");
+        }
+
+        lastPublishedVersion = clusterState.version();
+        lastPublishedConfiguration = clusterState.getLastAcceptedConfiguration();
+        publishVotes = new NodeCollection();
+
+        logger.trace("handleClientValue: processing request for version [{}] and term [{}]", lastPublishedVersion, getCurrentTerm());
+
+        return new PublishRequest(clusterState);
     }
 
     /**
      * May be called on receipt of a PublishRequest.
      *
-     * @param publishRequest The PublishRequest received.
+     * @param publishRequest The publish request received.
      * @return A PublishResponse which can be sent back to the sender of the PublishRequest.
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
-    public PublishResponse handlePublishRequest(PublishRequest<T> publishRequest) {
-        if (publishRequest.getTerm() != getCurrentTerm()) {
+    public PublishResponse handlePublishRequest(PublishRequest publishRequest) {
+        final ClusterState clusterState = publishRequest.getAcceptedState();
+        if (clusterState.term() != getCurrentTerm()) {
             logger.debug("handlePublishRequest: ignored publish request due to term mismatch (expected: [{}], actual: [{}])",
-                getCurrentTerm(), publishRequest.getTerm());
-            throw new ConsensusMessageRejectedException("incoming term " + publishRequest.getTerm() + " does not match current term " +
+                getCurrentTerm(), clusterState.term());
+            throw new ConsensusMessageRejectedException("incoming term " + clusterState.term() + " does not match current term " +
                 getCurrentTerm());
         }
-        if (publishRequest.getSlot() != firstUncommittedSlot()) {
-            logger.debug("handlePublishRequest: ignored publish request due to slot mismatch (expected: [{}], actual: [{}])",
-                firstUncommittedSlot(), publishRequest.getSlot());
-            throw new ConsensusMessageRejectedException("incoming slot " + publishRequest.getSlot() + " does not match current slot " +
-                firstUncommittedSlot());
+        if (clusterState.term() == getLastAcceptedTerm() && clusterState.version() <= getLastAcceptedVersion()) {
+            logger.debug("handlePublishRequest: ignored publish request due to version mismatch (expected: >[{}], actual: [{}])",
+                getLastAcceptedVersion(), clusterState.version());
+            throw new ConsensusMessageRejectedException("incoming version " + clusterState.version() + " older than current version " +
+                getLastAcceptedVersion());
         }
 
-        logger.trace("handlePublishRequest: accepting publish request for slot [{}] and term [{}]",
-            publishRequest.getSlot(), publishRequest.getTerm());
-        persistedState.setAcceptedState(publishRequest.getAcceptedState());
-        assert persistedState.getAcceptedState().isPresent() &&
-            persistedState.getAcceptedState().get() == publishRequest.getAcceptedState();
+        logger.trace("handlePublishRequest: accepting publish request for version [{}] and term [{}]",
+            clusterState.version(), clusterState.term());
+        persistedState.setLastAcceptedState(clusterState);
+        assert persistedState.getLastAcceptedState() == clusterState;
 
-        return new PublishResponse(publishRequest.getSlot(), publishRequest.getTerm());
+        return new PublishResponse(clusterState.version(), clusterState.term());
     }
 
     /**
@@ -213,30 +268,30 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public Optional<ApplyCommit> handlePublishResponse(DiscoveryNode sourceNode, PublishResponse publishResponse) {
+        if (electionWon == false) {
+            logger.debug("handlePublishResponse: ignored response as election not won");
+            throw new ConsensusMessageRejectedException("election not won");
+        }
         if (publishResponse.getTerm() != getCurrentTerm()) {
             logger.debug("handlePublishResponse: ignored publish response due to term mismatch (expected: [{}], actual: [{}])",
                 getCurrentTerm(), publishResponse.getTerm());
             throw new ConsensusMessageRejectedException("incoming term " + publishResponse.getTerm()
                 + " does not match current term " + getCurrentTerm());
         }
-        if (publishResponse.getSlot() != firstUncommittedSlot()) {
-            if (publishResponse.getSlot() == firstUncommittedSlot() - 1) {
-                logger.trace("handlePublishResponse: ignored publish response for just-committed slot [{}]", publishResponse.getSlot());
-            } else {
-                logger.debug("handlePublishResponse: ignored publish response due to slot mismatch (expected: [{}], actual: [{}])",
-                    firstUncommittedSlot(), publishResponse.getSlot());
-            }
-            throw new ConsensusMessageRejectedException("incoming slot " + publishResponse.getSlot() + " does not match current slot " +
-                firstUncommittedSlot());
+        if (publishResponse.getVersion() != lastPublishedVersion) {
+            logger.debug("handlePublishResponse: ignored publish response due to version mismatch (expected: [{}], actual: [{}])",
+                lastPublishedVersion, publishResponse.getVersion());
+            throw new ConsensusMessageRejectedException("incoming version " + publishResponse.getVersion() +
+                " does not match current version " + lastPublishedVersion);
         }
 
-        logger.trace("handlePublishResponse: accepted publish response for slot [{}] and term [{}] from [{}]",
-            publishResponse.getSlot(), publishResponse.getTerm(), sourceNode);
+        logger.trace("handlePublishResponse: accepted publish response for version [{}] and term [{}] from [{}]",
+            publishResponse.getVersion(), publishResponse.getTerm(), sourceNode);
         publishVotes.add(sourceNode);
-        if (isQuorumInCurrentConfiguration(publishVotes)) {
-            logger.trace("handlePublishResponse: value committed for slot [{}] and term [{}]",
-                firstUncommittedSlot(), getCurrentTerm());
-            return Optional.of(new ApplyCommit(publishResponse.getSlot(), publishResponse.getTerm()));
+        if (isPublishQuorum(publishVotes)) {
+            logger.trace("handlePublishResponse: value committed for version [{}] and term [{}]",
+                publishResponse.getVersion(), publishResponse.getTerm());
+            return Optional.of(new ApplyCommit(publishResponse.getTerm(), publishResponse.getVersion()));
         }
 
         return Optional.empty();
@@ -249,214 +304,81 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
     public void handleCommit(ApplyCommit applyCommit) {
-        if (applyCommit.getTerm() != lastAcceptedTerm()) {
+        if (applyCommit.getTerm() != getCurrentTerm()) {
             logger.debug("handleCommit: ignored commit request due to term mismatch " +
-                    "(expected: [term {} slot {}], actual: [term {} slot {}])",
-                lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getTerm(), applyCommit.getSlot());
+                    "(expected: [term {} version {}], actual: [term {} version {}])",
+                getLastAcceptedTerm(), getLastAcceptedVersion(), applyCommit.getTerm(), applyCommit.getVersion());
+            throw new ConsensusMessageRejectedException("incoming term " + applyCommit.getTerm() + " does not match current term " +
+                getCurrentTerm());
+        }
+        if (applyCommit.getTerm() != getLastAcceptedTerm()) {
+            logger.debug("handleCommit: ignored commit request due to term mismatch " +
+                    "(expected: [term {} version {}], actual: [term {} version {}])",
+                getLastAcceptedTerm(), getLastAcceptedVersion(), applyCommit.getTerm(), applyCommit.getVersion());
             throw new ConsensusMessageRejectedException("incoming term " + applyCommit.getTerm() + " does not match last accepted term " +
-                lastAcceptedTerm());
+                getLastAcceptedTerm());
         }
-        if (applyCommit.getSlot() != firstUncommittedSlot()) {
-            logger.debug("handleCommit: ignored commit request due to slot mismatch (term {}, expected: [{}], actual: [{}])",
-                lastAcceptedTerm(), firstUncommittedSlot(), applyCommit.getSlot());
-            throw new ConsensusMessageRejectedException("incoming slot " + applyCommit.getSlot() + " does not match current slot " +
-                firstUncommittedSlot());
+        if (applyCommit.getVersion() != getLastAcceptedVersion()) {
+            logger.debug("handleCommit: ignored commit request due to version mismatch (term {}, expected: [{}], actual: [{}])",
+                getLastAcceptedTerm(), getLastAcceptedVersion(), applyCommit.getVersion());
+            throw new ConsensusMessageRejectedException("incoming version " + applyCommit.getVersion() +
+                " does not match current version " + getLastAcceptedVersion());
         }
 
-        logger.trace("handleCommit: applying commit request for slot [{}]", applyCommit.getSlot());
+        logger.trace("handleCommit: applying commit request for term [{}] and version [{}]", applyCommit.getTerm(),
+            applyCommit.getVersion());
 
-        assert getAcceptedState().isPresent();
-        persistedState.markLastAcceptedStateAsCommitted();
-        assert getCommittedState().getSlot() == applyCommit.getSlot();
-        assert getAcceptedState().isPresent() == false;
-
-        publishPermitted = true;
-        final boolean prevElectionWon = electionWon;
-        electionWon = isQuorumInCurrentConfiguration(joinVotes);
-        if (prevElectionWon != electionWon) {
-            if (electionWon) {
-                logger.debug("handleCommit: election won through reconfiguration change");
-            } else {
-                logger.debug("handleCommit: election lost through reconfiguration change");
-            }
-        }
-        publishVotes = new NodeCollection();
+        persistedState.markLastAcceptedConfigAsCommitted();
+        assert getLastCommittedConfiguration().equals(getLastAcceptedConfiguration());
     }
 
-    /**
-     * May be safely called at any time. Yields the current committed state to be sent to another, lagging, peer so it can catch up.
-     *
-     * @return The current committed state.
-     */
-    public T generateCatchup() {
-        logger.debug("generateCatchup: generating catch up for slot [{}]", getCommittedState().getSlot());
-        return getCommittedState();
-    }
-
-    /**
-     * May be called on receipt of a catch-up message containing the current committed state from a peer.
-     *
-     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
-     */
-    public void applyCatchup(T newCommittedState) {
-        if (newCommittedState.getSlot() <= getCommittedState().getSlot()) {
-            logger.debug("applyCatchup: ignored catch up request due to slot mismatch (expected: >[{}], actual: [{}])",
-                getCommittedState().getSlot(), newCommittedState.getSlot());
-            throw new ConsensusMessageRejectedException("incoming slot " + newCommittedState.getSlot() + " no higher than current slot " +
-                getCommittedState().getSlot());
-        }
-
-        logger.debug("applyCatchup: applying catch up for slot [{}]", newCommittedState.getSlot());
-        persistedState.setCommittedState(newCommittedState);
-        assert persistedState.getCommittedState() == newCommittedState;
-        assert persistedState.getAcceptedState().isPresent() == false;
-        joinVotes = new NodeCollection();
-        electionWon = false;
-        publishVotes = new NodeCollection();
-        publishPermitted = true;
-    }
-
-    /**
-     * May be safely called at any time in order to apply the given diff to the replicated state machine.
-     *
-     * @param diff The RSM transition on which to achieve consensus.
-     * @return A PublishRequest that may be broadcast to all peers.
-     * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
-     */
-    public PublishRequest<T> handleClientValue(Diff<T> diff) {
-        if (electionWon == false) {
-            logger.debug("handleClientValue: ignored request as election not won");
-            throw new ConsensusMessageRejectedException("election not won");
-        }
-        if (publishPermitted == false) {
-            logger.debug("handleClientValue: ignored request as publishing is not permitted");
-            throw new ConsensusMessageRejectedException("publishing not permitted");
-        }
-        assert lastAcceptedTerm() == NO_TERM; // see https://github.com/elastic/elasticsearch-formal-models/issues/24
-
-        logger.trace("handleClientValue: processing request for slot [{}] and term [{}]", firstUncommittedSlot(), getCurrentTerm());
-        publishPermitted = false;
-        return new PublishRequest<>(firstUncommittedSlot(), getCurrentTerm(), diff);
-    }
-
-    public boolean electionWon() {
-        return electionWon;
-    }
-
-    /**
-     * An immutable object representing the current committed state.
-     */
-    public interface CommittedState extends Writeable {
-        long getSlot();
-
-        NodeCollection getVotingNodes();
-    }
-
-    public static class AcceptedState<T> implements Writeable {
-        protected final long term;
-        protected final Diff<T> diff;
-
-        public AcceptedState(long term, Diff<T> diff) {
-            this.term = term;
-            this.diff = diff;
-        }
-
-        public AcceptedState(StreamInput in, Reader<Diff<T>> reader) throws IOException {
-            this.term = in.readLong();
-            this.diff = reader.read(in);
-        }
-
-        @Override
-        public void writeTo(StreamOutput out) throws IOException {
-            out.writeLong(term);
-            diff.writeTo(out);
-        }
-
-        public long getTerm() {
-            return term;
-        }
-
-        public Diff<T> getDiff() {
-            return diff;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-
-            AcceptedState<?> termDiff = (AcceptedState<?>) o;
-
-            if (term != termDiff.term) return false;
-            return diff.equals(termDiff.diff);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = (int) (term ^ (term >>> 32));
-            result = 31 * result + diff.hashCode();
-            return result;
-        }
-
-
-        @Override
-        public String toString() {
-            return "AcceptedState{" +
-                "term=" + term +
-                ", diff=" + diff +
-                '}';
-        }
-    }
-
-    public interface PersistedState<T extends ConsensusState.CommittedState> {
+    public interface PersistedState {
 
         void setCurrentTerm(long currentTerm);
 
-        void setCommittedState(T committedState);
+        void setLastAcceptedState(ClusterState clusterState);
 
-        void setAcceptedState(AcceptedState<T> acceptedState);
-
-        void markLastAcceptedStateAsCommitted();
+        void markLastAcceptedConfigAsCommitted();
 
         long getCurrentTerm();
 
-        T getCommittedState();
+        ClusterState getLastAcceptedState();
 
-        Optional<AcceptedState<T>> getAcceptedState();
-
-        default long firstUncommittedSlot() {
-            return getCommittedState().getSlot() + 1;
+        default long getLastAcceptedVersion() {
+            return getLastAcceptedState().version();
         }
 
-        default long lastAcceptedTerm() {
-            if (getAcceptedState().isPresent()) {
-                return getAcceptedState().get().getTerm();
-            } else {
-                return NO_TERM;
-            }
+        default long getLastAcceptedTerm() {
+            return getLastAcceptedState().term();
+        }
+
+        default VotingConfiguration getLastAcceptedConfiguration() {
+            return getLastAcceptedState().getLastAcceptedConfiguration();
+        }
+
+        default VotingConfiguration getLastCommittedConfiguration() {
+            return getLastAcceptedState().getLastCommittedConfiguration();
         }
     }
 
-    public static class BasePersistedState<T extends ConsensusState.CommittedState> implements PersistedState<T> {
+    public static class BasePersistedState implements PersistedState {
 
         private long currentTerm;
-        private T committedState;
-        private Optional<AcceptedState<T>> acceptedState;
+        private ClusterState acceptedState;
 
-        public BasePersistedState(long term, T committedState) {
+        public BasePersistedState(long term, ClusterState acceptedState) {
             this.currentTerm = term;
-            this.committedState = committedState;
-            this.acceptedState = Optional.empty();
+            this.acceptedState = acceptedState;
 
             assert currentTerm >= 0;
-            assert lastAcceptedTerm() <= currentTerm;
+            assert getLastAcceptedTerm() <= currentTerm :
+                "last accepted term " + getLastAcceptedTerm() + " cannot be above current term " + currentTerm;
         }
 
         // copy constructor
-        public BasePersistedState(PersistedState<T> persistedState) {
+        public BasePersistedState(PersistedState persistedState) {
             this.currentTerm = persistedState.getCurrentTerm();
-            this.committedState = persistedState.getCommittedState();
-            this.acceptedState = persistedState.getAcceptedState();
+            this.acceptedState = persistedState.getLastAcceptedState();
         }
 
         @Override
@@ -466,24 +388,15 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         }
 
         @Override
-        public void setCommittedState(T committedState) {
-            assert committedState.getSlot() > this.committedState.getSlot();
-            this.committedState = committedState;
-            acceptedState = Optional.empty();
+        public void setLastAcceptedState(ClusterState clusterState) {
+            this.acceptedState = clusterState;
         }
 
         @Override
-        public void setAcceptedState(AcceptedState<T> acceptedState) {
-            this.acceptedState = Optional.of(acceptedState);
-        }
-
-        @Override
-        public void markLastAcceptedStateAsCommitted() {
-            assert acceptedState.isPresent();
-            final T newCommittedState = acceptedState.get().getDiff().apply(committedState);
-            assert newCommittedState.getSlot() == committedState.getSlot() + 1;
-            committedState = newCommittedState;
-            acceptedState = Optional.empty();
+        public void markLastAcceptedConfigAsCommitted() {
+            this.acceptedState = ClusterState.builder(acceptedState)
+                .lastCommittedConfiguration(acceptedState.getLastAcceptedConfiguration())
+                .build();
         }
 
         @Override
@@ -492,14 +405,10 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         }
 
         @Override
-        public T getCommittedState() {
-            return committedState;
-        }
-
-        @Override
-        public Optional<AcceptedState<T>> getAcceptedState() {
+        public ClusterState getLastAcceptedState() {
             return acceptedState;
         }
+
     }
 
     /**
@@ -507,11 +416,19 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
      */
     public static class NodeCollection {
 
-        protected final Map<String, DiscoveryNode> nodes = new HashMap<>();
+        private final Map<String, DiscoveryNode> nodes;
 
         public void add(DiscoveryNode sourceNode) {
             // TODO is getId() unique enough or is it user-provided? If the latter, there's a risk of duplicates or of losing votes.
             nodes.put(sourceNode.getId(), sourceNode);
+        }
+
+        public NodeCollection() {
+            nodes = new HashMap<>();
+        }
+
+        public boolean isQuorum(VotingConfiguration configuration) {
+            return configuration.hasQuorum(nodes.keySet());
         }
 
         @Override
@@ -533,5 +450,6 @@ public class ConsensusState<T extends ConsensusState.CommittedState> extends Abs
         public int hashCode() {
             return nodes.hashCode();
         }
+
     }
 }
