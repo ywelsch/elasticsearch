@@ -69,6 +69,7 @@ public class ClusterRerouteResponseTests extends ESTestCase {
             assertEquals("{\n" +
                     "  \"acknowledged\" : true,\n" +
                     "  \"state\" : {\n" +
+                    "    \"cluster_uuid\" : \"_na_\",\n" +
                     "    \"version\" : 0,\n" +
                     "    \"term\" : 0,\n" +
                     "    \"state_uuid\" : \"" + clusterState.stateUUID() + "\",\n" +
@@ -137,6 +138,7 @@ public class ClusterRerouteResponseTests extends ESTestCase {
             assertEquals("{\n" +
                     "  \"acknowledged\" : true,\n" +
                     "  \"state\" : {\n" +
+                    "    \"cluster_uuid\" : \"_na_\",\n" +
                     "    \"version\" : 0,\n" +
                     "    \"term\" : 0,\n" +
                     "    \"state_uuid\" : \"" + clusterState.stateUUID() + "\",\n" +
@@ -170,6 +172,7 @@ public class ClusterRerouteResponseTests extends ESTestCase {
             assertEquals("{\n" +
                     "  \"acknowledged\" : true,\n" +
                     "  \"state\" : {\n" +
+                    "    \"cluster_uuid\" : \"_na_\",\n" +
                     "    \"metadata\" : {\n" +
                     "      \"cluster_uuid\" : \"_na_\",\n" +
                     "      \"templates\" : { },\n" +
