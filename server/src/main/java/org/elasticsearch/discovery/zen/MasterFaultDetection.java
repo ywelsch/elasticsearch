@@ -311,7 +311,7 @@ public class MasterFaultDetection extends FaultDetection {
         }
     }
 
-    static class NodeDoesNotExistOnMasterException extends IllegalStateException {
+    public static class NodeDoesNotExistOnMasterException extends IllegalStateException {
         @Override
         public Throwable fillInStackTrace() {
             return null;

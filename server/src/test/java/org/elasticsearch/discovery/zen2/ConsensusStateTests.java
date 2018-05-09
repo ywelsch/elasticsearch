@@ -21,16 +21,17 @@ package org.elasticsearch.discovery.zen2;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
-import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 
@@ -46,13 +47,20 @@ public class ConsensusStateTests extends ESTestCase {
         return new ConsensusState(Settings.EMPTY, storage);
     }
 
-    public static ClusterState clusterState(long term, long version, VotingConfiguration lastCommittedConfig,
+    public static ClusterState clusterState(long term, long version, DiscoveryNode localNode, VotingConfiguration lastCommittedConfig,
+                                            VotingConfiguration lastAcceptedConfig, long value) {
+        return clusterState(term, version, DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId()).build(),
+            lastCommittedConfig, lastAcceptedConfig, value);
+    }
+
+    public static ClusterState clusterState(long term, long version, DiscoveryNodes discoveryNodes, VotingConfiguration lastCommittedConfig,
                                             VotingConfiguration lastAcceptedConfig, long value) {
         return ClusterState.builder(ClusterName.DEFAULT)
             .version(version)
             .term(term)
             .lastCommittedConfiguration(lastCommittedConfig)
             .lastAcceptedConfiguration(lastAcceptedConfig)
+            .nodes(discoveryNodes)
             .metaData(MetaData.builder()
                 .persistentSettings(Settings.builder()
                     .put("value", value)
@@ -71,7 +79,7 @@ public class ConsensusStateTests extends ESTestCase {
         DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
         DiscoveryNode node3 = new DiscoveryNode("node3", buildNewFakeTransportAddress(), Version.CURRENT);
         VotingConfiguration initialConfig = new VotingConfiguration(Collections.singleton(node1.getId()));
-        ClusterState state1 = clusterState(0L, 0L, initialConfig, initialConfig, 42);
+        ClusterState state1 = clusterState(0L, 0L, node1, initialConfig, initialConfig, 42);
         assertTrue(state1.getLastAcceptedConfiguration().hasQuorum(Collections.singleton(node1.getId())));
         assertTrue(state1.getLastCommittedConfiguration().hasQuorum(Collections.singleton(node1.getId())));
         PersistedState s1 = new BasePersistedState(0L, state1);
@@ -133,18 +141,18 @@ public class ConsensusStateTests extends ESTestCase {
     }
 
     static ClusterState nextStateWithTermValueAndConfig(ClusterState lastState, long term, long newValue, VotingConfiguration newConfig) {
-        return clusterState(term, lastState.version() + 1,
+        return clusterState(term, lastState.version() + 1, lastState.nodes(),
             lastState.getLastCommittedConfiguration(), newConfig, newValue);
     }
 
     static ClusterState nextStateWithValue(ClusterState lastState, long newValue) {
-        return clusterState(lastState.term(), lastState.version() + 1,
+        return clusterState(lastState.term(), lastState.version() + 1, lastState.nodes(),
             lastState.getLastCommittedConfiguration(), lastState.getLastAcceptedConfiguration(),
             newValue);
     }
 
     static ClusterState nextStateWithConfig(ClusterState lastState, VotingConfiguration newConfig) {
-        return clusterState(lastState.term(), lastState.version() + 1,
+        return clusterState(lastState.term(), lastState.version() + 1, lastState.nodes(),
             lastState.getLastCommittedConfiguration(), newConfig,
             value(lastState));
     }

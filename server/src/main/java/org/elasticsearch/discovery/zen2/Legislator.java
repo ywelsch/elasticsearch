@@ -20,9 +20,14 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.component.AbstractComponent;
@@ -30,16 +35,20 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.discovery.zen.MasterFaultDetection;
+import org.elasticsearch.discovery.zen.MembershipAction;
+import org.elasticsearch.discovery.zen.NodeJoinController;
+import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferJoin;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
-import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportException;
@@ -48,12 +57,19 @@ import org.elasticsearch.transport.TransportResponseHandler;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK;
 
 /**
  * A Legislator, following the Paxos metaphor, is responsible for making sure that actions happen in a timely fashion
@@ -86,6 +102,7 @@ public class Legislator extends AbstractComponent {
 
     private final ConsensusState consensusState;
     private final Transport transport;
+    private final MasterService masterService;
     private final DiscoveryNode localNode;
     private final Supplier<List<DiscoveryNode>> nodeSupplier;
     private final TimeValue minDelay;
@@ -111,8 +128,11 @@ public class Legislator extends AbstractComponent {
 
     private Optional<ClusterState> lastCommittedState; // the state that was last committed, can be exposed to the cluster state applier
 
+    // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
+    private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
+
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
-                      Transport transport, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
+                      Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
                       FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
@@ -125,6 +145,7 @@ public class Legislator extends AbstractComponent {
 
         consensusState = new ConsensusState(settings, persistedState);
         this.transport = transport;
+        this.masterService = masterService;
         this.localNode = localNode;
         this.currentTimeSupplier = currentTimeSupplier;
         this.futureExecutor = futureExecutor;
@@ -138,6 +159,9 @@ public class Legislator extends AbstractComponent {
         activeFollowerFailureDetector = Optional.empty();
 
         becomeCandidate("init");
+
+        assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
+            "local node mismatch, expected " + localNode + " but got " + persistedState.getLastAcceptedState().nodes().getLocalNode();
     }
 
     public Mode getMode() {
@@ -162,6 +186,7 @@ public class Legislator extends AbstractComponent {
         if (mode != Mode.CANDIDATE) {
             mode = Mode.CANDIDATE;
 
+            clearJoins();
             assert seekJoinsScheduler.isPresent() == false;
             seekJoinsScheduler = Optional.of(new SeekJoinsScheduler());
 
@@ -223,24 +248,57 @@ public class Legislator extends AbstractComponent {
         }
     }
 
+    private void clearJoins() {
+        joinRequestAccumulator.values().forEach(
+            joinCallback -> joinCallback.onFailure(new ConsensusMessageRejectedException("node stepped down as leader")));
+        joinRequestAccumulator.clear();
+    }
+
     private void startSeekingJoins() {
+        clearJoins(); // TODO: is this the right place?
+
         currentOfferJoinCollector = Optional.of(new OfferJoinCollector());
         SeekJoins seekJoins = new SeekJoins(consensusState.getCurrentTerm(), consensusState.getLastAcceptedVersion());
         currentOfferJoinCollector.get().start(seekJoins);
     }
 
-    public Join handleStartJoin(DiscoveryNode sourceNode, StartJoinRequest startJoinRequest) {
-        logger.debug("handleStartJoin: from [{}] with term {}", sourceNode, startJoinRequest.getTerm());
-        Join join = consensusState.handleStartJoin(sourceNode, startJoinRequest.getTerm());
+    private Join joinLeaderInTerm(DiscoveryNode sourceNode, long term) {
+        logger.debug("joinLeaderInTerm: from [{}] with term {}", sourceNode, term);
+        Join join = consensusState.handleStartJoin(sourceNode, term);
         if (mode != Mode.CANDIDATE) {
-            becomeCandidate("handleStartJoin");
+            becomeCandidate("joinLeaderInTerm");
         }
         return join;
     }
 
+    public void handleStartJoin(DiscoveryNode sourceNode, StartJoinRequest startJoinRequest) {
+        Join join = joinLeaderInTerm(sourceNode, startJoinRequest.getTerm());
+
+        transport.sendJoin(sourceNode, join, new TransportResponseHandler<TransportResponse.Empty>() {
+            @Override
+            public void handleResponse(TransportResponse.Empty response) {
+                logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
+            }
+
+            @Override
+            public void handleException(TransportException exp) {
+                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                    logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
+                } else {
+                    logger.debug(() -> new ParameterizedMessage("SendJoinResponseHandler: [{}] failed", sourceNode), exp);
+                }
+            }
+
+            @Override
+            public String executor() {
+                return ThreadPool.Names.SAME;
+            }
+        });
+    }
+
     private Optional<Join> ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
         if (consensusState.getCurrentTerm() < targetTerm) {
-            return Optional.of(handleStartJoin(sourceNode, new StartJoinRequest(targetTerm)));
+            return Optional.of(joinLeaderInTerm(sourceNode, targetTerm));
         }
         return Optional.empty();
     }
@@ -260,9 +318,13 @@ public class Legislator extends AbstractComponent {
                 mode, sender);
         }
 
-        // TODO reject if sender is not a publication target
+        // TODO: use last published state instead of last accepted state? Where can we access that state?
+        if (consensusState.getLastAcceptedState().getNodes().nodeExists(sender) == false) {
+            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as not publication target", sender);
+            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
+        }
 
-        LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastAcceptedVersion());
+        LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
         logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
         return response;
     }
@@ -277,8 +339,16 @@ public class Legislator extends AbstractComponent {
         return consensusState.getLastAcceptedState();
     }
 
+    public long getCurrentTerm() {
+        return consensusState.getCurrentTerm();
+    }
+
     public Optional<ClusterState> getLastCommittedState() {
         return lastCommittedState;
+    }
+
+    public boolean hasElectionQuorum(VotingConfiguration votingConfiguration) {
+        return consensusState.hasElectionQuorum(votingConfiguration);
     }
 
     public enum PublicationTargetState {
@@ -303,13 +373,14 @@ public class Legislator extends AbstractComponent {
             this.publishRequest = publishRequest;
             applyCommitReference = new AtomicReference<>();
 
-            final List<DiscoveryNode> discoveryNodes = nodeSupplier.get();
-            publicationTargets = new ArrayList<>(discoveryNodes.size());
-            discoveryNodes.stream().map(PublicationTarget::new).forEach(publicationTargets::add);
+            publicationTargets = new ArrayList<>(publishRequest.getAcceptedState().getNodes().getNodes().size());
+            publishRequest.getAcceptedState().getNodes().iterator().forEachRemaining(n -> publicationTargets.add(new PublicationTarget(n)));
         }
 
         private void start() {
+            logger.trace("publishing {} to {}", publishRequest, publicationTargets);
             publicationTargets.forEach(PublicationTarget::sendPublishRequest);
+            onPossibleCommitFailure();
         }
 
         private void onCommitted(final ApplyCommit applyCommit) {
@@ -369,6 +440,11 @@ public class Legislator extends AbstractComponent {
             private PublicationTarget(DiscoveryNode discoveryNode) {
                 this.discoveryNode = discoveryNode;
                 state = PublicationTargetState.NOT_STARTED;
+            }
+
+            @Override
+            public String toString() {
+                return discoveryNode.getId();
             }
 
             public void sendPublishRequest() {
@@ -503,7 +579,29 @@ public class Legislator extends AbstractComponent {
         }
     }
 
-    void handleJoin(DiscoveryNode sourceNode, Join join) {
+    public void handleJoinRequest(DiscoveryNode sourceNode, Join join, MembershipAction.JoinCallback joinCallback) {
+        if (mode == Mode.LEADER) {
+            // submit as cluster state update task
+            masterService.submitTask(join.toString(),
+                clusterState -> joinNodes(clusterState, Collections.singletonList(sourceNode)).resultingState);
+        } else {
+            MembershipAction.JoinCallback prev = joinRequestAccumulator.put(sourceNode, joinCallback);
+            if (prev != null) {
+                prev.onFailure(new ConsensusMessageRejectedException("already have a join for " + sourceNode));
+            }
+        }
+        handleJoin(sourceNode, join);
+    }
+
+    // copied from NodeJoinController.getPendingAsTasks
+    private Map<DiscoveryNode, ClusterStateTaskListener> getPendingAsTasks() {
+        Map<DiscoveryNode, ClusterStateTaskListener> tasks = new HashMap<>();
+        joinRequestAccumulator.entrySet().stream().forEach(e -> tasks.put(e.getKey(),
+            new NodeJoinController.JoinTaskListener(e.getValue(), logger)));
+        return tasks;
+    }
+
+    private void handleJoin(DiscoveryNode sourceNode, Join join) {
         Optional<Join> optionalJoin = ensureTermAtLeast(localNode, join.getTerm());
         if (optionalJoin.isPresent()) {
             handleJoin(localNode, optionalJoin.get()); // someone thinks we should be master, so let's try to become one
@@ -517,17 +615,85 @@ public class Legislator extends AbstractComponent {
 
             becomeLeader("handleJoin");
 
-            ClusterState noop = createNoop(consensusState.getCurrentTerm(), consensusState.getLastAcceptedState());
-            PublishRequest publishRequest = consensusState.handleClientValue(noop);
-            publish(publishRequest);
+            Map<DiscoveryNode, ClusterStateTaskListener> pendingAsTasks = getPendingAsTasks();
+            joinRequestAccumulator.clear();
+
+            masterService.submitTask(join.toString(), clusterState ->
+                joinNodes(clusterState, pendingAsTasks.keySet().stream().collect(Collectors.toList())).resultingState);
         }
     }
 
-    private static ClusterState createNoop(long term, ClusterState clusterState) {
-        return ClusterState.builder(clusterState).incrementVersion().term(term).build();
+    // copied from NodeJoinController.JoinTaskExecutor.execute(...)
+    public ClusterTasksResult<DiscoveryNode> joinNodes(ClusterState currentState, List<DiscoveryNode> joiningNodes) {
+        final ClusterTasksResult.Builder<DiscoveryNode> results = ClusterTasksResult.builder();
+
+        final DiscoveryNodes currentNodes = currentState.nodes();
+        ClusterState.Builder newState = becomeMasterAndTrimConflictingNodes(currentState, joiningNodes);
+
+        DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(newState.nodes());
+
+        assert nodesBuilder.isLocalNodeElectedMaster();
+
+        Version minClusterNodeVersion = newState.nodes().getMinNodeVersion();
+        Version maxClusterNodeVersion = newState.nodes().getMaxNodeVersion();
+        // we only enforce major version transitions on a fully formed clusters
+        final boolean enforceMajorVersion = currentState.getBlocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) == false;
+        // processing any joins
+        for (final DiscoveryNode node : joiningNodes) {
+            if (currentNodes.nodeExists(node)) {
+                logger.debug("received a join request for an existing node [{}]", node);
+            } else {
+                try {
+                    if (enforceMajorVersion) {
+                        MembershipAction.ensureMajorVersionBarrier(node.getVersion(), minClusterNodeVersion);
+                    }
+                    MembershipAction.ensureNodesCompatibility(node.getVersion(), minClusterNodeVersion, maxClusterNodeVersion);
+                    // we do this validation quite late to prevent race conditions between nodes joining and importing dangling indices
+                    // we have to reject nodes that don't support all indices we have in this cluster
+                    MembershipAction.ensureIndexCompatibility(node.getVersion(), currentState.getMetaData());
+                    nodesBuilder.add(node);
+                    minClusterNodeVersion = Version.min(minClusterNodeVersion, node.getVersion());
+                    maxClusterNodeVersion = Version.max(maxClusterNodeVersion, node.getVersion());
+                } catch (IllegalArgumentException | IllegalStateException e) {
+                    results.failure(node, e);
+                    continue;
+                }
+            }
+            results.success(node);
+        }
+        newState.nodes(nodesBuilder);
+        return results.build(newState.build());
+    }
+
+    // copied from NodeJoinController.JoinTaskExecutor.becomeMasterAndTrimConflictingNodes(...)
+    private ClusterState.Builder becomeMasterAndTrimConflictingNodes(ClusterState currentState, List<DiscoveryNode> joiningNodes) {
+        DiscoveryNodes currentNodes = currentState.nodes();
+        DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(currentNodes);
+        nodesBuilder.masterNodeId(currentState.nodes().getLocalNodeId());
+
+        for (final DiscoveryNode joiningNode : joiningNodes) {
+            final DiscoveryNode nodeWithSameId = nodesBuilder.get(joiningNode.getId());
+            if (nodeWithSameId != null && nodeWithSameId.equals(joiningNode) == false) {
+                logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameId, joiningNode);
+                nodesBuilder.remove(nodeWithSameId.getId());
+            }
+            final DiscoveryNode nodeWithSameAddress = currentNodes.findByAddress(joiningNode.getAddress());
+            if (nodeWithSameAddress != null && nodeWithSameAddress.equals(joiningNode) == false) {
+                logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameAddress,
+                    joiningNode);
+                nodesBuilder.remove(nodeWithSameAddress.getId());
+            }
+        }
+
+        return ClusterState.builder(currentState).nodes(nodesBuilder);
     }
 
     public LegislatorPublishResponse handlePublishRequest(DiscoveryNode sourceNode, PublishRequest publishRequest) {
+        // adapt to local node
+        ClusterState clusterState = ClusterState.builder(publishRequest.getAcceptedState()).nodes(
+            DiscoveryNodes.builder(publishRequest.getAcceptedState().nodes()).localNodeId(getLocalNode().getId()).build()).build();
+        publishRequest = new PublishRequest(clusterState);
+
         final Optional<Join> optionalJoin = ensureTermAtLeast(sourceNode, publishRequest.getAcceptedState().term());
 
         if (optionalJoin.isPresent()) {
@@ -558,6 +724,32 @@ public class Legislator extends AbstractComponent {
             throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: required term <= {} but current term is {}",
                 heartbeatRequest.getTerm(), consensusState.getCurrentTerm());
         }
+
+        ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm()).ifPresent(join -> {
+            logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}",
+                join, heartbeatRequest.getTerm(), sourceNode);
+
+            transport.sendJoin(sourceNode, join, new TransportResponseHandler<TransportResponse.Empty>() {
+                @Override
+                public void handleResponse(TransportResponse.Empty response) {
+                    logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
+                }
+
+                @Override
+                public void handleException(TransportException exp) {
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug(() -> new ParameterizedMessage("SendJoinResponseHandler: [{}] failed", sourceNode), exp);
+                    }
+                }
+
+                @Override
+                public String executor() {
+                    return ThreadPool.Names.SAME;
+                }
+            });
+        });
 
         becomeFollower("handleHeartbeatRequest", sourceNode);
 
@@ -608,11 +800,11 @@ public class Legislator extends AbstractComponent {
             sendStartJoin(new StartJoinRequest(newTerm));
             throw new ConsensusMessageRejectedException("I'm still a leader");
         } else {
-            // TODO: remove this once it's taken care of by fault detection
+            // TODO: remove this once we have a discovery layer. If a node finds an active master node during discovery,
+            // it will try to join that one, and not start seeking joins.
             if (mode == Mode.LEADER) {
-                ClusterState state = createNoop(consensusState.getCurrentTerm(), consensusState.getLastAcceptedState());
-                PublishRequest publishRequest = consensusState.handleClientValue(state);
-                publish(publishRequest);
+                masterService.submitTask("join of " + sender,
+                    clusterState -> joinNodes(clusterState, Collections.singletonList(sender)).resultingState);
             }
             logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}",
                 consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), mode);
@@ -705,15 +897,16 @@ public class Legislator extends AbstractComponent {
     }
 
     private void sendStartJoin(StartJoinRequest startStartJoinRequest) {
-        nodeSupplier.get().forEach(n -> transport.sendStartJoin(n, startStartJoinRequest, new TransportResponseHandler<Join>() {
+        nodeSupplier.get().forEach(n -> transport.sendStartJoin(n, startStartJoinRequest,
+            new TransportResponseHandler<TransportResponse.Empty>() {
             @Override
-            public Join read(StreamInput in) throws IOException {
-                return new Join(in);
+            public TransportResponse.Empty read(StreamInput in) throws IOException {
+                return TransportResponse.Empty.INSTANCE;
             }
 
             @Override
-            public void handleResponse(Join response) {
-                handleJoin(n, response);
+            public void handleResponse(TransportResponse.Empty response) {
+                // ignore
             }
 
             @Override
@@ -771,7 +964,10 @@ public class Legislator extends AbstractComponent {
 
         void sendSeekJoins(DiscoveryNode destination, SeekJoins seekJoins, TransportResponseHandler<Messages.OfferJoin> responseHandler);
 
-        void sendStartJoin(DiscoveryNode destination, StartJoinRequest startJoinRequest, TransportResponseHandler<Join> responseHandler);
+        void sendStartJoin(DiscoveryNode destination, StartJoinRequest startJoinRequest,
+                           TransportResponseHandler<TransportResponse.Empty> responseHandler);
+
+        void sendJoin(DiscoveryNode destination, Join join, TransportResponseHandler<TransportResponse.Empty> responseHandler);
 
         void sendPreJoinHandover(DiscoveryNode destination);
 
@@ -873,20 +1069,26 @@ public class Legislator extends AbstractComponent {
 
         private class Heartbeat {
 
-            final List<DiscoveryNode> allNodes = new ArrayList<>(nodeSupplier.get());
-            final List<DiscoveryNode> successfulNodes = new ArrayList<>(allNodes.size());
-            final List<DiscoveryNode> failedNodes = new ArrayList<>(allNodes.size());
+            final List<DiscoveryNode> allNodes;
+            final List<DiscoveryNode> successfulNodes;
+            final List<DiscoveryNode> failedNodes;
 
             boolean receivedQuorum = false;
             boolean failed = false;
 
             Heartbeat() {
+                allNodes = new ArrayList<>();
+                // TODO: instead of last accepted state, use current (being published) one? Where do we get that from?
+                consensusState.getLastAcceptedState().getNodes().forEach(allNodes::add);
+                successfulNodes = new ArrayList<>(allNodes.size());
+                failedNodes = new ArrayList<>(allNodes.size());
+
                 final HeartbeatRequest heartbeatRequest
                     = new HeartbeatRequest(consensusState.getCurrentTerm(), consensusState.getLastAcceptedVersion());
 
                 futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
 
-                nodeSupplier.get().forEach(n -> {
+                allNodes.forEach(n -> {
                     if (n.equals(localNode) == false) {
                         logger.trace("Heartbeat: sending heartbeat to {}", n);
                         transport.sendHeartbeatRequest(n, heartbeatRequest,
@@ -900,9 +1102,9 @@ public class Legislator extends AbstractComponent {
                                 public void handleResponse(HeartbeatResponse heartbeatResponse) {
                                     logger.trace("Heartbeat.handleResponse: received [{}] from [{}]", heartbeatResponse, n);
                                     assert heartbeatResponse.getTerm() <= term;
-                                    if (heartbeatResponse.getVersion() > consensusState.getLastAcceptedVersion()) {
+                                    if (heartbeatResponse.getVersion() > consensusState.getLastPublishedVersion()) {
                                         logger.debug("Heartbeat.handleResponse: follower has a later version than the leader's {}",
-                                            consensusState.getLastAcceptedVersion());
+                                            consensusState.getLastPublishedVersion());
                                         becomeCandidate("Heartbeat.handleResponse");
                                     }
                                     successfulNodes.add(n);
@@ -1005,10 +1207,13 @@ public class Legislator extends AbstractComponent {
             }
         }
 
-        private void onCheckFailure() {
+        private void onCheckFailure(@Nullable Throwable cause) {
             if (running) {
                 failureCountSinceLastSuccess++;
-                if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
+                if (cause instanceof MasterFaultDetection.NodeDoesNotExistOnMasterException) {
+                    logger.debug("ActiveFollowerFailureDetector.onCheckFailure: node not part of the cluster");
+                    becomeCandidate("ActiveFollowerFailureDetector.onCheckFailure");
+                } else if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
                     logger.debug("ActiveFollowerFailureDetector.onCheckFailure: {} consecutive failures to check the leader",
                         failureCountSinceLastSuccess);
                     becomeCandidate("ActiveFollowerFailureDetector.onCheckFailure");
@@ -1048,17 +1253,20 @@ public class Legislator extends AbstractComponent {
                         onCheckSuccess();
 
                         final long leaderVersion = leaderCheckResponse.getVersion();
-                        if (leaderVersion > consensusState.getLastAcceptedVersion()) {
+                        long localVersion = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
+                        if (leaderVersion > localVersion) {
                             logger.trace("LeaderCheck.handleResponse: heartbeat for version {} > local version {}, starting lag detector",
-                                leaderVersion, consensusState.getLastAcceptedVersion());
+                                leaderVersion, localVersion);
                             futureExecutor.schedule(publishTimeout, () -> {
-                                if (leaderVersion > consensusState.getLastAcceptedVersion()) {
+                                long localVersion2 = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
+                                if (leaderVersion > localVersion2) {
                                     logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
-                                        leaderVersion, consensusState.getLastAcceptedVersion(), publishTimeout);
+                                        localVersion2, leaderVersion, publishTimeout);
                                     becomeCandidate("LeaderCheck.handleResponse");
                                 }
                             });
-                        }                    }
+                        }
+                    }
 
                     @Override
                     public void handleException(TransportException exp) {
@@ -1069,7 +1277,7 @@ public class Legislator extends AbstractComponent {
                                     "LeaderCheck.handleException: received exception from [{}]", leader), exp);
                         }
                         inFlight = false;
-                        onCheckFailure();
+                        onCheckFailure(exp.getRootCause());
                     }
 
                     @Override
@@ -1083,9 +1291,13 @@ public class Legislator extends AbstractComponent {
                 if (inFlight) {
                     logger.debug("LeaderCheck.onTimeout: no response received from [{}]", leader);
                     inFlight = false;
-                    onCheckFailure();
+                    onCheckFailure(null);
                 }
             }
         }
+    }
+
+    public interface MasterService {
+        void submitTask(String reason, Function<ClusterState, ClusterState> runnable);
     }
 }

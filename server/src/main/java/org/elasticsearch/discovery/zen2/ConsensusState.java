@@ -103,6 +103,10 @@ public class ConsensusState extends AbstractComponent {
         return lastPublishedVersion;
     }
 
+    public boolean hasElectionQuorum(VotingConfiguration votingConfiguration) {
+        return joinVotes.isQuorum(votingConfiguration);
+    }
+
     /**
      * May be safely called at any time to move this instance to a new term. It is vitally important for safety that
      * the resulting Join is sent to no more than one node.
@@ -214,7 +218,7 @@ public class ConsensusState extends AbstractComponent {
             logger.debug("handleClientValue: only allow reconfiguration while not already reconfiguring");
             throw new ConsensusMessageRejectedException("only allow reconfiguration while not already reconfiguring");
         }
-        if (clusterState.getLastAcceptedConfiguration().hasQuorum(joinVotes.nodes.keySet()) == false) {
+        if (hasElectionQuorum(clusterState.getLastAcceptedConfiguration()) == false) {
             logger.debug("handleClientValue: only allow reconfiguration if join quorum available for new config");
             throw new ConsensusMessageRejectedException("only allow reconfiguration if join quorum available for new config");
         }

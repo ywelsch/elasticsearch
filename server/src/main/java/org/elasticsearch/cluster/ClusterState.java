@@ -720,6 +720,9 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
         ClusterName clusterName = new ClusterName(in);
         Builder builder = new Builder(clusterName);
         builder.version = in.readLong();
+        if (in.getVersion().onOrAfter(Version.V_7_0_0_alpha1)) {
+            builder.term = in.readLong();
+        }
         builder.uuid = in.readString();
         if (in.getVersion().onOrAfter(Version.V_7_0_0_alpha1)) {
             builder.lastCommittedConfiguration(new VotingConfiguration(in));
@@ -741,6 +744,9 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
     public void writeTo(StreamOutput out) throws IOException {
         clusterName.writeTo(out);
         out.writeLong(version);
+        if (out.getVersion().onOrAfter(Version.V_7_0_0_alpha1)) {
+            out.writeLong(term);
+        }
         out.writeString(stateUUID);
         if (out.getVersion().onOrAfter(Version.V_7_0_0_alpha1)) {
             lastCommittedConfiguration.writeTo(out);
@@ -900,7 +906,7 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
 
         public boolean hasQuorum(Collection<String> votes) {
             if (nodeIds.isEmpty()) {
-                throw new IllegalStateException("cannot check quorum on an empty configuration");
+                return false; // TODO: should we even allow this check on an empty configuration?
             }
             final HashSet<String> intersection = new HashSet<>(nodeIds);
             intersection.retainAll(votes);

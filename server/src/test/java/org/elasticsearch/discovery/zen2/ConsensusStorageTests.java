@@ -54,7 +54,7 @@ public class ConsensusStorageTests extends ESTestCase {
         DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
         VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
 
-        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, node, initialConfig, initialConfig, 42);
         final Path path;
         final ClusterState clusterState3;
         try (ConsensusStorage st = createFreshStore(Settings.builder().put(
@@ -82,6 +82,8 @@ public class ConsensusStorageTests extends ESTestCase {
         try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
             assertEquals(st.getCurrentTerm(), 2L);
             assertEquals(value(st.getLastAcceptedState()), 44L);
+            assertEquals(st.getLastAcceptedState().term(), 1L);
+            assertEquals(st.getLastAcceptedState().version(), 3L);
             assertEquals(st.getLastAcceptedState().getLastAcceptedConfiguration(), newConfig);
             assertEquals(st.getLastAcceptedState().getLastCommittedConfiguration(), newConfig);
             assertThat(st.getGeneration(), equalTo(3L));
@@ -94,7 +96,7 @@ public class ConsensusStorageTests extends ESTestCase {
         DiscoveryNode node2 = new DiscoveryNode("node2", buildNewFakeTransportAddress(), Version.CURRENT);
         VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
 
-        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, node, initialConfig, initialConfig, 42);
         final Path path;
         final ClusterState clusterState3;
         try (ConsensusStorage st = createFreshStore(Settings.EMPTY, clusterState1, node)) {
@@ -121,6 +123,8 @@ public class ConsensusStorageTests extends ESTestCase {
         try (ConsensusStorage st = createExistingStore(Settings.EMPTY, path, node)) {
             assertEquals(st.getCurrentTerm(), 2L);
             assertEquals(value(st.getLastAcceptedState()), 44L);
+            assertEquals(st.getLastAcceptedState().term(), 1L);
+            assertEquals(st.getLastAcceptedState().version(), 3L);
             assertEquals(st.getLastAcceptedState().getLastAcceptedConfiguration(), newConfig);
             assertEquals(st.getLastAcceptedState().getLastCommittedConfiguration(), newConfig);
             assertThat(st.getGeneration(), equalTo(0L));
@@ -135,7 +139,7 @@ public class ConsensusStorageTests extends ESTestCase {
         DiscoveryNode node = new DiscoveryNode("node1", buildNewFakeTransportAddress(), Version.CURRENT);
         VotingConfiguration initialConfig = new VotingConfiguration(Collections.singleton(node.getId()));
 
-        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, initialConfig, initialConfig, 42);
+        ClusterState clusterState1 = ConsensusStateTests.clusterState(1L, 1L, node, initialConfig, initialConfig, 42);
 
         boolean rollOver = randomBoolean();
         Settings storageSettings = rollOver ? Settings.builder().put(
