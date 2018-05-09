@@ -31,6 +31,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
@@ -62,6 +63,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -99,7 +101,7 @@ public class LegislatorTests extends ESTestCase {
     }
 
     @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
-    public void testNodeJoining() {
+    public void testNodeJoiningAndLeaving() {
         Cluster cluster = new Cluster(randomIntBetween(1, 3));
         cluster.runRandomly(true);
         cluster.stabilise();
@@ -120,6 +122,40 @@ public class LegislatorTests extends ESTestCase {
             final ClusterState committedState = clusterNode.legislator.getLastCommittedState().get();
             assertThat(clusterNode.getId() + " misses nodes in cluster state: " + committedState.getNodes(),
                 committedState.getNodes().getSize(), equalTo(cluster.getNodeCount()));
+        }
+
+        // pick a subset of nodes to disconnect so that the remaining connected nodes still have a voting quorum
+        ClusterNode leader = cluster.getAnyLeader();
+
+        VotingConfiguration config = leader.legislator.getLastCommittedState().get().getLastCommittedConfiguration();
+        Set<String> quorumOfVotingNodes = randomUnique(() -> randomFrom(config.getNodeIds()), config.getNodeIds().size() / 2 + 1);
+        assertTrue(config.hasQuorum(quorumOfVotingNodes));
+
+        Set<String> allNodes = cluster.clusterNodes.stream()
+            .map(ClusterNode::getLocalNode).map(DiscoveryNode::getId).collect(Collectors.toSet());
+
+        Set<String> nodesToDisconnect = Sets.difference(allNodes, quorumOfVotingNodes);
+
+        if (nodesToDisconnect.isEmpty() == false) {
+            nodesToDisconnect.forEach(nodeId -> {
+                ClusterNode node = cluster.clusterNodes.stream().filter(cn -> cn.getLocalNode().getId().equals(nodeId)).findFirst().get();
+                logger.info("--> disconnecting {}", node.getLocalNode());
+                node.isConnected = false;
+            });
+
+            if (nodesToDisconnect.contains(leader.getLocalNode().getId())) {
+                // currently stabilization is not long enough for the leader to be able to step down as it will take
+                // ActiveLeaderFailureDetector some time to notice that the other nodes are unavailable, which will then trigger a
+                // cluster state update to remove these nodes. As the leader is isolated, publishing that cluster state will time out
+                // and only then will the leader step down.
+                // TODO: improve failure detection
+                cluster.stabilise(2 * cluster.DEFAULT_STABILISATION_TIME, Cluster.DEFAULT_DELAY_VARIABILITY);
+            } else {
+                cluster.stabilise();
+            }
+
+            assertThat(cluster.getAnyLeader().legislator.getLastCommittedState().get().nodes().getSize(),
+                equalTo(cluster.getNodeCount() - nodesToDisconnect.size()));
         }
     }
 
@@ -177,7 +213,12 @@ public class LegislatorTests extends ESTestCase {
         if (randomBoolean()) {
             cluster.runRandomly(false);
         }
-        cluster.stabilise();
+        // currently stabilization is not long enough for the leader to be able to step down as it will take
+        // ActiveLeaderFailureDetector some time to notice that the other nodes are unavailable, which will then trigger a
+        // cluster state update to remove these nodes. As the leader is isolated, publishing that cluster state will time out
+        // and only then will the leader step down.
+        // TODO: improve failure detection
+        cluster.stabilise(2 * cluster.DEFAULT_STABILISATION_TIME, Cluster.DEFAULT_DELAY_VARIABILITY);
         final ClusterNode newLeader = cluster.getAnyLeader();
 
         assertNotEquals(leader, newLeader);
@@ -225,7 +266,64 @@ public class LegislatorTests extends ESTestCase {
         final long stabilisationTime = disconnectionTime + CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2
             + Cluster.DEFAULT_DELAY_VARIABILITY;
         logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
-        while (cluster.getNextTaskExecutionTime() < stabilisationTime) {
+        while (cluster.tasks.isEmpty() == false && cluster.getNextTaskExecutionTime() < stabilisationTime) {
+            cluster.doNextWakeUp();
+            cluster.deliverNextMessageUntilQuiescent();
+        }
+        logger.info("--> next wake-ups completed");
+
+        logger.info("--> failing old leader");
+        leader.legislator.handleFailure();
+        logger.info("--> finished failing old leader");
+
+        // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
+        // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
+        cluster.assertConsistentStates();
+        cluster.assertUniqueLeaderAndExpectedModes();
+    }
+
+    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
+    public void testFastRemovalWhenFollowerDropsConnections() {
+        Cluster cluster = new Cluster(3);
+        cluster.runRandomly(true);
+        cluster.stabilise();
+        ClusterNode leader = cluster.getAnyLeader();
+
+        final VotingConfiguration allNodes = new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
+
+        // TODO: have the following automatically done as part of a reconfiguration subsystem
+        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
+            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
+            // abdicate to self to acquire all join votes
+            leader.legislator.abdicateTo(leader.localNode);
+
+            cluster.stabilise();
+            leader = cluster.getAnyLeader();
+        }
+
+        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
+
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        cluster.deliverNextMessageUntilQuiescent();
+
+        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
+
+        final long disconnectionTime = cluster.currentTimeMillis;
+        leader.isConnected = false;
+
+        for (ClusterNode clusterNode : cluster.clusterNodes) {
+            if (clusterNode != leader) {
+                logger.info("--> notifying {} of leader disconnection", clusterNode.getLocalNode());
+                clusterNode.legislator.handleDisconnectedNode(leader.localNode);
+            }
+        }
+
+        // The nodes all entered mode CANDIDATE, so the next wake-up should be after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
+        final long stabilisationTime = disconnectionTime + CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2
+            + Cluster.DEFAULT_DELAY_VARIABILITY;
+        logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
+        while (cluster.tasks.isEmpty() == false && cluster.getNextTaskExecutionTime() < stabilisationTime) {
             cluster.doNextWakeUp();
             cluster.deliverNextMessageUntilQuiescent();
         }
@@ -248,6 +346,21 @@ public class LegislatorTests extends ESTestCase {
         Map<Long, ClusterState> committedStatesByVersion = new HashMap<>();
         private static final long DEFAULT_DELAY_VARIABILITY = 100L;
         private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
+
+        // How long to wait? The worst case is that a leader just committed a value to all the other nodes, and then
+        // dropped off the network, which would mean that all the other nodes must detect its failure. It takes
+        // CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING consecutive leader checks to fail before a follower becomes a
+        // candidates, and with an unresponsive leader each leader check takes up to
+        // CONSENSUS_HEARTBEAT_DELAY_SETTING + CONSENSUS_HEARTBEAT_TIMEOUT_SETTING. After all the retries have
+        // failed, nodes wake up, become candidates, and wait for up to 2 * CONSENSUS_MIN_DELAY_SETTING before
+        // attempting an election. The first election is expected to succeed, however, because we run to quiescence
+        // before waking any other nodes up.
+        private final long DEFAULT_STABILISATION_TIME =
+            (CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis() +
+                CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(Settings.EMPTY).millis()) *
+                CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(Settings.EMPTY) +
+                2 * CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() +
+                RANDOM_MODE_DELAY_VARIABILITY + DEFAULT_DELAY_VARIABILITY;
 
         Cluster(int nodeCount) {
             clusterNodes = new ArrayList<>(nodeCount);
@@ -276,21 +389,7 @@ public class LegislatorTests extends ESTestCase {
         }
 
         public void stabilise() {
-            // How long to wait? The worst case is that a leader just committed a value to all the other nodes, and then
-            // dropped off the network, which would mean that all the other nodes must detect its failure. It takes
-            // CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING consecutive leader checks to fail before a follower becomes a
-            // candidates, and with an unresponsive leader each leader check takes up to
-            // CONSENSUS_HEARTBEAT_DELAY_SETTING + CONSENSUS_HEARTBEAT_TIMEOUT_SETTING. After all the retries have
-            // failed, nodes wake up, become candidates, and wait for up to 2 * CONSENSUS_MIN_DELAY_SETTING before
-            // attempting an election. The first election is expected to succeed, however, because we run to quiescence
-            // before waking any other nodes up.
-            stabilise(
-                (CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis() +
-                    CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(Settings.EMPTY).millis()) *
-                    CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(Settings.EMPTY) +
-                2 * CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() +
-                RANDOM_MODE_DELAY_VARIABILITY + DEFAULT_DELAY_VARIABILITY,
-                DEFAULT_DELAY_VARIABILITY);
+            stabilise(DEFAULT_STABILISATION_TIME, DEFAULT_DELAY_VARIABILITY);
         }
 
         public void stabilise(long stabilisationTimeMillis, long delayVariability) {
@@ -303,7 +402,7 @@ public class LegislatorTests extends ESTestCase {
             logger.info("--> start of stabilisation phase ({}ms): run until time {}ms", stabilisationTimeMillis,
                 stabilisationPhaseEndMillis);
 
-            while (getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
+            while (tasks.isEmpty() == false && getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
@@ -395,7 +494,7 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislator();
                         logger.info("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
                         clusterNode.legislator.handleFailure();
-                    } else {
+                    } else if (tasks.isEmpty() == false) {
                         // execute next scheduled task
                         logger.info("----> [safety {}] executing first task scheduled after time [{}ms]", iteration, currentTimeMillis);
                         doNextWakeUp();
@@ -683,7 +782,8 @@ public class LegislatorTests extends ESTestCase {
                                 ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion().build());
                         }
                     } catch (ConsensusMessageRejectedException ignore) {
-                        logger.trace(() -> new ParameterizedMessage("sendMasterServiceTask: [{}] failed: {}", reason, ignore.getMessage()));
+                        logger.trace(() -> new ParameterizedMessage("[{}] sendMasterServiceTask: [{}] failed: {}",
+                            localNode.getName(), reason, ignore.getMessage()));
                         sendMasterServiceTask(reason, runnable);
                     }
                 });
@@ -722,7 +822,8 @@ public class LegislatorTests extends ESTestCase {
                     .build();
                 return new Legislator(settings, persistedState, transport, this::sendMasterServiceTask, localNode,
                     new CurrentTimeSupplier(), futureExecutor,
-                    () -> clusterNodes.stream().map(ClusterNode::getLocalNode).collect(Collectors.toList()));
+                    () -> clusterNodes.stream().filter(cn -> cn.isConnected || cn.getLocalNode().equals(localNode))
+                        .map(ClusterNode::getLocalNode).collect(Collectors.toList()));
             }
 
             String getId() {

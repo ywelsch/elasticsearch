@@ -59,6 +59,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -119,7 +120,7 @@ public class Legislator extends AbstractComponent {
     private Optional<DiscoveryNode> lastKnownLeader;
     private Optional<Join> lastJoin;
     private Optional<SeekJoinsScheduler> seekJoinsScheduler;
-    private Optional<HeartbeatScheduler> heartbeatScheduler;
+    private Optional<ActiveLeaderFailureDetector> activeLeaderFailureDetector;
     private Optional<ActiveFollowerFailureDetector> activeFollowerFailureDetector;
     // TODO use nanoseconds throughout instead
 
@@ -155,7 +156,7 @@ public class Legislator extends AbstractComponent {
         lastJoin = Optional.empty();
         currentOfferJoinCollector = Optional.empty();
         seekJoinsScheduler = Optional.empty();
-        heartbeatScheduler = Optional.empty();
+        activeLeaderFailureDetector = Optional.empty();
         activeFollowerFailureDetector = Optional.empty();
 
         becomeCandidate("init");
@@ -190,7 +191,7 @@ public class Legislator extends AbstractComponent {
             assert seekJoinsScheduler.isPresent() == false;
             seekJoinsScheduler = Optional.of(new SeekJoinsScheduler());
 
-            stopHeartbeatScheduler();
+            stopActiveLeaderFailureDetector();
             stopActiveFollowerFailureDetector();
         }
     }
@@ -202,10 +203,9 @@ public class Legislator extends AbstractComponent {
 
         mode = Mode.LEADER;
 
-        assert heartbeatScheduler.isPresent() == false;
-        final HeartbeatScheduler heartbeatScheduler = new HeartbeatScheduler();
-        this.heartbeatScheduler = Optional.of(heartbeatScheduler);
-        heartbeatScheduler.start();
+        assert activeLeaderFailureDetector.isPresent() == false;
+        final ActiveLeaderFailureDetector activeLeaderFailureDetector = new ActiveLeaderFailureDetector();
+        this.activeLeaderFailureDetector = Optional.of(activeLeaderFailureDetector);
         stopSeekJoinsScheduler();
         stopActiveFollowerFailureDetector();
         lastKnownLeader = Optional.of(localNode);
@@ -224,7 +224,7 @@ public class Legislator extends AbstractComponent {
 
         lastKnownLeader = Optional.of(leaderNode);
         stopSeekJoinsScheduler();
-        stopHeartbeatScheduler();
+        stopActiveLeaderFailureDetector();
     }
 
     private void stopSeekJoinsScheduler() {
@@ -234,10 +234,10 @@ public class Legislator extends AbstractComponent {
         }
     }
 
-    private void stopHeartbeatScheduler() {
-        if (heartbeatScheduler.isPresent()) {
-            heartbeatScheduler.get().stop();
-            heartbeatScheduler = Optional.empty();
+    private void stopActiveLeaderFailureDetector() {
+        if (activeLeaderFailureDetector.isPresent()) {
+            activeLeaderFailureDetector.get().stop();
+            activeLeaderFailureDetector = Optional.empty();
         }
     }
 
@@ -332,6 +332,7 @@ public class Legislator extends AbstractComponent {
     private void publish(PublishRequest publishRequest) {
         final Publication publication = new Publication(publishRequest);
         futureExecutor.schedule(publishTimeout, publication::onTimeout);
+        activeLeaderFailureDetector.get().updateNodesAndPing(publishRequest.getAcceptedState());
         publication.start();
     }
 
@@ -688,6 +689,37 @@ public class Legislator extends AbstractComponent {
         return ClusterState.builder(currentState).nodes(nodesBuilder);
     }
 
+    // copied from ZenDiscovery.NodeRemovalClusterStateTaskExecutor.execute(...)
+    public ClusterTasksResult<DiscoveryNode> removeNodes(ClusterState currentState, List<DiscoveryNode> nodes) {
+        final DiscoveryNodes.Builder remainingNodesBuilder = DiscoveryNodes.builder(currentState.nodes());
+        boolean removed = false;
+        for (final DiscoveryNode node : nodes) {
+            if (currentState.nodes().nodeExists(node)) {
+                remainingNodesBuilder.remove(node);
+                removed = true;
+            } else {
+                logger.debug("node [{}] does not exist in cluster state, ignoring", node);
+            }
+        }
+
+        if (!removed) {
+            // no nodes to remove, keep the current cluster state
+            return ClusterTasksResult.<DiscoveryNode>builder().successes(nodes).build(currentState);
+        }
+
+        final ClusterState remainingNodesClusterState = remainingNodesClusterState(currentState, remainingNodesBuilder);
+
+        final ClusterTasksResult.Builder<DiscoveryNode> resultBuilder = ClusterTasksResult.<DiscoveryNode>builder().successes(nodes);
+        return resultBuilder.build(remainingNodesClusterState);
+    }
+
+    // visible for testing
+    // hook is used in testing to ensure that correct cluster state is used to test whether a
+    // rejoin or reroute is needed
+    ClusterState remainingNodesClusterState(final ClusterState currentState, DiscoveryNodes.Builder remainingNodesBuilder) {
+        return ClusterState.builder(currentState).nodes(remainingNodesBuilder).build();
+    }
+
     public LegislatorPublishResponse handlePublishRequest(DiscoveryNode sourceNode, PublishRequest publishRequest) {
         // adapt to local node
         ClusterState clusterState = ClusterState.builder(publishRequest.getAcceptedState()).nodes(
@@ -930,6 +962,10 @@ public class Legislator extends AbstractComponent {
         if (mode == Mode.FOLLOWER && lastKnownLeader.isPresent() && lastKnownLeader.get().equals(sender)) {
             becomeCandidate("handleDisconnectedNode");
         }
+        if (mode == Mode.LEADER) {
+            masterService.submitTask("disconnect from " + sender,
+                clusterState -> removeNodes(clusterState, Collections.singletonList(sender)).resultingState);
+        }
     }
 
     public void invariant() {
@@ -945,7 +981,7 @@ public class Legislator extends AbstractComponent {
 
         assert (seekJoinsScheduler.isPresent()) == (mode == Mode.CANDIDATE);
         assert (activeFollowerFailureDetector.isPresent()) == (mode == Mode.FOLLOWER);
-        assert (heartbeatScheduler.isPresent()) == (mode == Mode.LEADER);
+        assert (activeLeaderFailureDetector.isPresent()) == (mode == Mode.LEADER);
     }
 
     public enum Mode {
@@ -1026,152 +1062,139 @@ public class Legislator extends AbstractComponent {
         }
     }
 
-    private class HeartbeatScheduler {
+    private class ActiveLeaderFailureDetector {
 
-        private boolean running = false;
-        private final long term; // for assertions that a new term gets a new scheduler
+        private final Map<DiscoveryNode, NodeFD> nodesFD = new HashMap<>();
 
-        HeartbeatScheduler() {
-            term = consensusState.getCurrentTerm();
-        }
+        class NodeFD {
 
-        void start() {
-            logger.trace("HeartbeatScheduler[{}].start(): starting", term);
-            assert running == false;
-            running = true;
-            scheduleNextWakeUp();
-        }
+            private int failureCountSinceLastSuccess = 0;
 
-        void stop() {
-            assert running;
-            running = false;
-        }
+            private final DiscoveryNode followerNode;
 
-        private void scheduleNextWakeUp() {
-            assert running;
-            assert mode == Mode.LEADER;
-            assert consensusState.getCurrentTerm() == term
-                : "HeartbeatScheduler#term = " + term + " != consensusState#term = " + consensusState.getCurrentTerm();
-            futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
-        }
+            private NodeFD(DiscoveryNode followerNode) {
+                this.followerNode = followerNode;
+            }
 
-        private void handleWakeUp() {
-            logger.trace("HeartbeatScheduler.handleWakeUp: " +
-                    "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
-                mode, currentTimeSupplier.getAsLong(), running,
-                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+            private boolean running() {
+                return this.equals(nodesFD.get(followerNode));
+            }
 
-            if (running) {
+            public void start() {
+                assert running();
+                logger.trace("ActiveLeaderFailureDetector.start: starting failure detection against {}", followerNode);
                 scheduleNextWakeUp();
-                new Heartbeat();
+            }
+
+            private void scheduleNextWakeUp() {
+                futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
+            }
+
+            private void handleWakeUp() {
+                logger.trace("ActiveLeaderFailureDetector.handleWakeUp: " +
+                        "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
+                    mode, currentTimeSupplier.getAsLong(), running(),
+                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+
+                if (running()) {
+                    assert mode == Mode.LEADER;
+                    new FollowerCheck().start();
+                }
+            }
+
+            private void onCheckFailure(DiscoveryNode node) {
+                if (running()) {
+                    failureCountSinceLastSuccess++;
+                    if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
+                        logger.debug("ActiveFollowerFailureDetector.onCheckFailure: {} consecutive failures to check the leader",
+                            failureCountSinceLastSuccess);
+                        masterService.submitTask("node fault detection kicked out " + node,
+                            clusterState -> removeNodes(clusterState, Collections.singletonList(node)).resultingState);
+                    } else {
+                        scheduleNextWakeUp();
+                    }
+                }
+            }
+
+            private void onCheckSuccess() {
+                if (running()) {
+                    logger.trace("ActiveLeaderFailureDetector.onCheckSuccess: successful response from {}", followerNode);
+                    failureCountSinceLastSuccess = 0;
+                    scheduleNextWakeUp();
+                }
+            }
+
+            private class FollowerCheck {
+
+                private boolean inFlight = false;
+
+                void start() {
+                    logger.trace("FollowerCheck: sending follower check to [{}]", followerNode);
+                    assert inFlight == false;
+                    inFlight = true;
+                    futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
+
+                    HeartbeatRequest heartbeatRequest = new HeartbeatRequest(
+                        consensusState.getCurrentTerm(), consensusState.getLastPublishedVersion());
+
+                    transport.sendHeartbeatRequest(followerNode, heartbeatRequest, new TransportResponseHandler<HeartbeatResponse>() {
+                        @Override
+                        public void handleResponse(HeartbeatResponse heartbeatResponse) {
+                            logger.trace("FollowerCheck.handleResponse: received {} from [{}]", heartbeatResponse, followerNode);
+                            inFlight = false;
+                            onCheckSuccess();
+                        }
+
+                        @Override
+                        public void handleException(TransportException exp) {
+                            if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                                logger.debug("FollowerCheck.handleException: {}", exp.getRootCause().getMessage());
+                            } else {
+                                logger.debug(() -> new ParameterizedMessage(
+                                    "FollowerCheck.handleException: received exception from [{}]", followerNode), exp);
+                            }
+                            inFlight = false;
+                            onCheckFailure(followerNode);
+                        }
+
+                        @Override
+                        public String executor() {
+                            return ThreadPool.Names.SAME;
+                        }
+                    });
+                }
+
+                private void onTimeout() {
+                    if (inFlight) {
+                        logger.debug("FollowerCheck.onTimeout: no response received from [{}]", followerNode);
+                        inFlight = false;
+                        onCheckFailure(followerNode);
+                    }
+                }
             }
         }
 
-        private class Heartbeat {
+        public void updateNodesAndPing(ClusterState clusterState) {
+            // remove any nodes we don't need, this will cause their FD to stop
+            nodesFD.keySet().removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode));
 
-            final List<DiscoveryNode> allNodes;
-            final List<DiscoveryNode> successfulNodes;
-            final List<DiscoveryNode> failedNodes;
-
-            boolean receivedQuorum = false;
-            boolean failed = false;
-
-            Heartbeat() {
-                allNodes = new ArrayList<>();
-                // TODO: instead of last accepted state, use current (being published) one? Where do we get that from?
-                consensusState.getLastAcceptedState().getNodes().forEach(allNodes::add);
-                successfulNodes = new ArrayList<>(allNodes.size());
-                failedNodes = new ArrayList<>(allNodes.size());
-
-                final HeartbeatRequest heartbeatRequest
-                    = new HeartbeatRequest(consensusState.getCurrentTerm(), consensusState.getLastAcceptedVersion());
-
-                futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
-
-                allNodes.forEach(n -> {
-                    if (n.equals(localNode) == false) {
-                        logger.trace("Heartbeat: sending heartbeat to {}", n);
-                        transport.sendHeartbeatRequest(n, heartbeatRequest,
-                            new TransportResponseHandler<HeartbeatResponse>() {
-                                @Override
-                                public HeartbeatResponse read(StreamInput in) throws IOException {
-                                    return new HeartbeatResponse(in);
-                                }
-
-                                @Override
-                                public void handleResponse(HeartbeatResponse heartbeatResponse) {
-                                    logger.trace("Heartbeat.handleResponse: received [{}] from [{}]", heartbeatResponse, n);
-                                    assert heartbeatResponse.getTerm() <= term;
-                                    if (heartbeatResponse.getVersion() > consensusState.getLastPublishedVersion()) {
-                                        logger.debug("Heartbeat.handleResponse: follower has a later version than the leader's {}",
-                                            consensusState.getLastPublishedVersion());
-                                        becomeCandidate("Heartbeat.handleResponse");
-                                    }
-                                    successfulNodes.add(n);
-                                    onPossibleCompletion();
-                                }
-
-                                @Override
-                                public void handleException(TransportException exp) {
-                                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
-                                        logger.debug("Heartbeat.handleException: failed to get heartbeat from [{}]: {}", n,
-                                            exp.getRootCause().getMessage());
-                                    } else {
-                                        logger.debug(() -> new ParameterizedMessage(
-                                                "Heartbeat.handleException: failed to get heartbeat from [{}]", n), exp);
-                                    }
-                                    failedNodes.add(n);
-                                    onPossibleCompletion();
-                                }
-
-                                @Override
-                                public String executor() {
-                                    return ThreadPool.Names.SAME;
-                                }
-                            });
-                    }
-                });
-
-                successfulNodes.add(localNode);
-                onPossibleCompletion();
-            }
-
-            private void onPossibleCompletion() {
-                assert running == false || consensusState.getCurrentTerm() == term;
-
-                if (running && receivedQuorum == false && failed == false) {
-                    NodeCollection nodeCollection = new NodeCollection();
-                    successfulNodes.forEach(nodeCollection::add);
-
-                    if (consensusState.isPublishQuorum(nodeCollection)) {
-                        logger.trace("Heartbeat.onPossibleCompletion: received a quorum of responses");
-                        receivedQuorum = true;
-                        return;
-                    }
-
-                    for (DiscoveryNode discoveryNode : allNodes) {
-                        if (failedNodes.contains(discoveryNode) == false) {
-                            nodeCollection.add(discoveryNode);
-                        }
-                    }
-
-                    if (consensusState.isPublishQuorum(nodeCollection) == false) {
-                        logger.debug("Heartbeat.onPossibleCompletion: non-failed nodes do not form a quorum");
-                        failed = true;
-                        becomeCandidate("Heartbeat.onPossibleCompletion");
-                    }
+            // add any missing nodes
+            for (DiscoveryNode node : clusterState.nodes()) {
+                if (node.equals(localNode)) {
+                    // no need to monitor the local node
+                    continue;
+                }
+                if (!nodesFD.containsKey(node)) {
+                    NodeFD fd = new NodeFD(node);
+                    // it's OK to overwrite an existing nodeFD - it will just stop and the new one will pick things up.
+                    nodesFD.put(node, fd);
+                    fd.start();
                 }
             }
+        }
 
-            private void onTimeout() {
-                assert running == false || consensusState.getCurrentTerm() == term;
-
-                if (running && receivedQuorum == false && failed == false) {
-                    logger.debug("Heartbeat.onTimeout: timed out waiting for responses");
-                    becomeCandidate("Heartbeat.onTimeout");
-                    failed = true;
-                }
-            }
+        public void stop() {
+            nodesFD.clear();
         }
     }
 

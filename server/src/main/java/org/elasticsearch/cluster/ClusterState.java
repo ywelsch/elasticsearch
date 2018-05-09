@@ -916,6 +916,10 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
             return intersection.size() * 2 > nodeIds.size();
         }
 
+        public Set<String> getNodeIds() {
+            return nodeIds;
+        }
+
         @Override
         public String toString() {
             return "VotingConfiguration{" + String.join(",", nodeIds) + "}";
