@@ -30,7 +30,7 @@ import static java.util.Collections.singletonMap;
 import static org.hamcrest.Matchers.is;
 
 @TimeoutSuite(millis = 5 * TimeUnits.MINUTE) // to account for slow as hell VMs
-@LuceneTestCase.AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/30456")
+//@LuceneTestCase.AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/30456")
 public class UpgradeClusterClientYamlTestSuiteIT extends ESClientYamlSuiteTestCase {
 
     /**

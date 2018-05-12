@@ -145,6 +145,17 @@ subprojects {
       setting 'xpack.security.audit.outputs', 'index'
       setting 'xpack.ssl.keystore.path', 'testnode.jks'
       setting 'xpack.ssl.keystore.password', 'testnode'
+
+      setting 'logger.level', 'DEBUG'
+      setting 'logger.org.elasticsearch.xpack.ml.job.persistence', 'TRACE'
+      setting 'logger.org.elasticsearch.index.shard', 'TRACE'
+      setting 'logger.org.elasticsearch.cluster.service', 'TRACE'
+      setting 'logger.org.elasticsearch.action.bulk', 'TRACE'
+      setting 'logger.org.elasticsearch.discovery', 'TRACE'
+      setting 'logger.org.elasticsearch.action.support.replication', 'TRACE'
+      setting 'logger.org.elasticsearch.indices.recovery', 'TRACE'
+      setting 'logger.org.elasticsearch.indices.cluster', 'TRACE'
+
       dependsOn copyTestNodeKeystore
       extraConfigFile 'testnode.jks', new File(outputDir + '/testnode.jks')
       if (withSystemKey) {
@@ -191,6 +202,17 @@ subprojects {
       setting 'xpack.security.audit.enabled', 'true'
       setting 'xpack.security.audit.outputs', 'index'
       setting 'node.name', 'mixed-node-0'
+
+      setting 'logger.level', 'DEBUG'
+      setting 'logger.org.elasticsearch.xpack.ml.job.persistence', 'TRACE'
+      setting 'logger.org.elasticsearch.index.shard', 'TRACE'
+      setting 'logger.org.elasticsearch.cluster.service', 'TRACE'
+      setting 'logger.org.elasticsearch.action.bulk', 'TRACE'
+      setting 'logger.org.elasticsearch.discovery', 'TRACE'
+      setting 'logger.org.elasticsearch.action.support.replication', 'TRACE'
+      setting 'logger.org.elasticsearch.indices.recovery', 'TRACE'
+      setting 'logger.org.elasticsearch.indices.cluster', 'TRACE'
+
       dependsOn copyTestNodeKeystore
       extraConfigFile 'testnode.jks', new File(outputDir + '/testnode.jks')
       if (withSystemKey) {
