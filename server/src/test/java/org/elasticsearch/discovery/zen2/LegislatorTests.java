@@ -543,7 +543,7 @@ public class LegislatorTests extends ESTestCase {
                     } else {
                         if (clusterNode.localNode.getId().equals(destination.getId()) &&
                             clusterNode.localNode.equals(destination) == false) {
-                            logger.debug("found node with same id but different instance: {} instead of  {}", clusterNode.localNode,
+                            logger.debug("found node with same id but different instance: {} instead of {}", clusterNode.localNode,
                                 destination);
                         }
                     }
@@ -557,7 +557,6 @@ public class LegislatorTests extends ESTestCase {
                 inFlightMessages.add(inFlightMessage);
             }
         }
-
 
         void sendPublishRequestFrom(DiscoveryNode sender, DiscoveryNode destination, PublishRequest publishRequest,
                                     TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
@@ -772,7 +771,7 @@ public class LegislatorTests extends ESTestCase {
             }
 
             private void sendMasterServiceTask(String reason, Function<ClusterState, ClusterState> runnable) {
-                futureExecutor.schedule(TimeValue.timeValueMillis(0L), () -> {
+                futureExecutor.schedule(TimeValue.timeValueMillis(0L), "sendMasterServiceTask:" + reason, () -> {
                     try {
                         if (legislator.getMode() == Legislator.Mode.LEADER) {
                             ClusterState newState = runnable.apply(legislator.getLastAcceptedState());
@@ -800,9 +799,11 @@ public class LegislatorTests extends ESTestCase {
 
             // TODO: have some tests that use the on-disk data for persistence across reboots.
             void reboot() {
+                logger.trace("reboot: taking down [{}]", localNode);
                 tasks.removeIf(task -> task.scheduledFor(localNode));
                 inFlightMessages.removeIf(action -> action.hasDestination(localNode));
                 localNode = createDiscoveryNode();
+                logger.trace("reboot: starting up [{}]", localNode);
                 try {
                     BytesStreamOutput outStream = new BytesStreamOutput();
                     outStream.setVersion(Version.CURRENT);
@@ -837,14 +838,14 @@ public class LegislatorTests extends ESTestCase {
             private class FutureExecutor implements Legislator.FutureExecutor {
 
                 @Override
-                public void schedule(TimeValue delay, Runnable task) {
+                public void schedule(TimeValue delay, String description, Runnable task) {
                     assert delay.getMillis() >= 0;
                     final long actualDelay = delay.getMillis() + randomLongBetween(0L, delayVariability);
                     final long executionTimeMillis = currentTimeMillis + actualDelay;
-                    logger.debug("[{}] schedule: requested delay [{}ms] after [{}ms], " +
+                    logger.debug("[{}] scheduling [{}]: requested delay [{}ms] after [{}ms], " +
                             "scheduling with delay [{}ms] at [{}ms]",
-                        localNode.getId(), delay.getMillis(), currentTimeMillis, actualDelay, executionTimeMillis);
-                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, localNode));
+                        localNode.getId(), description, delay.getMillis(), currentTimeMillis, actualDelay, executionTimeMillis);
+                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, localNode, description));
                 }
             }
 
@@ -925,11 +926,13 @@ public class LegislatorTests extends ESTestCase {
                 final long executionTimeMillis;
                 final Runnable task;
                 private final DiscoveryNode taskNode;
+                private final String description;
 
-                TaskWithExecutionTime(long executionTimeMillis, Runnable task, DiscoveryNode taskNode) {
+                TaskWithExecutionTime(long executionTimeMillis, Runnable task, DiscoveryNode taskNode, String description) {
                     this.executionTimeMillis = executionTimeMillis;
                     this.task = task;
                     this.taskNode = taskNode;
+                    this.description = description;
                 }
 
                 public long getExecutionTimeMillis() {
@@ -938,7 +941,7 @@ public class LegislatorTests extends ESTestCase {
 
                 @Override
                 public String toString() {
-                    return "task on [" + taskNode + "] scheduled at time [" + executionTimeMillis + "ms]";
+                    return "[" + description + "] on [" + taskNode + "] scheduled at time [" + executionTimeMillis + "ms]";
                 }
 
                 public boolean scheduledFor(DiscoveryNode discoveryNode) {

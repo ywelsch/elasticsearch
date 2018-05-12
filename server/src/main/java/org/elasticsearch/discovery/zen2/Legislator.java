@@ -331,7 +331,7 @@ public class Legislator extends AbstractComponent {
 
     private void publish(PublishRequest publishRequest) {
         final Publication publication = new Publication(publishRequest);
-        futureExecutor.schedule(publishTimeout, publication::onTimeout);
+        futureExecutor.schedule(publishTimeout, "Publication#onTimeout", publication::onTimeout);
         activeLeaderFailureDetector.get().updateNodesAndPing(publishRequest.getAcceptedState());
         publication.start();
     }
@@ -588,7 +588,6 @@ public class Legislator extends AbstractComponent {
                 public String executor() {
                     return ThreadPool.Names.SAME;
                 }
-
             }
 
             private class ApplyCommitResponseHandler implements TransportResponseHandler<TransportResponse.Empty> {
@@ -879,8 +878,8 @@ public class Legislator extends AbstractComponent {
                 masterService.submitTask("join of " + sender,
                     clusterState -> joinNodes(clusterState, Collections.singletonList(sender)).resultingState);
             }
-            logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}",
-                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), mode);
+            logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}, lastKnownLeader={}",
+                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), mode, lastKnownLeader);
             throw new ConsensusMessageRejectedException("not offering join");
         }
     }
@@ -933,7 +932,7 @@ public class Legislator extends AbstractComponent {
 
         if (offerJoin.getLastAcceptedTerm() > consensusState.getLastAcceptedTerm()
             || (offerJoin.getLastAcceptedTerm() == consensusState.getLastAcceptedTerm()
-                && offerJoin.getLastAcceptedVersion() > consensusState.getLastAcceptedVersion())) {
+            && offerJoin.getLastAcceptedVersion() > consensusState.getLastAcceptedVersion())) {
             logger.debug("handleOfferJoin: handing over pre-voting to [{}] because of {}", sender, offerJoin);
             currentOfferJoinCollector = Optional.empty();
             transport.sendPreJoinHandover(sender);
@@ -972,30 +971,30 @@ public class Legislator extends AbstractComponent {
     private void sendStartJoin(StartJoinRequest startStartJoinRequest) {
         nodeSupplier.get().forEach(n -> transport.sendStartJoin(n, startStartJoinRequest,
             new TransportResponseHandler<TransportResponse.Empty>() {
-            @Override
-            public TransportResponse.Empty read(StreamInput in) throws IOException {
-                return TransportResponse.Empty.INSTANCE;
-            }
-
-            @Override
-            public void handleResponse(TransportResponse.Empty response) {
-                // ignore
-            }
-
-            @Override
-            public void handleException(TransportException exp) {
-                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
-                    logger.debug("handleStartJoinResponse: [{}] failed: {}", n, exp.getRootCause().getMessage());
-                } else {
-                    logger.debug(() -> new ParameterizedMessage("handleStartJoinResponse: failed to get join from [{}]", n), exp);
+                @Override
+                public TransportResponse.Empty read(StreamInput in) throws IOException {
+                    return TransportResponse.Empty.INSTANCE;
                 }
-            }
 
-            @Override
-            public String executor() {
-                return ThreadPool.Names.SAME;
-            }
-        }));
+                @Override
+                public void handleResponse(TransportResponse.Empty response) {
+                    // ignore
+                }
+
+                @Override
+                public void handleException(TransportException exp) {
+                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                        logger.debug("handleStartJoinResponse: [{}] failed: {}", n, exp.getRootCause().getMessage());
+                    } else {
+                        logger.debug(() -> new ParameterizedMessage("handleStartJoinResponse: failed to get join from [{}]", n), exp);
+                    }
+                }
+
+                @Override
+                public String executor() {
+                    return ThreadPool.Names.SAME;
+                }
+            }));
     }
 
     public void handleDisconnectedNode(DiscoveryNode sender) {
@@ -1054,7 +1053,7 @@ public class Legislator extends AbstractComponent {
     }
 
     public interface FutureExecutor {
-        void schedule(TimeValue delay, Runnable task);
+        void schedule(TimeValue delay, String description, Runnable task);
     }
 
     private class SeekJoinsScheduler {
@@ -1087,7 +1086,7 @@ public class Legislator extends AbstractComponent {
             assert mode == Mode.CANDIDATE;
             currentDelayMillis = Math.min(maxDelay.getMillis(), currentDelayMillis + minDelay.getMillis());
             final long delay = randomLongBetween(minDelay.getMillis(), currentDelayMillis + 1);
-            futureExecutor.schedule(TimeValue.timeValueMillis(delay), this::handleWakeUp);
+            futureExecutor.schedule(TimeValue.timeValueMillis(delay), "SeekJoinsScheduler#scheduleNextWakeUp", this::handleWakeUp);
         }
 
         private void handleWakeUp() {
@@ -1128,7 +1127,7 @@ public class Legislator extends AbstractComponent {
             }
 
             private void scheduleNextWakeUp() {
-                futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
+                futureExecutor.schedule(heartbeatDelay, "ActiveLeaderFailureDetector#handleWakeUp", this::handleWakeUp);
             }
 
             private void handleWakeUp() {
@@ -1173,7 +1172,7 @@ public class Legislator extends AbstractComponent {
                     logger.trace("FollowerCheck: sending follower check to [{}]", followerNode);
                     assert inFlight == false;
                     inFlight = true;
-                    futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
+                    futureExecutor.schedule(heartbeatTimeout, "FollowerCheck#onTimeout", this::onTimeout);
 
                     HeartbeatRequest heartbeatRequest = new HeartbeatRequest(
                         consensusState.getCurrentTerm(), consensusState.getLastPublishedVersion());
@@ -1251,7 +1250,7 @@ public class Legislator extends AbstractComponent {
         }
 
         private void scheduleNextWakeUp() {
-            futureExecutor.schedule(heartbeatDelay, this::handleWakeUp);
+            futureExecutor.schedule(heartbeatDelay, "ActiveFollowerFailureDetector#handleWakeUp", this::handleWakeUp);
         }
 
         void stop() {
@@ -1307,7 +1306,7 @@ public class Legislator extends AbstractComponent {
                 logger.trace("LeaderCheck: sending leader check to [{}]", leader);
                 assert inFlight == false;
                 inFlight = true;
-                futureExecutor.schedule(heartbeatTimeout, this::onTimeout);
+                futureExecutor.schedule(heartbeatTimeout, "LeaderCheck#onTimeout", this::onTimeout);
 
                 transport.sendLeaderCheckRequest(leader, new TransportResponseHandler<LeaderCheckResponse>() {
                     @Override
@@ -1321,7 +1320,7 @@ public class Legislator extends AbstractComponent {
                         if (leaderVersion > localVersion) {
                             logger.trace("LeaderCheck.handleResponse: heartbeat for version {} > local version {}, starting lag detector",
                                 leaderVersion, localVersion);
-                            futureExecutor.schedule(publishTimeout, () -> {
+                            futureExecutor.schedule(publishTimeout, "LeaderCheck#lagDetection", () -> {
                                 long localVersion2 = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
                                 if (leaderVersion > localVersion2) {
                                     logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
@@ -1338,7 +1337,7 @@ public class Legislator extends AbstractComponent {
                             logger.debug("LeaderCheck.handleException: {}", exp.getRootCause().getMessage());
                         } else {
                             logger.debug(() -> new ParameterizedMessage(
-                                    "LeaderCheck.handleException: received exception from [{}]", leader), exp);
+                                "LeaderCheck.handleException: received exception from [{}]", leader), exp);
                         }
                         inFlight = false;
                         onCheckFailure(exp.getRootCause());
