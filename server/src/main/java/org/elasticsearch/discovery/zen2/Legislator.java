@@ -397,13 +397,10 @@ public class Legislator extends AbstractComponent {
 
             NodeCollection possiblySuccessfulNodes = new NodeCollection();
             for (PublicationTarget publicationTarget : publicationTargets) {
-                if (publicationTarget.state == PublicationTargetState.SENT_PUBLISH_REQUEST
-                    || publicationTarget.state == PublicationTargetState.NOT_STARTED
-                    || publicationTarget.state == PublicationTargetState.WAITING_FOR_QUORUM) {
-
+                if (publicationTarget.state.mayCommitInFuture()) {
                     possiblySuccessfulNodes.add(publicationTarget.discoveryNode);
                 } else {
-                    assert publicationTarget.state == PublicationTargetState.FAILED : publicationTarget.state;
+                    assert publicationTarget.state.isFailed() : publicationTarget.state;
                 }
             }
 
@@ -436,11 +433,10 @@ public class Legislator extends AbstractComponent {
 
         private class PublicationTarget {
             private final DiscoveryNode discoveryNode;
-            private PublicationTargetState state;
+            private final PublicationTargetStateMachine state = new PublicationTargetStateMachine();
 
             private PublicationTarget(DiscoveryNode discoveryNode) {
                 this.discoveryNode = discoveryNode;
-                state = PublicationTargetState.NOT_STARTED;
             }
 
             @Override
@@ -449,14 +445,13 @@ public class Legislator extends AbstractComponent {
             }
 
             public void sendPublishRequest() {
-                assert state == PublicationTargetState.NOT_STARTED : state;
-                state = PublicationTargetState.SENT_PUBLISH_REQUEST;
+                state.setState(PublicationTargetState.SENT_PUBLISH_REQUEST);
                 transport.sendPublishRequest(discoveryNode, publishRequest, new PublishResponseHandler());
                 // TODO Can this ^ fail with an exception? Target should be failed if so.
             }
 
             void handlePublishResponse(PublishResponse publishResponse) {
-                assert state == PublicationTargetState.WAITING_FOR_QUORUM : state;
+                assert state.isWaitingForQuorum() : state;
 
                 logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, discoveryNode);
                 assert consensusState.getCurrentTerm() >= publishResponse.getTerm();
@@ -469,8 +464,7 @@ public class Legislator extends AbstractComponent {
             }
 
             public void sendApplyCommit() {
-                assert state == PublicationTargetState.WAITING_FOR_QUORUM : state;
-                state = PublicationTargetState.SENT_APPLY_COMMIT;
+                state.setState(PublicationTargetState.SENT_APPLY_COMMIT);
 
                 ApplyCommit applyCommit = applyCommitReference.get();
                 assert applyCommit != null;
@@ -479,17 +473,68 @@ public class Legislator extends AbstractComponent {
             }
 
             public boolean isWaitingForQuorum() {
-                return state == PublicationTargetState.WAITING_FOR_QUORUM;
+                return state.isWaitingForQuorum();
             }
 
             public boolean isActive() {
-                return state != PublicationTargetState.FAILED
-                    && state != PublicationTargetState.APPLIED_COMMIT;
+                return state.isActive();
             }
 
             public void setFailed() {
                 assert isActive();
-                state = PublicationTargetState.FAILED;
+                state.setState(PublicationTargetState.FAILED);
+            }
+
+            private class PublicationTargetStateMachine {
+                private PublicationTargetState state = PublicationTargetState.NOT_STARTED;
+
+                public void setState(PublicationTargetState newState) {
+                    switch (newState) {
+                        case NOT_STARTED:
+                            assert false : state + " -> " + newState;
+                            break;
+                        case SENT_PUBLISH_REQUEST:
+                            assert state == PublicationTargetState.NOT_STARTED : state + " -> " + newState;
+                            break;
+                        case WAITING_FOR_QUORUM:
+                            assert state == PublicationTargetState.SENT_PUBLISH_REQUEST : state + " -> " + newState;
+                            break;
+                        case SENT_APPLY_COMMIT:
+                            assert state == PublicationTargetState.WAITING_FOR_QUORUM : state + " -> " + newState;
+                            break;
+                        case APPLIED_COMMIT:
+                            assert state == PublicationTargetState.SENT_APPLY_COMMIT : state + " -> " + newState;
+                            break;
+                        case FAILED:
+                            assert state != PublicationTargetState.APPLIED_COMMIT : state + " -> " + newState;
+                            break;
+                    }
+                    state = newState;
+                }
+
+                public boolean isActive() {
+                    return state != PublicationTargetState.FAILED
+                        && state != PublicationTargetState.APPLIED_COMMIT;
+                }
+
+                public boolean isWaitingForQuorum() {
+                    return state == PublicationTargetState.WAITING_FOR_QUORUM;
+                }
+
+                public boolean mayCommitInFuture() {
+                    return (state == PublicationTargetState.NOT_STARTED
+                        || state == PublicationTargetState.SENT_PUBLISH_REQUEST
+                        || state == PublicationTargetState.WAITING_FOR_QUORUM);
+                }
+
+                public boolean isFailed() {
+                    return state == PublicationTargetState.FAILED;
+                }
+
+                @Override
+                public String toString() {
+                    return state.toString();
+                }
             }
 
             private class PublishResponseHandler implements TransportResponseHandler<LegislatorPublishResponse> {
@@ -500,12 +545,10 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleResponse(LegislatorPublishResponse response) {
-                    if (state == PublicationTargetState.FAILED) {
+                    if (state.isFailed()) {
                         logger.debug("PublishResponseHandler.handleResponse: already failed, ignoring response from [{}]", discoveryNode);
                         return;
                     }
-
-                    assert state == PublicationTargetState.SENT_PUBLISH_REQUEST : state;
 
                     if (response.getJoin().isPresent()) {
                         Join join = response.getJoin().get();
@@ -522,10 +565,10 @@ public class Legislator extends AbstractComponent {
                         logger.debug("PublishResponseHandler.handleResponse: [{}] is at wrong version or term {}/{} (vs {}/{})",
                             discoveryNode, response.getPublishResponse().getTerm(), response.getPublishResponse().getVersion(),
                             consensusState.getCurrentTerm(), consensusState.getLastPublishedVersion());
-                        state = PublicationTargetState.FAILED;
+                        state.setState(PublicationTargetState.FAILED);
                         onPossibleCommitFailure();
                     } else {
-                        state = PublicationTargetState.WAITING_FOR_QUORUM;
+                        state.setState(PublicationTargetState.WAITING_FOR_QUORUM);
                         handlePublishResponse(response.getPublishResponse());
                     }
                 }
@@ -537,7 +580,7 @@ public class Legislator extends AbstractComponent {
                     } else {
                         logger.debug(() -> new ParameterizedMessage("PublishResponseHandler: [{}] failed", discoveryNode), exp);
                     }
-                    state = PublicationTargetState.FAILED;
+                    state.setState(PublicationTargetState.FAILED);
                     onPossibleCommitFailure();
                 }
 
@@ -552,14 +595,12 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleResponse(TransportResponse.Empty response) {
-                    if (state == PublicationTargetState.FAILED) {
+                    if (state.isFailed()) {
                         logger.debug("ApplyCommitResponseHandler.handleResponse: already failed, ignoring response from [{}]",
                             discoveryNode);
                         return;
                     }
-
-                    assert state == PublicationTargetState.SENT_APPLY_COMMIT : state;
-                    state = PublicationTargetState.APPLIED_COMMIT;
+                    state.setState(PublicationTargetState.APPLIED_COMMIT);
                 }
 
                 @Override
@@ -569,7 +610,7 @@ public class Legislator extends AbstractComponent {
                     } else {
                         logger.debug(() -> new ParameterizedMessage("ApplyCommitResponseHandler: [{}] failed", discoveryNode), exp);
                     }
-                    state = PublicationTargetState.FAILED;
+                    state.setState(PublicationTargetState.FAILED);
                 }
 
                 @Override
