@@ -209,7 +209,7 @@ public class AllocationService extends AbstractComponent {
      * if needed.
      */
     public ClusterState deassociateDeadNodes(ClusterState clusterState, boolean reroute, String reason) {
-        ClusterState fixedClusterState = adaptAutoExpandReplicas(clusterState);
+        ClusterState fixedClusterState = reroute ? adaptAutoExpandReplicas(clusterState) : clusterState;
         RoutingNodes routingNodes = getMutableRoutingNodes(fixedClusterState);
         // shuffle the unassigned nodes, just so we won't have things like poison failed shards
         routingNodes.unassigned().shuffle();
