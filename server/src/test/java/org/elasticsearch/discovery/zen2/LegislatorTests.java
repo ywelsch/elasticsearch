@@ -283,6 +283,58 @@ public class LegislatorTests extends ESTestCase {
     }
 
     @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
+    public void testFastFailureWhenAQuorumReboots() {
+        Cluster cluster = new Cluster(3);
+        cluster.runRandomly(true);
+        cluster.stabilise();
+        ClusterNode leader = cluster.getAnyLeader();
+
+        final VotingConfiguration allNodes = new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
+
+        // TODO: have the following automatically done as part of a reconfiguration subsystem
+        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
+            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
+            // abdicate to self to acquire all join votes
+            leader.legislator.abdicateTo(leader.localNode);
+
+            cluster.stabilise();
+            leader = cluster.getAnyLeader();
+        }
+
+        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
+
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        cluster.deliverNextMessageUntilQuiescent();
+        cluster.assertConsistentStates();
+        cluster.assertUniqueLeaderAndExpectedModes();
+
+        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
+
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            if (clusterNode.equals(leader) == false) {
+                clusterNode.reboot();
+            }
+        }
+
+        logger.info("--> nodes rebooted - trying to commit something");
+
+        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
+        cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+
+        cluster.assertConsistentStates();
+        cluster.assertUniqueLeaderAndExpectedModes();
+
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            assertTrue(clusterNode.localNode + " is in committed cluster state",
+                leader.legislator.getLastCommittedState().get().getNodes().nodeExists(clusterNode.localNode));
+        }
+
+        // TODO want to assert that we stabilised quickly by failing the earlier publication but cannot since overlapping publications
+        // are currently allowed. But this will assert that in future.
+    }
+
+    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testFastRemovalWhenFollowerDropsConnections() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -780,9 +832,9 @@ public class LegislatorTests extends ESTestCase {
                             legislator.handleClientValue(
                                 ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion().build());
                         }
-                    } catch (ConsensusMessageRejectedException ignore) {
+                    } catch (ConsensusMessageRejectedException e) {
                         logger.trace(() -> new ParameterizedMessage("[{}] sendMasterServiceTask: [{}] failed: {}",
-                            localNode.getName(), reason, ignore.getMessage()));
+                            localNode.getName(), reason, e.getMessage()));
                         sendMasterServiceTask(reason, runnable);
                     }
                 });

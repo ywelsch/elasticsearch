@@ -118,9 +118,10 @@ public class ConsensusState extends AbstractComponent {
      */
     public Join handleStartJoin(DiscoveryNode targetNode, long newTerm) {
         if (newTerm <= getCurrentTerm()) {
-            logger.debug("handleStartJoin: ignored as term provided [{}] lower or equal than current term [{}]",
+            logger.debug("handleStartJoin: ignored as term provided [{}] not greater than current term [{}]",
                 newTerm, getCurrentTerm());
-            throw new ConsensusMessageRejectedException("incoming term " + newTerm + " lower than current term " + getCurrentTerm());
+            throw new ConsensusMessageRejectedException("incoming term " + newTerm + " not greater than than current term "
+                + getCurrentTerm());
         }
 
         logger.debug("handleStartJoin: updating term from [{}] to [{}]", getCurrentTerm(), newTerm);

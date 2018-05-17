@@ -59,11 +59,13 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -131,6 +133,8 @@ public class Legislator extends AbstractComponent {
 
     // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
+
+    private final Set<FaultyNodeListener> faultyNodeListeners = new HashSet<>();
 
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
                       Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
@@ -324,6 +328,11 @@ public class Legislator extends AbstractComponent {
             throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
         }
 
+        if (getFaultyNodes().contains(sender)) {
+            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as it is faulty", sender);
+            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
+        }
+
         LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
         logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
         return response;
@@ -334,6 +343,8 @@ public class Legislator extends AbstractComponent {
         futureExecutor.schedule(publishTimeout, "Publication#onTimeout", publication::onTimeout);
         activeLeaderFailureDetector.get().updateNodesAndPing(publishRequest.getAcceptedState());
         publication.start();
+        // TODO when we have a notion of "completion" of a publication, if a publication completes and there are faulty nodes then
+        // we should try and remove them. TBD maybe this duplicates the queueing of tasks that occurs in the MasterService?
     }
 
     public ClusterState getLastAcceptedState() {
@@ -361,10 +372,18 @@ public class Legislator extends AbstractComponent {
         APPLIED_COMMIT,
     }
 
+    private interface FaultyNodeListener {
+        void onFaultyNode(DiscoveryNode node);
+    }
+
+    private Set<DiscoveryNode> getFaultyNodes() {
+        return Collections.unmodifiableSet(activeLeaderFailureDetector.get().faultyNodes);
+    }
+
     /**
      * A single attempt to publish an update
      */
-    private class Publication {
+    private class Publication implements FaultyNodeListener {
 
         private final AtomicReference<ApplyCommit> applyCommitReference;
         private final List<PublicationTarget> publicationTargets;
@@ -380,6 +399,11 @@ public class Legislator extends AbstractComponent {
 
         private void start() {
             logger.trace("publishing {} to {}", publishRequest, publicationTargets);
+            faultyNodeListeners.add(this);
+            Set<DiscoveryNode> localFaultyNodes = new HashSet<>(getFaultyNodes());
+            for (final DiscoveryNode faultyNode : localFaultyNodes) {
+                onFaultyNode(faultyNode);
+            }
             publicationTargets.forEach(PublicationTarget::sendPublishRequest);
             onPossibleCommitFailure();
         }
@@ -388,6 +412,7 @@ public class Legislator extends AbstractComponent {
             assert applyCommitReference.get() == null;
             applyCommitReference.set(applyCommit);
             publicationTargets.stream().filter(PublicationTarget::isWaitingForQuorum).forEach(PublicationTarget::sendApplyCommit);
+            faultyNodeListeners.remove(this); // TODO keep listening for faulty nodes until all nodes acked.
         }
 
         private void onPossibleCommitFailure() {
@@ -421,6 +446,7 @@ public class Legislator extends AbstractComponent {
 
         private void failActiveTargets() {
             publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::setFailed);
+            faultyNodeListeners.remove(this); // TODO keep listening for faulty nodes until all nodes acked.
         }
 
         public void onTimeout() {
@@ -429,6 +455,11 @@ public class Legislator extends AbstractComponent {
             if (mode == Mode.LEADER && applyCommitReference.get() == null) {
                 becomeCandidate("Publication.onTimeout()");
             }
+        }
+
+        @Override
+        public void onFaultyNode(DiscoveryNode faultyNode) {
+            publicationTargets.stream().forEach(t -> t.onFaultyNode(faultyNode));
         }
 
         private class PublicationTarget {
@@ -445,6 +476,9 @@ public class Legislator extends AbstractComponent {
             }
 
             public void sendPublishRequest() {
+                if (state.isFailed()) {
+                    return;
+                }
                 state.setState(PublicationTargetState.SENT_PUBLISH_REQUEST);
                 transport.sendPublishRequest(discoveryNode, publishRequest, new PublishResponseHandler());
                 // TODO Can this ^ fail with an exception? Target should be failed if so.
@@ -483,6 +517,15 @@ public class Legislator extends AbstractComponent {
             public void setFailed() {
                 assert isActive();
                 state.setState(PublicationTargetState.FAILED);
+            }
+
+            public void onFaultyNode(DiscoveryNode faultyNode) {
+                if (isActive() && discoveryNode.equals(faultyNode)) {
+                    logger.debug("onFaultyNode: [{}] is faulty, failing target in publication of version [{}] in term [{}]", faultyNode,
+                        publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
+                    setFailed();
+                    onPossibleCommitFailure();
+                }
             }
 
             private class PublicationTargetStateMachine {
@@ -623,7 +666,7 @@ public class Legislator extends AbstractComponent {
     public void handleJoinRequest(DiscoveryNode sourceNode, Join join, MembershipAction.JoinCallback joinCallback) {
         if (mode == Mode.LEADER) {
             // submit as cluster state update task
-            masterService.submitTask(join.toString(),
+            masterService.submitTask("handleJoinRequest: joining existing leader: " + join,
                 clusterState -> joinNodes(clusterState, Collections.singletonList(sourceNode)).resultingState);
         } else {
             MembershipAction.JoinCallback prev = joinRequestAccumulator.put(sourceNode, joinCallback);
@@ -659,7 +702,7 @@ public class Legislator extends AbstractComponent {
             Map<DiscoveryNode, ClusterStateTaskListener> pendingAsTasks = getPendingAsTasks();
             joinRequestAccumulator.clear();
 
-            masterService.submitTask(join.toString(), clusterState ->
+            masterService.submitTask("handleJoin: becoming leader: " + join, clusterState ->
                 joinNodes(clusterState, pendingAsTasks.keySet().stream().collect(Collectors.toList())).resultingState);
         }
     }
@@ -1003,6 +1046,7 @@ public class Legislator extends AbstractComponent {
             becomeCandidate("handleDisconnectedNode");
         }
         if (mode == Mode.LEADER) {
+            activeLeaderFailureDetector.get().addFaultyNode(sender);
             masterService.submitTask("disconnect from " + sender,
                 clusterState -> removeNodes(clusterState, Collections.singletonList(sender)).resultingState);
         }
@@ -1104,6 +1148,9 @@ public class Legislator extends AbstractComponent {
 
     private class ActiveLeaderFailureDetector {
 
+        // nodes that have been detected as faulty and which are not expected to participate in publications
+        private final Set<DiscoveryNode> faultyNodes = new HashSet<>();
+
         private final Map<DiscoveryNode, NodeFD> nodesFD = new HashMap<>();
 
         class NodeFD {
@@ -1148,6 +1195,7 @@ public class Legislator extends AbstractComponent {
                     if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
                         logger.debug("ActiveFollowerFailureDetector.onCheckFailure: {} consecutive failures to check the leader",
                             failureCountSinceLastSuccess);
+                        addFaultyNode(node);
                         masterService.submitTask("node fault detection kicked out " + node,
                             clusterState -> removeNodes(clusterState, Collections.singletonList(node)).resultingState);
                     } else {
@@ -1217,6 +1265,7 @@ public class Legislator extends AbstractComponent {
         public void updateNodesAndPing(ClusterState clusterState) {
             // remove any nodes we don't need, this will cause their FD to stop
             nodesFD.keySet().removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode));
+            faultyNodes.removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode));
 
             // add any missing nodes
             for (DiscoveryNode node : clusterState.nodes()) {
@@ -1224,12 +1273,23 @@ public class Legislator extends AbstractComponent {
                     // no need to monitor the local node
                     continue;
                 }
-                if (!nodesFD.containsKey(node)) {
+                if (nodesFD.containsKey(node) == false && faultyNodes.contains(node) == false) {
                     NodeFD fd = new NodeFD(node);
                     // it's OK to overwrite an existing nodeFD - it will just stop and the new one will pick things up.
                     nodesFD.put(node, fd);
                     fd.start();
                 }
+            }
+        }
+
+        public void addFaultyNode(DiscoveryNode node) {
+            logger.trace("ActiveLeaderFailureDetector.addFaultyNode: adding {}", node);
+            faultyNodes.add(node);
+            nodesFD.remove(node);
+
+            final Set<FaultyNodeListener> localFaultyNodeListeners = new HashSet<>(faultyNodeListeners);
+            for (final FaultyNodeListener faultyNodeListener : localFaultyNodeListeners) {
+                faultyNodeListener.onFaultyNode(node);
             }
         }
 
