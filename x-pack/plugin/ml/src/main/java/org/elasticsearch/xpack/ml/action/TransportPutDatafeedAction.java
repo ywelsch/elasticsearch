@@ -28,6 +28,7 @@ import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xpack.core.XPackField;
+import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.XPackSettings;
 import org.elasticsearch.xpack.core.ml.MLMetadataField;
 import org.elasticsearch.xpack.core.ml.MlMetadata;
@@ -141,6 +142,9 @@ public class TransportPutDatafeedAction extends TransportMasterNodeAction<PutDat
     }
 
     private ClusterState putDatafeed(PutDatafeedAction.Request request, ClusterState clusterState) {
+        if (XPackPlugin.xpackReady(clusterState) == false) {
+            throw new IllegalStateException("not x-pack ready yet");
+        }
         MlMetadata currentMetadata = clusterState.getMetaData().custom(MLMetadataField.TYPE);
         MlMetadata newMetadata = new MlMetadata.Builder(currentMetadata)
                 .putDatafeed(request.getDatafeed(), threadPool.getThreadContext()).build();

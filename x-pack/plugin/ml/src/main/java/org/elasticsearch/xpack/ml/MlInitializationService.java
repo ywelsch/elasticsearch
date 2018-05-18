@@ -17,6 +17,7 @@ import org.elasticsearch.common.component.LifecycleListener;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.gateway.GatewayService;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.ml.MLMetadataField;
 import org.elasticsearch.xpack.core.ml.MlMetadata;
 
@@ -48,6 +49,10 @@ class MlInitializationService extends AbstractComponent implements ClusterStateL
         }
 
         if (event.localNodeMaster()) {
+            if (XPackPlugin.xpackReady(event.state()) == false) {
+                logger.debug("not x-pack ready yet");
+                return;
+            }
             MetaData metaData = event.state().metaData();
             installMlMetadata(metaData);
             installDailyMaintenanceService();

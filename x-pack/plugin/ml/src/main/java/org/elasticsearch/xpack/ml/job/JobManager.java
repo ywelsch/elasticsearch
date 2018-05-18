@@ -30,6 +30,7 @@ import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.index.analysis.AnalysisRegistry;
 import org.elasticsearch.persistent.PersistentTasksCustomMetaData;
+import org.elasticsearch.xpack.core.XPackPlugin;
 import org.elasticsearch.xpack.core.ml.MLMetadataField;
 import org.elasticsearch.xpack.core.ml.MachineLearningField;
 import org.elasticsearch.xpack.core.ml.MlMetadata;
@@ -187,6 +188,11 @@ public class JobManager extends AbstractComponent {
         Job job = request.getJobBuilder().build(new Date());
         if (job.getDataDescription() != null && job.getDataDescription().getFormat() == DataDescription.DataFormat.DELIMITED) {
             DEPRECATION_LOGGER.deprecated("Creating jobs with delimited data format is deprecated. Please use xcontent instead.");
+        }
+
+        if (XPackPlugin.xpackReady(state) == false) {
+            actionListener.onFailure(new IllegalStateException("not x-pack ready yet"));
+            return;
         }
 
         MlMetadata currentMlMetadata = state.metaData().custom(MLMetadataField.TYPE);
@@ -399,6 +405,10 @@ public class JobManager extends AbstractComponent {
     }
 
     private ClusterState updateClusterState(Job job, boolean overwrite, ClusterState currentState) {
+        if (XPackPlugin.xpackReady(currentState) == false) {
+            throw new IllegalStateException("not x-pack ready yet");
+        }
+
         MlMetadata.Builder builder = createMlMetadataBuilder(currentState);
         builder.putJob(job, overwrite);
         return buildNewClusterState(currentState, builder);
@@ -573,6 +583,9 @@ public class JobManager extends AbstractComponent {
 
     private static ClusterState buildNewClusterState(ClusterState currentState, MlMetadata.Builder builder) {
         ClusterState.Builder newState = ClusterState.builder(currentState);
+        if (XPackPlugin.xpackReady(currentState) == false) {
+            throw new IllegalStateException("not x-pack ready yet");
+        }
         newState.metaData(MetaData.builder(currentState.getMetaData()).putCustom(MLMetadataField.TYPE, builder.build()).build());
         return newState.build();
     }

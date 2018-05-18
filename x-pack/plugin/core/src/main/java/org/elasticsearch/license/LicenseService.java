@@ -223,6 +223,9 @@ public class LicenseService extends AbstractLifecycleComponent implements Cluste
 
                             @Override
                             public ClusterState execute(ClusterState currentState) throws Exception {
+                                if (XPackPlugin.xpackReady(currentState) == false) {
+                                    throw new IllegalStateException("not x-pack ready yet");
+                                }
                                 MetaData currentMetadata = currentState.metaData();
                                 LicensesMetaData licensesMetaData = currentMetadata.custom(LicensesMetaData.TYPE);
                                 Version trialVersion = null;
@@ -341,7 +344,7 @@ public class LicenseService extends AbstractLifecycleComponent implements Cluste
         if (clusterService.lifecycleState() == Lifecycle.State.STARTED) {
             final ClusterState clusterState = clusterService.state();
             if (clusterState.blocks().hasGlobalBlock(GatewayService.STATE_NOT_RECOVERED_BLOCK) == false &&
-                    clusterState.nodes().getMasterNode() != null) {
+                    clusterState.nodes().getMasterNode() != null && XPackPlugin.xpackReady(clusterState)) {
                 final LicensesMetaData currentMetaData = clusterState.metaData().custom(LicensesMetaData.TYPE);
                 boolean noLicense = currentMetaData == null || currentMetaData.getLicense() == null;
                 if (clusterState.getNodes().isLocalNodeElectedMaster() &&
@@ -374,6 +377,11 @@ public class LicenseService extends AbstractLifecycleComponent implements Cluste
         final ClusterState previousClusterState = event.previousState();
         final ClusterState currentClusterState = event.state();
         if (!currentClusterState.blocks().hasGlobalBlock(GatewayService.STATE_NOT_RECOVERED_BLOCK)) {
+            if (XPackPlugin.xpackReady(currentClusterState) == false) {
+                logger.debug("cluster not x-pack ready yet");
+                return;
+            }
+
             final LicensesMetaData prevLicensesMetaData = previousClusterState.getMetaData().custom(LicensesMetaData.TYPE);
             final LicensesMetaData currentLicensesMetaData = currentClusterState.getMetaData().custom(LicensesMetaData.TYPE);
             if (logger.isDebugEnabled()) {

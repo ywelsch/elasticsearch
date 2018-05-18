@@ -8,6 +8,7 @@ package org.elasticsearch.xpack.security.authc;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
+import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.core.internal.io.IOUtils;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.UnicodeUtil;
@@ -65,6 +66,8 @@ import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.xpack.core.XPackPlugin;
+import org.elasticsearch.xpack.core.XPackSettings;
 import org.elasticsearch.xpack.core.XPackField;
 import org.elasticsearch.xpack.core.XPackSettings;
 import org.elasticsearch.xpack.core.security.ScrollHelper;
@@ -1344,6 +1347,10 @@ public final class TokenService extends AbstractComponent {
 
         @Override
         public ClusterState execute(ClusterState currentState) throws Exception {
+            if (XPackPlugin.xpackReady(currentState) == false) {
+                throw new IllegalStateException("not x-pack ready yet");
+            }
+
             if (tokenMetaData.equals(currentState.custom(TokenMetaData.TYPE))) {
                 return currentState;
             }
@@ -1362,6 +1369,31 @@ public final class TokenService extends AbstractComponent {
             ClusterState state = event.state();
             if (state.getBlocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK)) {
                 return;
+            }
+
+            if (state.nodes().isLocalNodeElectedMaster()) {
+                if (XPackPlugin.xpackReady(state) && event.state().custom(TokenMetaData.TYPE) == null) {
+                    clusterService.submitStateUpdateTask("initialize token", new ClusterStateUpdateTask() {
+                        @Override
+                        public ClusterState execute(ClusterState currentState) throws Exception {
+                            if (XPackPlugin.xpackReady(currentState) == false) {
+                                throw new IllegalStateException("not x-pack ready yet");
+                            }
+                            if (currentState.custom(TokenMetaData.TYPE) == null) {
+                                return ClusterState.builder(currentState).putCustom(TokenMetaData.TYPE, getTokenMetaData()).build();
+                            } else {
+                                return currentState;
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(String source, Exception e) {
+
+                        }
+                    });
+                } else {
+                    logger.debug("not x-pack ready yet");
+                }
             }
 
             TokenMetaData custom = event.state().custom(TokenMetaData.TYPE);
@@ -1454,7 +1486,7 @@ public final class TokenService extends AbstractComponent {
         final Map<BytesKey, KeyAndCache> cache;
         final BytesKey currentTokenKeyHash;
         final KeyAndCache activeKeyCache;
-        
+
         private TokenKeys(Map<BytesKey, KeyAndCache> cache, BytesKey currentTokenKeyHash) {
             this.cache = cache;
             this.currentTokenKeyHash = currentTokenKeyHash;

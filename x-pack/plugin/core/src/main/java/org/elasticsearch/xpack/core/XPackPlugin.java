@@ -9,13 +9,16 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.util.SetOnce;
 import org.bouncycastle.operator.OperatorCreationException;
 import org.elasticsearch.SpecialPermission;
+import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.GenericAction;
 import org.elasticsearch.action.support.ActionFilter;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.transport.TransportClient;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Binder;
@@ -69,6 +72,8 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
 
     private static Logger logger = ESLoggerFactory.getLogger(XPackPlugin.class);
     private static DeprecationLogger deprecationLogger = new DeprecationLogger(logger);
+
+    public static final String XPACK_INSTALLED_NODE_ATTR = "xpack.installed";
 
     // TODO: clean up this library to not ask for write access to all system properties!
     static {
@@ -137,6 +142,41 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
     public static SSLService getSharedSslService() { return sslService.get(); }
     public static LicenseService getSharedLicenseService() { return licenseService.get(); }
     public static XPackLicenseState getSharedLicenseState() { return licenseState.get(); }
+
+    public static boolean xpackReady(ClusterState clusterState) {
+        // check if there's already x-pack metadata in the cluster state
+        if (LicenseService.getLicense(clusterState.metaData()) != null) {
+            return true;
+        }
+
+        for (DiscoveryNode discoveryNode : clusterState.nodes()) {
+            // The XPACK_INSTALLED_NODE_ATTR was only introduced in 6.3.0
+            // When we have an older node, we assume that it does not have x-pack if there is no license in the cluster state
+            if (discoveryNode.getVersion().onOrAfter(Version.V_6_3_0)) {
+                String xpackInstalledAttr = discoveryNode.getAttributes().get(XPACK_INSTALLED_NODE_ATTR);
+                if (Boolean.parseBoolean(xpackInstalledAttr) == false) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    @Override
+    public Settings additionalSettings() {
+        String xpackInstalledNodeAttrName = "node.attr." + XPACK_INSTALLED_NODE_ATTR;
+
+        if (transportClientMode) {
+            // TODO: prevent user from defining this setting
+            return Settings.EMPTY;
+        }
+
+        // TODO: check if user defined this themsleves and abort
+        return Settings.builder().put(xpackInstalledNodeAttrName, true).build();
+    }
 
     @Override
     public Collection<Module> createGuiceModules() {
