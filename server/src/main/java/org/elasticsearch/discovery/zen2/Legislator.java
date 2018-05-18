@@ -70,6 +70,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK;
@@ -311,6 +312,9 @@ public class Legislator extends AbstractComponent {
         if (mode != Mode.LEADER) {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
+
+        assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
+
         PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
         publish(publishRequest);
     }
@@ -1421,6 +1425,6 @@ public class Legislator extends AbstractComponent {
     }
 
     public interface MasterService {
-        void submitTask(String reason, Function<ClusterState, ClusterState> runnable);
+        void submitTask(String reason, UnaryOperator<ClusterState> runnable);
     }
 }
