@@ -448,20 +448,21 @@ public class LegislatorTests extends ESTestCase {
 
         public void stabilise(long stabilisationTimeMillis, long delayVariability) {
             // Stabilisation phase: just wake up nodes in order for long enough to allow a leader to be elected
+
+            final long stabilisationPhaseEndMillis = currentTimeMillis + stabilisationTimeMillis;
+            logger.info("--> starting stabilisation phase at [{}ms]: run for [{}ms] until [{}ms] with delayVariability [{}ms]",
+                currentTimeMillis, stabilisationTimeMillis, stabilisationPhaseEndMillis, delayVariability);
+
             setDelayVariability(delayVariability);
 
             deliverNextMessageUntilQuiescent();
-
-            final long stabilisationPhaseEndMillis = currentTimeMillis + stabilisationTimeMillis;
-            logger.info("--> start of stabilisation phase ({}ms): run until time {}ms", stabilisationTimeMillis,
-                stabilisationPhaseEndMillis);
 
             while (tasks.isEmpty() == false && getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
 
-            logger.info("--> end of stabilisation phase");
+            logger.info("--> end of stabilisation phase at [{}ms]", currentTimeMillis);
 
             assertUniqueLeaderAndExpectedModes();
         }

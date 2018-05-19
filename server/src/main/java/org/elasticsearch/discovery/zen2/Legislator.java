@@ -457,6 +457,8 @@ public class Legislator extends AbstractComponent {
             failActiveTargets();
 
             if (mode == Mode.LEADER && applyCommitReference.get() == null) {
+                logger.debug("Publication.onTimeout(): failed to commit version [{}] in term [{}]",
+                    publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
                 becomeCandidate("Publication.onTimeout()");
             }
         }
