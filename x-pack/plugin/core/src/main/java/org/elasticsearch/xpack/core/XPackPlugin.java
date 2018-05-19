@@ -171,11 +171,11 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
 
         if (transportClientMode) {
             // TODO: prevent user from defining this setting
-            return Settings.EMPTY;
+            return super.additionalSettings();
         }
 
-        // TODO: check if user defined this themsleves and abort
-        return Settings.builder().put(xpackInstalledNodeAttrName, true).build();
+        // TODO: check if user defined this themselves and abort
+        return Settings.builder().put(super.additionalSettings()).put(xpackInstalledNodeAttrName, true).build();
     }
 
     @Override
