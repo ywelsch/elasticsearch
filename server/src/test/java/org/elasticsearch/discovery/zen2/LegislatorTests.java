@@ -314,13 +314,27 @@ public class LegislatorTests extends ESTestCase {
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             if (clusterNode.equals(leader) == false) {
-                clusterNode.reboot();
+                clusterNode.isConnected = false;
             }
         }
 
-        logger.info("--> nodes rebooted - trying to commit something");
+        logger.info("--> nodes disconnected - starting publication");
 
         leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
+
+        logger.info("--> publication started - now rebooting nodes");
+
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            if (clusterNode.equals(leader) == false) {
+                DiscoveryNode oldLocalNode = clusterNode.localNode;
+                clusterNode.reboot();
+                clusterNode.isConnected = true;
+                leader.legislator.handleDisconnectedNode(oldLocalNode);
+            }
+        }
+
+        logger.info("--> nodes rebooted - now stabilising");
+
         cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         cluster.assertConsistentStates();
@@ -851,7 +865,10 @@ public class LegislatorTests extends ESTestCase {
                     logger.trace(() -> new ParameterizedMessage("[{}] runPendingTasks: failed, rescheduling: {}",
                         localNode.getId(), e.getMessage()));
                     pendingTasks.addAll(currentPendingTasks);
-                    futureExecutor.schedule(TimeValue.ZERO, "ClusterNode#runPendingTasks: retry" , this::runPendingTasks);
+
+                    // retry delayed by 500ms to avoid infinite loop
+                    // TODO retry on end-of-publication instead, once it's possible to listen for this
+                    futureExecutor.schedule(TimeValue.timeValueMillis(500), "ClusterNode#runPendingTasks: retry" , this::runPendingTasks);
                 }
             }
 

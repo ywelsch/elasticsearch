@@ -60,14 +60,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -135,7 +133,7 @@ public class Legislator extends AbstractComponent {
     // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
 
-    private final Set<FaultyNodeListener> faultyNodeListeners = new HashSet<>();
+    private Optional<Publication> currentPublication = Optional.empty();
 
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
                       Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
@@ -313,10 +311,24 @@ public class Legislator extends AbstractComponent {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
 
+        if (currentPublication.isPresent()) {
+            throw new ConsensusMessageRejectedException("[{}] is already in progress", currentPublication.get());
+        }
+
         assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
 
-        PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
-        publish(publishRequest);
+        final PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
+        final Publication publication = new Publication(publishRequest);
+
+        assert currentPublication.isPresent() == false
+            : "[" + currentPublication.get() + "] in progress, cannot start [" + publication + ']';
+        currentPublication = Optional.of(publication);
+
+        futureExecutor.schedule(publishTimeout, "Publication#onTimeout", publication::onTimeout);
+        activeLeaderFailureDetector.get().updateNodesAndPing(publishRequest.getAcceptedState());
+        publication.start();
+        // TODO when we have a notion of "completion" of a publication, if a publication completes and there are faulty nodes then
+        // we should try and remove them. TBD maybe this duplicates the queueing of tasks that occurs in the MasterService?
     }
 
     public LeaderCheckResponse handleLeaderCheckRequest(DiscoveryNode sender) {
@@ -340,15 +352,6 @@ public class Legislator extends AbstractComponent {
         LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
         logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
         return response;
-    }
-
-    private void publish(PublishRequest publishRequest) {
-        final Publication publication = new Publication(publishRequest);
-        futureExecutor.schedule(publishTimeout, "Publication#onTimeout", publication::onTimeout);
-        activeLeaderFailureDetector.get().updateNodesAndPing(publishRequest.getAcceptedState());
-        publication.start();
-        // TODO when we have a notion of "completion" of a publication, if a publication completes and there are faulty nodes then
-        // we should try and remove them. TBD maybe this duplicates the queueing of tasks that occurs in the MasterService?
     }
 
     public ClusterState getLastAcceptedState() {
@@ -376,10 +379,6 @@ public class Legislator extends AbstractComponent {
         APPLIED_COMMIT,
     }
 
-    private interface FaultyNodeListener {
-        void onFaultyNode(DiscoveryNode node);
-    }
-
     private Set<DiscoveryNode> getFaultyNodes() {
         return Collections.unmodifiableSet(activeLeaderFailureDetector.get().faultyNodes);
     }
@@ -387,11 +386,12 @@ public class Legislator extends AbstractComponent {
     /**
      * A single attempt to publish an update
      */
-    private class Publication implements FaultyNodeListener {
+    private class Publication {
 
         private final AtomicReference<ApplyCommit> applyCommitReference;
         private final List<PublicationTarget> publicationTargets;
         private final PublishRequest publishRequest;
+        private boolean isCompleted;
 
         private Publication(PublishRequest publishRequest) {
             this.publishRequest = publishRequest;
@@ -401,9 +401,15 @@ public class Legislator extends AbstractComponent {
             publishRequest.getAcceptedState().getNodes().iterator().forEachRemaining(n -> publicationTargets.add(new PublicationTarget(n)));
         }
 
+        @Override
+        public String toString() {
+            return "Publication{term=" + publishRequest.getAcceptedState().term() +
+                ", version=" + publishRequest.getAcceptedState().version() + '}';
+        }
+
         private void start() {
             logger.trace("publishing {} to {}", publishRequest, publicationTargets);
-            faultyNodeListeners.add(this);
+
             Set<DiscoveryNode> localFaultyNodes = new HashSet<>(getFaultyNodes());
             for (final DiscoveryNode faultyNode : localFaultyNodes) {
                 onFaultyNode(faultyNode);
@@ -412,15 +418,67 @@ public class Legislator extends AbstractComponent {
             onPossibleCommitFailure();
         }
 
+        private void onCompletion() {
+            assert isCompleted == false;
+            isCompleted = true;
+            assert currentPublication.get() == this;
+            currentPublication = Optional.empty();
+        }
+
+        private void onPossibleCompletion() {
+            if (isCompleted) {
+                assert currentPublication.isPresent() == false || currentPublication.get() != this;
+                return;
+            }
+
+            assert currentPublication.get() == this : "completing [" + this + "], currentPublication = [" + currentPublication.get() + ']';
+
+            for (final PublicationTarget target : publicationTargets) {
+                if (target.state.isActive()) {
+                    return;
+                }
+            }
+
+            for (final PublicationTarget target : publicationTargets) {
+                if (target.discoveryNode.equals(localNode) && target.state.isFailed()) {
+                    logger.debug("onPossibleCompletion: publish-to-self failed when publishing [{}]", this);
+                    onCompletion();
+                    return;
+                }
+            }
+
+            if (consensusState.getLastAcceptedTerm() != applyCommitReference.get().term
+                || consensusState.getLastAcceptedVersion() != applyCommitReference.get().version) {
+                logger.debug("onPossibleCompletion: term or version mismatch when publishing [{}]: " +
+                        "current version is now [{}] in term [{}]", this,
+                    consensusState.getLastAcceptedVersion(), consensusState.getLastAcceptedTerm());
+                onCompletion();
+                return;
+            }
+
+            logger.trace("onPossibleCompletion: success when publishing [{}]", this);
+            onCompletion();
+        }
+
+        // For assertions only: verify that this invariant holds
+        private boolean publicationCompletedIffAllTargetsInactive() {
+            for (final PublicationTarget target : publicationTargets) {
+                if (target.state.isActive()) {
+                    return isCompleted == false;
+                }
+            }
+            return isCompleted;
+        }
+
         private void onCommitted(final ApplyCommit applyCommit) {
             assert applyCommitReference.get() == null;
             applyCommitReference.set(applyCommit);
             publicationTargets.stream().filter(PublicationTarget::isWaitingForQuorum).forEach(PublicationTarget::sendApplyCommit);
-            faultyNodeListeners.remove(this); // TODO keep listening for faulty nodes until all nodes acked.
         }
 
         private void onPossibleCommitFailure() {
             if (applyCommitReference.get() != null) {
+                onPossibleCompletion();
                 return;
             }
 
@@ -450,7 +508,7 @@ public class Legislator extends AbstractComponent {
 
         private void failActiveTargets() {
             publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::setFailed);
-            faultyNodeListeners.remove(this); // TODO keep listening for faulty nodes until all nodes acked.
+            onPossibleCompletion();
         }
 
         public void onTimeout() {
@@ -463,9 +521,9 @@ public class Legislator extends AbstractComponent {
             }
         }
 
-        @Override
-        public void onFaultyNode(DiscoveryNode faultyNode) {
-            publicationTargets.stream().forEach(t -> t.onFaultyNode(faultyNode));
+        void onFaultyNode(DiscoveryNode faultyNode) {
+            publicationTargets.forEach(t -> t.onFaultyNode(faultyNode));
+            onPossibleCompletion();
         }
 
         private class PublicationTarget {
@@ -488,6 +546,7 @@ public class Legislator extends AbstractComponent {
                 state.setState(PublicationTargetState.SENT_PUBLISH_REQUEST);
                 transport.sendPublishRequest(discoveryNode, publishRequest, new PublishResponseHandler());
                 // TODO Can this ^ fail with an exception? Target should be failed if so.
+                assert publicationCompletedIffAllTargetsInactive();
             }
 
             void handlePublishResponse(PublishResponse publishResponse) {
@@ -510,6 +569,7 @@ public class Legislator extends AbstractComponent {
                 assert applyCommit != null;
 
                 transport.sendApplyCommit(discoveryNode, applyCommit, new ApplyCommitResponseHandler());
+                assert publicationCompletedIffAllTargetsInactive();
             }
 
             public boolean isWaitingForQuorum() {
@@ -596,6 +656,7 @@ public class Legislator extends AbstractComponent {
                 public void handleResponse(LegislatorPublishResponse response) {
                     if (state.isFailed()) {
                         logger.debug("PublishResponseHandler.handleResponse: already failed, ignoring response from [{}]", discoveryNode);
+                        assert publicationCompletedIffAllTargetsInactive();
                         return;
                     }
 
@@ -606,7 +667,7 @@ public class Legislator extends AbstractComponent {
                         }
                     }
                     if (consensusState.electionWon() == false) {
-                        logger.debug("PublishResponseHandler.handleResponse: stepped down as leader before committing value {}",
+                        logger.debug("PublishResponseHandler.handleResponse: stepped down as leader while publishing value {}",
                             response.getPublishResponse());
                         onPossibleCommitFailure();
                     } else if (response.getPublishResponse().getTerm() != consensusState.getCurrentTerm() ||
@@ -620,6 +681,8 @@ public class Legislator extends AbstractComponent {
                         state.setState(PublicationTargetState.WAITING_FOR_QUORUM);
                         handlePublishResponse(response.getPublishResponse());
                     }
+
+                    assert publicationCompletedIffAllTargetsInactive();
                 }
 
                 @Override
@@ -631,6 +694,7 @@ public class Legislator extends AbstractComponent {
                     }
                     state.setState(PublicationTargetState.FAILED);
                     onPossibleCommitFailure();
+                    assert publicationCompletedIffAllTargetsInactive();
                 }
 
                 @Override
@@ -649,6 +713,8 @@ public class Legislator extends AbstractComponent {
                         return;
                     }
                     state.setState(PublicationTargetState.APPLIED_COMMIT);
+                    onPossibleCompletion();
+                    assert publicationCompletedIffAllTargetsInactive();
                 }
 
                 @Override
@@ -659,6 +725,8 @@ public class Legislator extends AbstractComponent {
                         logger.debug(() -> new ParameterizedMessage("ApplyCommitResponseHandler: [{}] failed", discoveryNode), exp);
                     }
                     state.setState(PublicationTargetState.FAILED);
+                    onPossibleCompletion();
+                    assert publicationCompletedIffAllTargetsInactive();
                 }
 
                 @Override
@@ -1199,8 +1267,8 @@ public class Legislator extends AbstractComponent {
                 if (running()) {
                     failureCountSinceLastSuccess++;
                     if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
-                        logger.debug("ActiveFollowerFailureDetector.onCheckFailure: {} consecutive failures to check the leader",
-                            failureCountSinceLastSuccess);
+                        logger.debug("ActiveLeaderFailureDetector.onCheckFailure: {} consecutive failures to check [{}]",
+                            failureCountSinceLastSuccess, node);
                         addFaultyNode(node);
                         masterService.submitTask("node fault detection kicked out " + node,
                             clusterState -> removeNodes(clusterState, Collections.singletonList(node)).resultingState);
@@ -1292,11 +1360,7 @@ public class Legislator extends AbstractComponent {
             logger.trace("ActiveLeaderFailureDetector.addFaultyNode: adding {}", node);
             faultyNodes.add(node);
             nodesFD.remove(node);
-
-            final Set<FaultyNodeListener> localFaultyNodeListeners = new HashSet<>(faultyNodeListeners);
-            for (final FaultyNodeListener faultyNodeListener : localFaultyNodeListeners) {
-                faultyNodeListener.onFaultyNode(node);
-            }
+            currentPublication.ifPresent(p -> p.onFaultyNode(node));
         }
 
         public void stop() {
