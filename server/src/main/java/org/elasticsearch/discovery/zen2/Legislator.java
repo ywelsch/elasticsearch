@@ -21,6 +21,7 @@ package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
@@ -35,6 +36,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.discovery.Discovery.FailedToCommitClusterStateException;
 import org.elasticsearch.discovery.zen.MasterFaultDetection;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen.NodeJoinController;
@@ -196,6 +198,7 @@ public class Legislator extends AbstractComponent {
 
             stopActiveLeaderFailureDetector();
             stopActiveFollowerFailureDetector();
+            cancelActivePublication();
         }
     }
 
@@ -228,6 +231,7 @@ public class Legislator extends AbstractComponent {
         lastKnownLeader = Optional.of(leaderNode);
         stopSeekJoinsScheduler();
         stopActiveLeaderFailureDetector();
+        cancelActivePublication();
     }
 
     private void stopSeekJoinsScheduler() {
@@ -248,6 +252,13 @@ public class Legislator extends AbstractComponent {
         if (activeFollowerFailureDetector.isPresent()) {
             activeFollowerFailureDetector.get().stop();
             activeFollowerFailureDetector = Optional.empty();
+        }
+    }
+
+    private void cancelActivePublication() {
+        if (currentPublication.isPresent()) {
+            currentPublication.get().failActiveTargets();
+            assert currentPublication.isPresent() == false;
         }
     }
 
@@ -306,7 +317,7 @@ public class Legislator extends AbstractComponent {
         return Optional.empty();
     }
 
-    public void handleClientValue(ClusterState clusterState) {
+    public void handleClientValue(ClusterState clusterState, ActionListener<Void> completionListener) {
         if (mode != Mode.LEADER) {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
@@ -318,7 +329,7 @@ public class Legislator extends AbstractComponent {
         assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
 
         final PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
-        final Publication publication = new Publication(publishRequest);
+        final Publication publication = new Publication(publishRequest, completionListener);
 
         assert currentPublication.isPresent() == false
             : "[" + currentPublication.get() + "] in progress, cannot start [" + publication + ']';
@@ -391,10 +402,12 @@ public class Legislator extends AbstractComponent {
         private final AtomicReference<ApplyCommit> applyCommitReference;
         private final List<PublicationTarget> publicationTargets;
         private final PublishRequest publishRequest;
+        private final ActionListener<Void> completionListener;
         private boolean isCompleted;
 
-        private Publication(PublishRequest publishRequest) {
+        private Publication(PublishRequest publishRequest, ActionListener<Void> completionListener) {
             this.publishRequest = publishRequest;
+            this.completionListener = completionListener;
             applyCommitReference = new AtomicReference<>();
 
             publicationTargets = new ArrayList<>(publishRequest.getAcceptedState().getNodes().getNodes().size());
@@ -443,21 +456,24 @@ public class Legislator extends AbstractComponent {
                 if (target.discoveryNode.equals(localNode) && target.state.isFailed()) {
                     logger.debug("onPossibleCompletion: publish-to-self failed when publishing [{}]", this);
                     onCompletion();
+                    completionListener.onFailure(new FailedToCommitClusterStateException("publish-to-self failed"));
                     return;
                 }
             }
 
-            if (consensusState.getLastAcceptedTerm() != applyCommitReference.get().term
-                || consensusState.getLastAcceptedVersion() != applyCommitReference.get().version) {
-                logger.debug("onPossibleCompletion: term or version mismatch when publishing [{}]: " +
-                        "current version is now [{}] in term [{}]", this,
-                    consensusState.getLastAcceptedVersion(), consensusState.getLastAcceptedTerm());
-                onCompletion();
-                return;
-            }
+            assert consensusState.getLastAcceptedTerm() == applyCommitReference.get().term
+                && consensusState.getLastAcceptedVersion() == applyCommitReference.get().version
+                : "onPossibleCompletion: term or version mismatch when publishing [" + this
+                + "]: current version is now [" + consensusState.getLastAcceptedVersion()
+                + "] in term [" + consensusState.getLastAcceptedTerm() + "]";
 
             logger.trace("onPossibleCompletion: success when publishing [{}]", this);
             onCompletion();
+            if (applyCommitReference.get() == null) {
+                completionListener.onFailure(new FailedToCommitClusterStateException("did not receive a quorum of successful responses"));
+            } else {
+                completionListener.onResponse(null);
+            }
         }
 
         // For assertions only: verify that this invariant holds
@@ -506,7 +522,7 @@ public class Legislator extends AbstractComponent {
             }
         }
 
-        private void failActiveTargets() {
+        void failActiveTargets() {
             publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::setFailed);
             onPossibleCompletion();
         }
@@ -1140,6 +1156,7 @@ public class Legislator extends AbstractComponent {
         assert (seekJoinsScheduler.isPresent()) == (mode == Mode.CANDIDATE);
         assert (activeFollowerFailureDetector.isPresent()) == (mode == Mode.FOLLOWER);
         assert (activeLeaderFailureDetector.isPresent()) == (mode == Mode.LEADER);
+        assert (currentPublication.isPresent() == false) || (mode == Mode.LEADER);
     }
 
     public enum Mode {

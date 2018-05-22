@@ -21,6 +21,7 @@ package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.Version;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -90,7 +91,7 @@ public class LegislatorTests extends ESTestCase {
 
         final long finalValue = randomInt();
         logger.info("--> proposing final value [{}] to [{}]", finalValue, leader.getId());
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
@@ -207,7 +208,7 @@ public class LegislatorTests extends ESTestCase {
             leader = cluster.getAnyLeader();
         }
 
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         leader.isConnected = false;
@@ -248,7 +249,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -305,7 +306,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
         cluster.assertConsistentStates();
         cluster.assertUniqueLeaderAndExpectedModes();
@@ -320,7 +321,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> nodes disconnected - starting publication");
 
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
 
         logger.info("--> publication started - now rebooting nodes");
 
@@ -371,7 +372,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.legislator.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
         cluster.deliverNextMessageUntilQuiescent();
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -537,14 +538,14 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
                         logger.info("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
-                        clusterNode.legislator.handleClientValue(
+                        clusterNode.handleClientValue(
                             ConsensusStateTests.nextStateWithValue(clusterNode.legislator.getLastAcceptedState(), newValue));
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final VotingConfiguration newConfig = randomConfiguration();
                         logger.info("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
-                        clusterNode.legislator.handleClientValue(
+                        clusterNode.handleClientValue(
                             ConsensusStateTests.nextStateWithConfig(clusterNode.legislator.getLastAcceptedState(), newConfig));
                     } else if (rarely()) {
                         // reboot random node
@@ -840,6 +841,24 @@ public class LegislatorTests extends ESTestCase {
                 return new DiscoveryNode("node" + this.index, buildNewFakeTransportAddress(), Version.CURRENT);
             }
 
+            public void handleClientValue(ClusterState clusterState) {
+                legislator.handleClientValue(clusterState, new ActionListener<Void>() {
+                    @Override
+                    public void onResponse(Void aVoid) {
+                        scheduleRunPendingTasks();
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        scheduleRunPendingTasks();
+                    }
+
+                    private void scheduleRunPendingTasks() {
+                        futureExecutor.schedule(TimeValue.ZERO, "scheduleRunPendingTasks", ClusterNode.this::runPendingTasks);
+                    }
+                });
+            }
+
             private void runPendingTasks() {
                 // TODO this batches tasks more aggressively than the real MasterService does, which weakens the properties we are
                 // testing here. Make the batching more realistic.
@@ -858,17 +877,12 @@ public class LegislatorTests extends ESTestCase {
                         }
                         assert Objects.equals(newState.getNodes().getMasterNodeId(), localNode.getId()) : newState;
                         assert newState.getNodes().getNodes().get(localNode.getId()) != null;
-                        legislator.handleClientValue(
-                            ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion().build());
+                        handleClientValue(ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion().build());
                     }
                 } catch (ConsensusMessageRejectedException e) {
                     logger.trace(() -> new ParameterizedMessage("[{}] runPendingTasks: failed, rescheduling: {}",
                         localNode.getId(), e.getMessage()));
                     pendingTasks.addAll(currentPendingTasks);
-
-                    // retry delayed by 500ms to avoid infinite loop
-                    // TODO retry on end-of-publication instead, once it's possible to listen for this
-                    futureExecutor.schedule(TimeValue.timeValueMillis(500), "ClusterNode#runPendingTasks: retry" , this::runPendingTasks);
                 }
             }
 
