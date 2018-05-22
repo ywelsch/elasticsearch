@@ -55,6 +55,7 @@ import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
+import org.elasticsearch.transport.TransportResponse.Empty;
 import org.elasticsearch.transport.TransportResponseHandler;
 
 import java.io.IOException;
@@ -136,6 +137,7 @@ public class Legislator extends AbstractComponent {
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
 
     private Optional<Publication> currentPublication = Optional.empty();
+    private long laggingUntilCommittedVersionExceeds;
 
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
                       Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
@@ -279,6 +281,7 @@ public class Legislator extends AbstractComponent {
     private Join joinLeaderInTerm(DiscoveryNode sourceNode, long term) {
         logger.debug("joinLeaderInTerm: from [{}] with term {}", sourceNode, term);
         Join join = consensusState.handleStartJoin(sourceNode, term);
+        lastJoin = Optional.of(join);
         if (mode != Mode.CANDIDATE) {
             becomeCandidate("joinLeaderInTerm");
         }
@@ -286,28 +289,8 @@ public class Legislator extends AbstractComponent {
     }
 
     public void handleStartJoin(DiscoveryNode sourceNode, StartJoinRequest startJoinRequest) {
-        Join join = joinLeaderInTerm(sourceNode, startJoinRequest.getTerm());
-
-        transport.sendJoin(sourceNode, join, new TransportResponseHandler<TransportResponse.Empty>() {
-            @Override
-            public void handleResponse(TransportResponse.Empty response) {
-                logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
-            }
-
-            @Override
-            public void handleException(TransportException exp) {
-                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
-                    logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
-                } else {
-                    logger.debug(() -> new ParameterizedMessage("SendJoinResponseHandler: [{}] failed", sourceNode), exp);
-                }
-            }
-
-            @Override
-            public String executor() {
-                return ThreadPool.Names.SAME;
-            }
-        });
+        final Join join = joinLeaderInTerm(sourceNode, startJoinRequest.getTerm());
+        sendJoin(sourceNode, join);
     }
 
     private Optional<Join> ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
@@ -899,11 +882,7 @@ public class Legislator extends AbstractComponent {
             DiscoveryNodes.builder(publishRequest.getAcceptedState().nodes()).localNodeId(getLocalNode().getId()).build()).build();
         publishRequest = new PublishRequest(clusterState);
 
-        final Optional<Join> optionalJoin = ensureTermAtLeast(sourceNode, publishRequest.getAcceptedState().term());
-
-        if (optionalJoin.isPresent()) {
-            lastJoin = optionalJoin;
-        }
+        ensureTermAtLeast(sourceNode, publishRequest.getAcceptedState().term());
 
         logger.trace("handlePublishRequest: handling [{}] from [{}]", publishRequest, sourceNode);
 
@@ -931,34 +910,44 @@ public class Legislator extends AbstractComponent {
         }
 
         ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm()).ifPresent(join -> {
-            logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}",
-                join, heartbeatRequest.getTerm(), sourceNode);
-
-            transport.sendJoin(sourceNode, join, new TransportResponseHandler<TransportResponse.Empty>() {
-                @Override
-                public void handleResponse(TransportResponse.Empty response) {
-                    logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
-                }
-
-                @Override
-                public void handleException(TransportException exp) {
-                    if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
-                        logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
-                    } else {
-                        logger.debug(() -> new ParameterizedMessage("SendJoinResponseHandler: [{}] failed", sourceNode), exp);
-                    }
-                }
-
-                @Override
-                public String executor() {
-                    return ThreadPool.Names.SAME;
-                }
-            });
+            logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}", join, heartbeatRequest.getTerm(), sourceNode);
+            sendJoin(sourceNode, join);
         });
+
+        if (laggingUntilCommittedVersionExceeds > 0
+            && (lastCommittedState.isPresent() == false || lastCommittedState.get().version() <= laggingUntilCommittedVersionExceeds)) {
+            logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] due to lag at version [{}]",
+                heartbeatRequest, sourceNode, laggingUntilCommittedVersionExceeds);
+            throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: lagging at version [{}]",
+                laggingUntilCommittedVersionExceeds);
+        }
 
         becomeFollower("handleHeartbeatRequest", sourceNode);
 
         return new HeartbeatResponse(consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm());
+    }
+
+    private void sendJoin(DiscoveryNode sourceNode, Join join) {
+        transport.sendJoin(sourceNode, join, new TransportResponseHandler<Empty>() {
+            @Override
+            public void handleResponse(Empty response) {
+                logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
+            }
+
+            @Override
+            public void handleException(TransportException exp) {
+                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                    logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
+                } else {
+                    logger.debug(() -> new ParameterizedMessage("SendJoinResponseHandler: [{}] failed", sourceNode), exp);
+                }
+            }
+
+            @Override
+            public String executor() {
+                return ThreadPool.Names.SAME;
+            }
+        });
     }
 
     public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit) {
@@ -1004,6 +993,9 @@ public class Legislator extends AbstractComponent {
                 consensusState.getCurrentTerm(), seekJoins, sender, newTerm);
             sendStartJoin(new StartJoinRequest(newTerm));
             throw new ConsensusMessageRejectedException("I'm still a leader");
+
+            // TODO what about a node that sent a join to a different node in our term? Is it now stuck until the next term?
+
         } else {
             // TODO: remove this once we have a discovery layer. If a node finds an active master node during discovery,
             // it will try to join that one, and not start seeking joins.
@@ -1464,15 +1456,15 @@ public class Legislator extends AbstractComponent {
 
                         final long leaderVersion = leaderCheckResponse.getVersion();
                         long localVersion = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
-                        if (leaderVersion > localVersion) {
+                        if (leaderVersion > localVersion && running) {
                             logger.trace("LeaderCheck.handleResponse: heartbeat for version {} > local version {}, starting lag detector",
                                 leaderVersion, localVersion);
                             futureExecutor.schedule(publishTimeout, "LeaderCheck#lagDetection", () -> {
                                 long localVersion2 = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
-                                if (leaderVersion > localVersion2) {
+                                if (leaderVersion > localVersion2 && running) {
                                     logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
                                         localVersion2, leaderVersion, publishTimeout);
-                                    becomeCandidate("LeaderCheck.handleResponse");
+                                    laggingUntilCommittedVersionExceeds = localVersion2;
                                 }
                             });
                         }

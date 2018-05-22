@@ -75,6 +75,7 @@ import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_DE
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_TIMEOUT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_MIN_DELAY_SETTING;
+import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_PUBLISH_TIMEOUT_SETTING;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.core.Is.is;
@@ -407,6 +408,57 @@ public class LegislatorTests extends ESTestCase {
         cluster.assertUniqueLeaderAndExpectedModes();
     }
 
+    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
+    public void testLagDetectionCausesRejoin() {
+        Cluster cluster = new Cluster(3);
+        cluster.runRandomly(true);
+        cluster.stabilise();
+        ClusterNode leader = cluster.getAnyLeader();
+
+        final VotingConfiguration allNodes = new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
+
+        // TODO: have the following automatically done as part of a reconfiguration subsystem
+        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
+            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
+            // abdicate to self to acquire all join votes
+            leader.legislator.abdicateTo(leader.localNode);
+
+            cluster.stabilise();
+            leader = cluster.getAnyLeader();
+        }
+
+        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
+
+        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        cluster.deliverNextMessageUntilQuiescent();
+
+        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
+
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            if (clusterNode != leader) {
+                logger.info("--> disconnecting {}", clusterNode.getLocalNode());
+                clusterNode.isConnected = false;
+                break;
+            }
+        }
+
+        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomLong()));
+        cluster.deliverNextMessageUntilQuiescent();
+
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            logger.info("--> reconnecting {}", clusterNode.getLocalNode());
+            clusterNode.isConnected = true;
+        }
+
+        cluster.stabilise();
+
+        // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
+        // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
+        cluster.assertConsistentStates();
+        cluster.assertUniqueLeaderAndExpectedModes();
+    }
+
     class Cluster {
         private final List<ClusterNode> clusterNodes;
         private final List<InFlightMessage> inFlightMessages = new ArrayList<>();
@@ -416,20 +468,38 @@ public class LegislatorTests extends ESTestCase {
         private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
         private long masterServicesTaskId = 0L;
 
-        // How long to wait? The worst case is that a leader just committed a value to all the other nodes, and then
-        // dropped off the network, which would mean that all the other nodes must detect its failure. It takes
-        // CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING consecutive leader checks to fail before a follower becomes a
-        // candidates, and with an unresponsive leader each leader check takes up to
-        // CONSENSUS_HEARTBEAT_DELAY_SETTING + CONSENSUS_HEARTBEAT_TIMEOUT_SETTING. After all the retries have
-        // failed, nodes wake up, become candidates, and wait for up to 2 * CONSENSUS_MIN_DELAY_SETTING before
-        // attempting an election. The first election is expected to succeed, however, because we run to quiescence
-        // before waking any other nodes up.
-        private final long DEFAULT_STABILISATION_TIME =
-            (CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis() +
-                CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(Settings.EMPTY).millis()) *
-                CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(Settings.EMPTY) +
-                2 * CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() +
-                RANDOM_MODE_DELAY_VARIABILITY + DEFAULT_DELAY_VARIABILITY;
+        // How long does it take for the cluster to stabilise?
+
+        // Each heartbeat takes at most this long:
+        private final long DEFAULT_MAX_HEARTBEAT_TIME
+            = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis()
+            + CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(Settings.EMPTY).millis()
+            + 2 * DEFAULT_DELAY_VARIABILITY;
+        // Multiple heartbeat failures are needed before the leader's failure is detected:
+        private final long DEFAULT_MAX_FAILURE_DETECTION_TIME
+            = DEFAULT_MAX_HEARTBEAT_TIME * CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(Settings.EMPTY);
+        // When stabilising, there are no election collisions, because we run to quiescence before waking any other nodes up.
+        // Therefore elections takes this long:
+        private final long DEFAULT_ELECTION_TIME
+            = 2 * (CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + DEFAULT_DELAY_VARIABILITY);
+        // Lag detection takes this long to notice that a follower is lagging the leader:
+        private final long DEFAULT_LAG_DETECTION_TIME
+            = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis() // before the heartbeat that hears about the lag
+            + CONSENSUS_PUBLISH_TIMEOUT_SETTING.get(Settings.EMPTY).millis() // waiting for the lag
+            + 2 * DEFAULT_DELAY_VARIABILITY;
+
+        // Worst cases for stabilisation:
+        //
+        // 1. Just before stabilisation there was a leader which committed a value and then dropped off the network. All nodes must first
+        // detect its failure and then elect a new one.
+        //
+        // 2. Just before stabilisation the leader published a value which wasn't received by one of the followers. The follower's lag
+        // detection must notice this omission, then the master must notice the node is rejecting heartbeats and remove it from the cluster,
+        // then the follower must notice it is missing from the cluster and rejoin.
+        //
+        private final long DEFAULT_STABILISATION_TIME = RANDOM_MODE_DELAY_VARIABILITY
+            + Math.max(DEFAULT_MAX_FAILURE_DETECTION_TIME + DEFAULT_ELECTION_TIME, // case 1
+            DEFAULT_LAG_DETECTION_TIME + DEFAULT_MAX_FAILURE_DETECTION_TIME + DEFAULT_MAX_HEARTBEAT_TIME); // case 2
 
         Cluster(int nodeCount) {
             clusterNodes = new ArrayList<>(nodeCount);
