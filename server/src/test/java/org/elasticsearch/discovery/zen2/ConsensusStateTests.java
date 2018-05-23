@@ -25,6 +25,7 @@ import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
@@ -65,7 +66,9 @@ public class ConsensusStateTests extends ESTestCase {
                 .persistentSettings(Settings.builder()
                     .put("value", value)
                     .build())
+                .clusterUUID(UUIDs.randomBase64UUID(random())) // generate cluster UUID deterministically for repeatable tests
                 .build())
+            .stateUUID(UUIDs.randomBase64UUID(random())) // generate cluster state UUID deterministically for repeatable tests
             .build();
     }
 

@@ -26,11 +26,14 @@ import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
+import org.elasticsearch.cluster.node.DiscoveryNode.Role;
+import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.discovery.zen.MembershipAction;
@@ -59,6 +62,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -908,7 +912,13 @@ public class LegislatorTests extends ESTestCase {
             }
 
             private DiscoveryNode createDiscoveryNode() {
-                return new DiscoveryNode("node" + this.index, buildNewFakeTransportAddress(), Version.CURRENT);
+                final TransportAddress transportAddress = buildNewFakeTransportAddress();
+                // Generate the ephemeral ID deterministically, for repeatable tests. This means we have to pass everything else into
+                // the constructor explicitly too.
+                return new DiscoveryNode("", "node" + this.index, UUIDs.randomBase64UUID(random()),
+                    transportAddress.address().getHostString(),
+                    transportAddress.getAddress(), transportAddress, Collections.emptyMap(),
+                    EnumSet.allOf(Role.class), Version.CURRENT);
             }
 
             public void handleClientValue(ClusterState clusterState) {
@@ -947,7 +957,9 @@ public class LegislatorTests extends ESTestCase {
                         }
                         assert Objects.equals(newState.getNodes().getMasterNodeId(), localNode.getId()) : newState;
                         assert newState.getNodes().getNodes().get(localNode.getId()) != null;
-                        handleClientValue(ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion().build());
+                        handleClientValue(ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion()
+                            // incrementVersion() gives the new state a random UUID, but we override this for test repeatability:
+                            .stateUUID(UUIDs.randomBase64UUID(random())).build());
                     }
                 } catch (ConsensusMessageRejectedException e) {
                     logger.trace(() -> new ParameterizedMessage("[{}] runPendingTasks: failed, rescheduling: {}",
