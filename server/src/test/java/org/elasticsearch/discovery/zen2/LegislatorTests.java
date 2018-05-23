@@ -52,7 +52,6 @@ import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.test.ESTestCase;
-import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseHandler;
@@ -86,7 +85,6 @@ import static org.hamcrest.core.Is.is;
 
 public class LegislatorTests extends ESTestCase {
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testCanProposeValueAfterStabilisation() {
         Cluster cluster = new Cluster(randomIntBetween(1, 5));
         cluster.runRandomly(true);
@@ -107,7 +105,6 @@ public class LegislatorTests extends ESTestCase {
         }
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testNodeJoiningAndLeaving() {
         Cluster cluster = new Cluster(randomIntBetween(1, 3));
         cluster.runRandomly(true);
@@ -166,7 +163,6 @@ public class LegislatorTests extends ESTestCase {
         }
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testCanAbdicateAfterStabilisation() {
         Cluster cluster = new Cluster(randomIntBetween(1, 5));
         cluster.runRandomly(true);
@@ -193,7 +189,6 @@ public class LegislatorTests extends ESTestCase {
         }
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testStabilisationWithDisconnectedLeader() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -232,7 +227,6 @@ public class LegislatorTests extends ESTestCase {
         assertTrue(newLeader.isConnected);
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testFastElectionWhenLeaderDropsConnections() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -289,7 +283,6 @@ public class LegislatorTests extends ESTestCase {
         cluster.assertUniqueLeaderAndExpectedModes();
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testFastFailureWhenAQuorumReboots() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -355,7 +348,6 @@ public class LegislatorTests extends ESTestCase {
         // are currently allowed. But this will assert that in future.
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testFastRemovalWhenFollowerDropsConnections() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -412,7 +404,6 @@ public class LegislatorTests extends ESTestCase {
         cluster.assertUniqueLeaderAndExpectedModes();
     }
 
-    @TestLogging("org.elasticsearch.discovery.zen2:TRACE")
     public void testLagDetectionCausesRejoin() {
         Cluster cluster = new Cluster(3);
         cluster.runRandomly(true);
@@ -600,10 +591,12 @@ public class LegislatorTests extends ESTestCase {
 
         private void runRandomly(boolean reconfigure) {
             // Safety phase: behave quite randomly and verify that there is no divergence, but without any expectation of progress.
-            logger.info("--> start of safety phase");
+
+            final int iterations = scaledRandomIntBetween(50, 10000);
+            logger.info("--> start of safety phase of [{}] iterations", iterations);
             setDelayVariability(RANDOM_MODE_DELAY_VARIABILITY);
 
-            for (int iteration = 0; iteration < 10000; iteration++) {
+            for (int iteration = 0; iteration < iterations; iteration++) {
                 try {
                     if (inFlightMessages.size() > 0 && usually()) {
                         deliverRandomMessage();
@@ -611,36 +604,36 @@ public class LegislatorTests extends ESTestCase {
                         // send a client value to a random node, preferring leaders
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
-                        logger.info("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
+                        logger.debug("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
                         clusterNode.handleClientValue(
                             ConsensusStateTests.nextStateWithValue(clusterNode.legislator.getLastAcceptedState(), newValue));
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final VotingConfiguration newConfig = randomConfiguration();
-                        logger.info("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
+                        logger.debug("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
                         clusterNode.handleClientValue(
                             ConsensusStateTests.nextStateWithConfig(clusterNode.legislator.getLastAcceptedState(), newConfig));
                     } else if (rarely()) {
                         // reboot random node
                         final ClusterNode clusterNode = randomLegislator();
-                        logger.info("----> [safety {}] rebooting [{}]", iteration, clusterNode.getId());
+                        logger.debug("----> [safety {}] rebooting [{}]", iteration, clusterNode.getId());
                         clusterNode.reboot();
                     } else if (rarely()) {
                         // abdicate leadership
                         final ClusterNode oldLeader = randomLegislatorPreferringLeaders();
                         final ClusterNode newLeader = randomLegislator();
-                        logger.info("----> [safety {}] [{}] abdicating to [{}]",
+                        logger.debug("----> [safety {}] [{}] abdicating to [{}]",
                             iteration, oldLeader.getId(), newLeader.getId());
                         oldLeader.legislator.abdicateTo(newLeader.localNode);
                     } else if (rarely()) {
                         // deal with an externally-detected failure
                         final ClusterNode clusterNode = randomLegislator();
-                        logger.info("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
+                        logger.debug("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
                         clusterNode.legislator.handleFailure();
                     } else if (tasks.isEmpty() == false) {
                         // execute next scheduled task
-                        logger.info("----> [safety {}] executing first task scheduled after time [{}ms]", iteration, currentTimeMillis);
+                        logger.debug("----> [safety {}] executing first task scheduled after time [{}ms]", iteration, currentTimeMillis);
                         doNextWakeUp();
                     }
                 } catch (ConsensusMessageRejectedException ignored) {
@@ -658,14 +651,14 @@ public class LegislatorTests extends ESTestCase {
             final long nextTaskExecutionTime = getNextTaskExecutionTime();
 
             assert nextTaskExecutionTime >= currentTimeMillis;
-            logger.info("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
+            logger.trace("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
                 nextTaskExecutionTime - currentTimeMillis, currentTimeMillis, nextTaskExecutionTime);
             currentTimeMillis = nextTaskExecutionTime;
 
             for (final ClusterNode.TaskWithExecutionTime task : tasks) {
                 if (task.getExecutionTimeMillis() == nextTaskExecutionTime) {
                     tasks.remove(task);
-                    logger.info("----> executing {}", task);
+                    logger.trace("----> executing {}", task);
                     task.run();
                     break; // in case there is more than one task with the same execution time
                 }
