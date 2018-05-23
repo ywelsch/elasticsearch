@@ -50,6 +50,7 @@ import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.apache.lucene.util.Version;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -66,6 +67,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.SingleObjectCache;
 import org.elasticsearch.common.util.concurrent.AbstractRefCounted;
 import org.elasticsearch.common.util.concurrent.RefCounted;
 import org.elasticsearch.common.util.iterable.Iterables;
@@ -89,6 +91,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -143,6 +146,7 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
     private final ReentrantReadWriteLock metadataLock = new ReentrantReadWriteLock();
     private final ShardLock shardLock;
     private final OnClose onClose;
+    private final StoreStatsCache statsCache;
 
     private final AbstractRefCounted refCounter = new AbstractRefCounted("store") {
         @Override
@@ -160,13 +164,13 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
                  OnClose onClose) throws IOException {
         super(shardId, indexSettings);
         final Settings settings = indexSettings.getSettings();
-        Directory dir = directoryService.newDirectory();
-        final TimeValue refreshInterval = indexSettings.getValue(INDEX_STORE_STATS_REFRESH_INTERVAL_SETTING);
-        logger.debug("store stats are refreshed with refresh_interval [{}]", refreshInterval);
-        ByteSizeCachingDirectory sizeCachingDir = new ByteSizeCachingDirectory(dir, refreshInterval);
-        this.directory = new StoreDirectory(sizeCachingDir, Loggers.getLogger("index.store.deletes", settings, shardId));
+        final ModCountDirectory modCountDirectory = new ModCountDirectory(directoryService.newDirectory());
+        this.directory = new StoreDirectory(modCountDirectory, Loggers.getLogger("index.store.deletes", settings, shardId));
         this.shardLock = shardLock;
         this.onClose = onClose;
+        final TimeValue refreshInterval = indexSettings.getValue(INDEX_STORE_STATS_REFRESH_INTERVAL_SETTING);
+        this.statsCache = new StoreStatsCache(refreshInterval, modCountDirectory);
+        logger.debug("store stats are refreshed with refresh_interval [{}]", refreshInterval);
 
         assert onClose != null;
         assert shardLock != null;
@@ -372,9 +376,9 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
         }
     }
 
-    public StoreStats stats() throws IOException {
+    public StoreStats stats() {
         ensureOpen();
-        return new StoreStats(directory.estimateSize());
+        return new StoreStats(statsCache.getOrRefresh().size);
     }
 
     /**
@@ -728,14 +732,9 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
 
         private final Logger deletesLogger;
 
-        StoreDirectory(ByteSizeCachingDirectory delegateDirectory, Logger deletesLogger) {
+        StoreDirectory(Directory delegateDirectory, Logger deletesLogger) {
             super(delegateDirectory);
             this.deletesLogger = deletesLogger;
-        }
-
-        /** Estimate the cumulative size of all files in this directory in bytes. */
-        long estimateSize() throws IOException {
-            return ((ByteSizeCachingDirectory) getDelegate()).estimateSize();
         }
 
         @Override
@@ -760,17 +759,6 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
         @Override
         public String toString() {
             return "store(" + in.toString() + ")";
-        }
-
-        @Override
-        public boolean checkPendingDeletions() throws IOException {
-            if (super.checkPendingDeletions()) {
-                deletesLogger.warn("directory has still pending deletes");
-            }
-            // we skip this check since our IW usage always goes forward.
-            // we still might run into situations where we have pending deletes ie. in shrink / split case
-            // and that will cause issues on windows since we open multiple IW instance one after another during the split/shrink recovery
-            return false;
         }
     }
 
@@ -1439,6 +1427,66 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
             public void accept(ShardLock Lock) {
             }
         };
+    }
+
+    private static class StoreStatsCache extends SingleObjectCache<StoreStatsCache.SizeAndModCount> {
+        private final ModCountDirectory directory;
+
+        StoreStatsCache(TimeValue refreshInterval, ModCountDirectory directory) {
+            super(refreshInterval, getSizeAndModCount(directory));
+            this.directory = directory;
+        }
+
+        static class SizeAndModCount {
+            final long size;
+            final long modCount;
+
+            SizeAndModCount(long length, long modCount) {
+                this.size = length;
+                this.modCount = modCount;
+            }
+        }
+
+        @Override
+        protected SizeAndModCount refresh() {
+            return getSizeAndModCount(directory);
+        }
+
+        @Override
+        protected boolean needsRefresh() {
+            if (getNoRefresh().modCount == directory.getModCount()) {
+                // no updates to the directory since the last refresh
+                return false;
+            }
+            return super.needsRefresh();
+        }
+
+        private static SizeAndModCount getSizeAndModCount(ModCountDirectory directory) {
+            // Compute modCount first so that updates that happen while the size
+            // is being computed invalidate the length
+            final long modCount = directory.getModCount();
+            final long size;
+            try {
+                size = estimateSize(directory);
+            } catch (IOException e) {
+                throw new ElasticsearchException("failed to refresh store stats", e);
+            }
+            return new SizeAndModCount(size, modCount);
+        }
+
+        private static long estimateSize(Directory directory) throws IOException {
+            long estimatedSize = 0;
+            String[] files = directory.listAll();
+            for (String file : files) {
+                try {
+                    estimatedSize += directory.fileLength(file);
+                } catch (NoSuchFileException | FileNotFoundException | AccessDeniedException e) {
+                    // ignore, the file is not there no more; on Windows, if one thread concurrently deletes a file while
+                    // calling Files.size, you can also sometimes hit AccessDeniedException
+                }
+            }
+            return estimatedSize;
+        }
     }
 
     /**
