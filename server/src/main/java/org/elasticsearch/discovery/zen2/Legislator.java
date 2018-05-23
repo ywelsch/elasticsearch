@@ -1000,6 +1000,7 @@ public class Legislator extends AbstractComponent {
             // TODO: remove this once we have a discovery layer. If a node finds an active master node during discovery,
             // it will try to join that one, and not start seeking joins.
             if (mode == Mode.LEADER) {
+                activeLeaderFailureDetector.get().faultyNodes.remove(sender);
                 masterService.submitTask("join of " + sender,
                     clusterState -> joinNodes(clusterState, Collections.singletonList(sender)).resultingState);
             }
