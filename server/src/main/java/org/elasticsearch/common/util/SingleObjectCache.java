@@ -70,6 +70,13 @@ public abstract class SingleObjectCache<T>{
     protected abstract T refresh();
 
     /**
+     * Returns the cached instance
+     */
+    protected T getNoRefresh() {
+        return cached;
+    }
+
+    /**
      * Returns <code>true</code> iff the cache needs to be refreshed.
      */
     protected boolean needsRefresh() {

@@ -146,7 +146,7 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
     private final ReentrantReadWriteLock metadataLock = new ReentrantReadWriteLock();
     private final ShardLock shardLock;
     private final OnClose onClose;
-    private final SingleObjectCache<StoreStats> statsCache;
+    private final StoreStatsCache statsCache;
 
     private final AbstractRefCounted refCounter = new AbstractRefCounted("store") {
         @Override
@@ -164,11 +164,12 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
                  OnClose onClose) throws IOException {
         super(shardId, indexSettings);
         final Settings settings = indexSettings.getSettings();
-        this.directory = new StoreDirectory(directoryService.newDirectory(), Loggers.getLogger("index.store.deletes", settings, shardId));
+        final ModCountDirectory modCountDirectory = new ModCountDirectory(directoryService.newDirectory());
+        this.directory = new StoreDirectory(modCountDirectory, Loggers.getLogger("index.store.deletes", settings, shardId));
         this.shardLock = shardLock;
         this.onClose = onClose;
         final TimeValue refreshInterval = indexSettings.getValue(INDEX_STORE_STATS_REFRESH_INTERVAL_SETTING);
-        this.statsCache = new StoreStatsCache(refreshInterval, directory);
+        this.statsCache = new StoreStatsCache(refreshInterval, modCountDirectory);
         logger.debug("store stats are refreshed with refresh_interval [{}]", refreshInterval);
 
         assert onClose != null;
@@ -375,9 +376,9 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
         }
     }
 
-    public StoreStats stats() throws IOException {
+    public StoreStats stats() {
         ensureOpen();
-        return statsCache.getOrRefresh();
+        return new StoreStats(statsCache.getOrRefresh().size);
     }
 
     /**
@@ -1428,21 +1429,49 @@ public class Store extends AbstractIndexShardComponent implements Closeable, Ref
         };
     }
 
-    private static class StoreStatsCache extends SingleObjectCache<StoreStats> {
-        private final Directory directory;
+    private static class StoreStatsCache extends SingleObjectCache<StoreStatsCache.SizeAndModCount> {
+        private final ModCountDirectory directory;
 
-        StoreStatsCache(TimeValue refreshInterval, Directory directory) throws IOException {
-            super(refreshInterval, new StoreStats(estimateSize(directory)));
+        StoreStatsCache(TimeValue refreshInterval, ModCountDirectory directory) {
+            super(refreshInterval, getSizeAndModCount(directory));
             this.directory = directory;
         }
 
-        @Override
-        protected StoreStats refresh() {
-            try {
-                return new StoreStats(estimateSize(directory));
-            } catch (IOException ex) {
-                throw new ElasticsearchException("failed to refresh store stats", ex);
+        static class SizeAndModCount {
+            final long size;
+            final long modCount;
+
+            SizeAndModCount(long length, long modCount) {
+                this.size = length;
+                this.modCount = modCount;
             }
+        }
+
+        @Override
+        protected SizeAndModCount refresh() {
+            return getSizeAndModCount(directory);
+        }
+
+        @Override
+        protected boolean needsRefresh() {
+            if (getNoRefresh().modCount == directory.getModCount()) {
+                // no updates to the directory since the last refresh
+                return false;
+            }
+            return super.needsRefresh();
+        }
+
+        private static SizeAndModCount getSizeAndModCount(ModCountDirectory directory) {
+            // Compute modCount first so that updates that happen while the size
+            // is being computed invalidate the length
+            final long modCount = directory.getModCount();
+            final long size;
+            try {
+                size = estimateSize(directory);
+            } catch (IOException e) {
+                throw new ElasticsearchException("failed to refresh store stats", e);
+            }
+            return new SizeAndModCount(size, modCount);
         }
 
         private static long estimateSize(Directory directory) throws IOException {
