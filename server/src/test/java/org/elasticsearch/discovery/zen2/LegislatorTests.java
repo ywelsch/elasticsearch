@@ -20,12 +20,17 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterModule;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.ClusterState.Builder;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
+import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.cluster.node.DiscoveryNode.Role;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
@@ -39,6 +44,7 @@ import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
+import org.elasticsearch.discovery.zen2.Legislator.Mode;
 import org.elasticsearch.discovery.zen2.Legislator.Transport;
 import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
@@ -69,8 +75,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
@@ -81,6 +87,8 @@ import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_MIN_DELAY_SE
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_PUBLISH_TIMEOUT_SETTING;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
 
 public class LegislatorTests extends ESTestCase {
@@ -102,6 +110,13 @@ public class LegislatorTests extends ESTestCase {
             final ClusterState committedState = clusterNode.legislator.getLastCommittedState().get();
             assertThat(legislatorId + " is at the next version", committedState.getVersion(), equalTo(stabilisedVersion + 1));
             assertThat(legislatorId + " has the right value", ConsensusStateTests.value(committedState), is(finalValue));
+        }
+
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            final String legislatorId = clusterNode.getId();
+            final ClusterState appliedState = clusterNode.getLastAppliedClusterState();
+            assertThat(legislatorId + " has applied the latest cluster state", appliedState.getVersion(), equalTo(stabilisedVersion + 1));
         }
     }
 
@@ -209,7 +224,7 @@ public class LegislatorTests extends ESTestCase {
         }
 
         leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.deliverNextMessageUntilQuiescent();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         leader.isConnected = false;
         if (randomBoolean()) {
@@ -249,11 +264,10 @@ public class LegislatorTests extends ESTestCase {
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
         leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.deliverNextMessageUntilQuiescent();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
 
-        final long disconnectionTime = cluster.currentTimeMillis;
         leader.isConnected = false;
 
         for (ClusterNode clusterNode : cluster.clusterNodes) {
@@ -263,19 +277,12 @@ public class LegislatorTests extends ESTestCase {
             }
         }
 
-        // The nodes all entered mode CANDIDATE, so the next wake-up should be after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
-        final long stabilisationTime = disconnectionTime + CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2
-            + Cluster.DEFAULT_DELAY_VARIABILITY;
-        logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
-        while (cluster.tasks.isEmpty() == false && cluster.getNextTaskExecutionTime() < stabilisationTime) {
-            cluster.doNextWakeUp();
-            cluster.deliverNextMessageUntilQuiescent();
-        }
-        logger.info("--> next wake-ups completed");
-
         logger.info("--> failing old leader");
         leader.legislator.handleFailure();
         logger.info("--> finished failing old leader");
+
+        cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2 + Cluster.DEFAULT_DELAY_VARIABILITY,
+            Cluster.DEFAULT_DELAY_VARIABILITY);
 
         // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
         // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
@@ -305,9 +312,8 @@ public class LegislatorTests extends ESTestCase {
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
         leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.deliverNextMessageUntilQuiescent();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
         cluster.assertConsistentStates();
-        cluster.assertUniqueLeaderAndExpectedModes();
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
 
@@ -337,7 +343,6 @@ public class LegislatorTests extends ESTestCase {
         cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         cluster.assertConsistentStates();
-        cluster.assertUniqueLeaderAndExpectedModes();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
             assertTrue(clusterNode.localNode + " is in committed cluster state",
@@ -370,38 +375,30 @@ public class LegislatorTests extends ESTestCase {
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
         leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.deliverNextMessageUntilQuiescent();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
 
-        final long disconnectionTime = cluster.currentTimeMillis;
-        leader.isConnected = false;
+        ClusterNode nodeToDisconnect;
+        do {
+            nodeToDisconnect = cluster.randomLegislator();
+        } while (nodeToDisconnect.legislator.getMode() == Mode.LEADER);
 
-        for (ClusterNode clusterNode : cluster.clusterNodes) {
-            if (clusterNode != leader) {
-                logger.info("--> notifying {} of leader disconnection", clusterNode.getLocalNode());
-                clusterNode.legislator.handleDisconnectedNode(leader.localNode);
-            }
-        }
+        assertThat(leader.getLastAppliedClusterState().nodes().get(nodeToDisconnect.localNode.getId()), not(nullValue()));
+        long lastAppliedVersion = leader.getLastAppliedClusterState().version();
 
-        // The nodes all entered mode CANDIDATE, so the next wake-up should be after a delay of at most 2 * CONSENSUS_MIN_DELAY_SETTING.
-        final long stabilisationTime = disconnectionTime + CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2
-            + Cluster.DEFAULT_DELAY_VARIABILITY;
-        logger.info("--> performing wake-ups until [{}ms]", stabilisationTime);
-        while (cluster.tasks.isEmpty() == false && cluster.getNextTaskExecutionTime() < stabilisationTime) {
-            cluster.doNextWakeUp();
-            cluster.deliverNextMessageUntilQuiescent();
-        }
-        logger.info("--> next wake-ups completed");
+        nodeToDisconnect.isConnected = false;
 
-        logger.info("--> failing old leader");
-        leader.legislator.handleFailure();
-        logger.info("--> finished failing old leader");
+        logger.info("--> notifying {} of node disconnection", leader.getLocalNode());
+        leader.legislator.handleDisconnectedNode(nodeToDisconnect.localNode);
 
-        // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
-        // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
-        cluster.assertConsistentStates();
-        cluster.assertUniqueLeaderAndExpectedModes();
+        logger.info("--> failing {}", nodeToDisconnect.getLocalNode());
+        nodeToDisconnect.legislator.handleFailure();
+
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+
+        assertThat(leader.getLastAppliedClusterState().nodes().get(nodeToDisconnect.localNode.getId()), nullValue());
+        assertThat(leader.getLastAppliedClusterState().version(), is(lastAppliedVersion + 1));
     }
 
     public void testLagDetectionCausesRejoin() {
@@ -426,7 +423,7 @@ public class LegislatorTests extends ESTestCase {
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
         leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.deliverNextMessageUntilQuiescent();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
 
@@ -553,9 +550,9 @@ public class LegislatorTests extends ESTestCase {
          */
         private void assertUniqueLeaderAndExpectedModes() {
             final ClusterNode leader = getAnyLeader();
-            final Matcher<Long> isSameAsLeaderVersion = is(leader.legislator.getLastAcceptedState().getVersion());
-            assertTrue(leader.getId() + " has no committed state", leader.legislator.getLastCommittedState().isPresent());
-            assertThat(leader.legislator.getLastCommittedState().get().getVersion(), isSameAsLeaderVersion);
+            Matcher<Optional<Long>> isPresentAndEqualToLeaderVersion
+                = equalTo(Optional.of(leader.legislator.getLastAcceptedState().getVersion()));
+            assertThat(leader.legislator.getLastCommittedState().map(ClusterState::getVersion), isPresentAndEqualToLeaderVersion);
             for (final ClusterNode clusterNode : clusterNodes) {
                 if (clusterNode == leader) {
                     continue;
@@ -568,9 +565,9 @@ public class LegislatorTests extends ESTestCase {
                 } else {
                     assertThat(legislatorId + " is a follower", clusterNode.legislator.getMode(), is(Legislator.Mode.FOLLOWER));
                     assertThat(legislatorId + " is at the same version as the leader",
-                        clusterNode.legislator.getLastAcceptedState().getVersion(), isSameAsLeaderVersion);
+                        Optional.of(clusterNode.legislator.getLastAcceptedState().getVersion()), isPresentAndEqualToLeaderVersion);
                     assertThat(legislatorId + " is at the same committed version as the leader",
-                        clusterNode.legislator.getLastCommittedState().get().getVersion(), isSameAsLeaderVersion);
+                        clusterNode.legislator.getLastCommittedState().map(ClusterState::getVersion), isPresentAndEqualToLeaderVersion);
                 }
             }
         }
@@ -723,8 +720,17 @@ public class LegislatorTests extends ESTestCase {
                                  TransportResponseHandler<TransportResponse.Empty> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    e.handleApplyCommit(sender, applyCommit);
-                    sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
+                    e.handleApplyCommit(sender, applyCommit, new ActionListener<Void>() {
+                        @Override
+                        public void onResponse(Void aVoid) {
+                            sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
+                        }
+
+                        @Override
+                        public void onFailure(Exception ex) {
+                            sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
+                        }
+                    });
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
                 }
@@ -896,6 +902,7 @@ public class LegislatorTests extends ESTestCase {
             Legislator legislator;
             boolean isConnected = true;
             DiscoveryNode localNode;
+            FakeClusterApplier clusterApplier;
 
             ClusterNode(int index) {
                 this.index = index;
@@ -973,7 +980,7 @@ public class LegislatorTests extends ESTestCase {
                 assert legislator == null;
                 persistedState = new BasePersistedState(0L,
                     ConsensusStateTests.clusterState(0L, 0L, localNode, initialConfiguration, initialConfiguration, 42L));
-                legislator = createLegislator();
+                createNewLegislator();
                 return this;
             }
 
@@ -995,17 +1002,18 @@ public class LegislatorTests extends ESTestCase {
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
-                legislator = createLegislator();
+                createNewLegislator();
             }
 
-            private Legislator createLegislator() {
+            private void createNewLegislator() {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
-                return new Legislator(settings, persistedState, transport, this::sendMasterServiceTask, localNode,
+                clusterApplier = new FakeClusterApplier(settings);
+                legislator = new Legislator(settings, persistedState, transport, this::sendMasterServiceTask, localNode,
                     new CurrentTimeSupplier(), futureExecutor,
                     () -> clusterNodes.stream().filter(cn -> cn.isConnected || cn.getLocalNode().equals(localNode))
-                        .map(ClusterNode::getLocalNode).collect(Collectors.toList()));
+                        .map(ClusterNode::getLocalNode).collect(Collectors.toList()), clusterApplier);
             }
 
             String getId() {
@@ -1014,6 +1022,46 @@ public class LegislatorTests extends ESTestCase {
 
             public DiscoveryNode getLocalNode() {
                 return localNode;
+            }
+
+            public ClusterState getLastAppliedClusterState() {
+                return clusterApplier.lastAppliedClusterState;
+            }
+
+            private class FakeClusterApplier implements ClusterApplier {
+
+                final ClusterName clusterName;
+                ClusterState lastAppliedClusterState;
+
+                private FakeClusterApplier(Settings settings) {
+                    clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
+                }
+
+
+                @Override
+                public void setInitialState(ClusterState initialState) {
+                    assert lastAppliedClusterState == null;
+                    assert initialState != null;
+                    lastAppliedClusterState = initialState;
+                }
+
+                @Override
+                public void onNewClusterState(String source, Supplier<ClusterState> clusterStateSupplier,
+                                              ClusterStateTaskListener listener) {
+                    futureExecutor.schedule(TimeValue.ZERO, "apply cluster state from [" + source + "]", () -> {
+                        final ClusterState oldClusterState = lastAppliedClusterState;
+                        final ClusterState newClusterState = clusterStateSupplier.get();
+                        assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
+                            + oldClusterState.version() + " to stale version " + newClusterState.version();
+                        lastAppliedClusterState = newClusterState;
+                        listener.clusterStateProcessed(source, null, null); // Nobody cares about these cluster states, see #30809
+                    });
+                }
+
+                @Override
+                public Builder newClusterStateBuilder() {
+                    return ClusterState.builder(clusterName);
+                }
             }
 
             private class FutureExecutor implements Legislator.FutureExecutor {

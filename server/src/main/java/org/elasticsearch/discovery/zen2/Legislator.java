@@ -26,8 +26,11 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
+import org.elasticsearch.cluster.block.ClusterBlock;
+import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.SuppressForbidden;
@@ -37,6 +40,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery.FailedToCommitClusterStateException;
+import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.zen.MasterFaultDetection;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen.NodeJoinController;
@@ -119,6 +123,8 @@ public class Legislator extends AbstractComponent {
     private final FutureExecutor futureExecutor;
     private final LongSupplier currentTimeSupplier;
     private final Random random;
+    private final ClusterApplier clusterApplier;
+    private final ClusterBlock noMasterBlock; // TODO make dynamic
 
     private Mode mode;
     private Optional<DiscoveryNode> lastKnownLeader;
@@ -141,7 +147,7 @@ public class Legislator extends AbstractComponent {
 
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
                       Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
-                      FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier) {
+                      FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier, ClusterApplier clusterApplier) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
@@ -158,6 +164,7 @@ public class Legislator extends AbstractComponent {
         this.currentTimeSupplier = currentTimeSupplier;
         this.futureExecutor = futureExecutor;
         this.nodeSupplier = nodeSupplier;
+        this.clusterApplier = clusterApplier;
         lastKnownLeader = Optional.empty();
         lastCommittedState = Optional.empty();
         lastJoin = Optional.empty();
@@ -165,11 +172,27 @@ public class Legislator extends AbstractComponent {
         seekJoinsScheduler = Optional.empty();
         activeLeaderFailureDetector = Optional.empty();
         activeFollowerFailureDetector = Optional.empty();
-
-        becomeCandidate("init");
+        noMasterBlock = DiscoverySettings.NO_MASTER_BLOCK_SETTING.get(settings);
 
         assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
             "local node mismatch, expected " + localNode + " but got " + persistedState.getLastAcceptedState().nodes().getLocalNode();
+
+        start();
+    }
+
+    private void start() {
+        // copied from ZenDiscovery#doStart()
+        ClusterState.Builder builder = clusterApplier.newClusterStateBuilder();
+        ClusterState initialState = builder
+            .blocks(ClusterBlocks.builder()
+                .addGlobalBlock(STATE_NOT_RECOVERED_BLOCK)
+                .addGlobalBlock(noMasterBlock))
+            .nodes(DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId()))
+            .build();
+        clusterApplier.setInitialState(initialState);
+        // copied from ZenDiscovery#doStart()
+
+        becomeCandidate("start");
     }
 
     public Mode getMode() {
@@ -300,13 +323,13 @@ public class Legislator extends AbstractComponent {
         return Optional.empty();
     }
 
-    public void handleClientValue(ClusterState clusterState, ActionListener<Void> completionListener) {
+    public void handleClientValue(ClusterState clusterState, final ActionListener<Void> completionListener) {
         if (mode != Mode.LEADER) {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
 
         if (currentPublication.isPresent()) {
-            throw new ConsensusMessageRejectedException("[{}] is already in progress", currentPublication.get());
+            throw new ConsensusMessageRejectedException("[{}] is in progress", currentPublication.get());
         }
 
         assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
@@ -455,7 +478,17 @@ public class Legislator extends AbstractComponent {
             if (applyCommitReference.get() == null) {
                 completionListener.onFailure(new FailedToCommitClusterStateException("did not receive a quorum of successful responses"));
             } else {
-                completionListener.onResponse(null);
+                clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterStateTaskListener() {
+                    @Override
+                    public void onFailure(String source, Exception e) {
+                        completionListener.onFailure(e);
+                    }
+
+                    @Override
+                    public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                        completionListener.onResponse(null);
+                    }
+                });
             }
         }
 
@@ -950,11 +983,35 @@ public class Legislator extends AbstractComponent {
         });
     }
 
-    public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit) {
+    public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit, ActionListener<Void> applyListener) {
         logger.trace("handleApplyCommit: applying {} from [{}]", applyCommit, sourceNode);
-        consensusState.handleCommit(applyCommit);
+        try {
+            consensusState.handleCommit(applyCommit);
+        } catch (ConsensusMessageRejectedException e) {
+            applyListener.onFailure(e);
+            return;
+        }
+
         // mark state as commmitted
         lastCommittedState = Optional.of(consensusState.getLastAcceptedState());
+        if (sourceNode.equals(localNode)) {
+            // master node applies the committed state at the end of the publication process, not here.
+            applyListener.onResponse(null);
+        } else {
+            clusterApplier.onNewClusterState("master [" + sourceNode + "] sent [" + applyCommit + "]", () -> getLastCommittedState().get(),
+                new ClusterStateTaskListener() {
+
+                    @Override
+                    public void onFailure(String source, Exception e) {
+                        applyListener.onFailure(e);
+                    }
+
+                    @Override
+                    public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                        applyListener.onResponse(null);
+                    }
+                });
+        }
     }
 
     public OfferJoin handleSeekJoins(DiscoveryNode sender, SeekJoins seekJoins) {
@@ -1457,7 +1514,7 @@ public class Legislator extends AbstractComponent {
 
                         final long leaderVersion = leaderCheckResponse.getVersion();
                         long localVersion = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
-                        if (leaderVersion > localVersion && running) {
+                        if (leaderVersion > localVersion && leaderVersion > 0 && running) {
                             logger.trace("LeaderCheck.handleResponse: heartbeat for version {} > local version {}, starting lag detector",
                                 leaderVersion, localVersion);
                             futureExecutor.schedule(publishTimeout, "LeaderCheck#lagDetection", () -> {
@@ -1465,7 +1522,7 @@ public class Legislator extends AbstractComponent {
                                 if (leaderVersion > localVersion2 && running) {
                                     logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
                                         localVersion2, leaderVersion, publishTimeout);
-                                    laggingUntilCommittedVersionExceeds = localVersion2;
+                                    laggingUntilCommittedVersionExceeds = Math.max(1, localVersion2);
                                 }
                             });
                         }
