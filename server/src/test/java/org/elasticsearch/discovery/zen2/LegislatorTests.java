@@ -1046,15 +1046,14 @@ public class LegislatorTests extends ESTestCase {
                 }
 
                 @Override
-                public void onNewClusterState(String source, Supplier<ClusterState> clusterStateSupplier,
-                                              ClusterStateTaskListener listener) {
+                public void onNewClusterState(String source, Supplier<ClusterState> clusterStateSupplier, ClusterApplyListener listener) {
                     futureExecutor.schedule(TimeValue.ZERO, "apply cluster state from [" + source + "]", () -> {
                         final ClusterState oldClusterState = lastAppliedClusterState;
                         final ClusterState newClusterState = clusterStateSupplier.get();
                         assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
                             + oldClusterState.version() + " to stale version " + newClusterState.version();
                         lastAppliedClusterState = newClusterState;
-                        listener.clusterStateProcessed(source, null, null); // Nobody cares about these cluster states, see #30809
+                        listener.onSuccess(source);
                     });
                 }
 

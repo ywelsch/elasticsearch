@@ -31,6 +31,7 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.ClusterApplier.ClusterApplyListener;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.SuppressForbidden;
@@ -478,14 +479,14 @@ public class Legislator extends AbstractComponent {
             if (applyCommitReference.get() == null) {
                 completionListener.onFailure(new FailedToCommitClusterStateException("did not receive a quorum of successful responses"));
             } else {
-                clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterStateTaskListener() {
+                clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterApplyListener() {
                     @Override
                     public void onFailure(String source, Exception e) {
                         completionListener.onFailure(e);
                     }
 
                     @Override
-                    public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                    public void onSuccess(String source) {
                         completionListener.onResponse(null);
                     }
                 });
@@ -999,7 +1000,7 @@ public class Legislator extends AbstractComponent {
             applyListener.onResponse(null);
         } else {
             clusterApplier.onNewClusterState("master [" + sourceNode + "] sent [" + applyCommit + "]", () -> getLastCommittedState().get(),
-                new ClusterStateTaskListener() {
+                new ClusterApplyListener() {
 
                     @Override
                     public void onFailure(String source, Exception e) {
@@ -1007,7 +1008,7 @@ public class Legislator extends AbstractComponent {
                     }
 
                     @Override
-                    public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                    public void onSuccess(String source) {
                         applyListener.onResponse(null);
                     }
                 });
