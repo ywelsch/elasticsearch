@@ -236,6 +236,10 @@ public class DiscoveryNode implements Writeable, ToXContentFragment {
         this.version = Version.readVersion(in);
     }
 
+    public DiscoveryNode clone() {
+        return new DiscoveryNode(nodeName, nodeId, ephemeralId, hostName, hostAddress, address, attributes, roles, version);
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeString(nodeName);

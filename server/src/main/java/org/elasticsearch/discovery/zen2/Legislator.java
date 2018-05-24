@@ -20,19 +20,21 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
-import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
+import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.cluster.service.ClusterApplier.ClusterApplyListener;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Randomness;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.component.AbstractComponent;
@@ -42,9 +44,12 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.Discovery.FailedToCommitClusterStateException;
 import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.discovery.zen.ElectMasterService;
 import org.elasticsearch.discovery.zen.MasterFaultDetection;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen.NodeJoinController;
+import org.elasticsearch.discovery.zen.NodeJoinController.JoinTaskExecutor;
+import org.elasticsearch.discovery.zen.ZenDiscovery.NodeRemovalClusterStateTaskExecutor;
 import org.elasticsearch.discovery.zen2.ConsensusState.NodeCollection;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
@@ -76,8 +81,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
-import java.util.function.UnaryOperator;
-import java.util.stream.Collectors;
 
 import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK;
 
@@ -143,12 +146,17 @@ public class Legislator extends AbstractComponent {
     // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
 
+    private final JoinTaskExecutor joinTaskExecutor;
+    private final NodeRemovalClusterStateTaskExecutor nodeRemovalExecutor;
+
     private Optional<Publication> currentPublication = Optional.empty();
     private long laggingUntilCommittedVersionExceeds;
 
     public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
-                      Transport transport, MasterService masterService, DiscoveryNode localNode, LongSupplier currentTimeSupplier,
-                      FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier, ClusterApplier clusterApplier) {
+                      Transport transport, MasterService masterService, AllocationService allocationService,
+                      DiscoveryNode localNode, LongSupplier currentTimeSupplier,
+                      FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier,
+                      ClusterApplier clusterApplier) {
         super(settings);
         minDelay = CONSENSUS_MIN_DELAY_SETTING.get(settings);
         maxDelay = CONSENSUS_MAX_DELAY_SETTING.get(settings);
@@ -173,6 +181,45 @@ public class Legislator extends AbstractComponent {
         seekJoinsScheduler = Optional.empty();
         activeLeaderFailureDetector = Optional.empty();
         activeFollowerFailureDetector = Optional.empty();
+
+        // disable minimum_master_nodes check
+        final ElectMasterService electMasterService = new ElectMasterService(settings) {
+
+            @Override
+            public boolean hasEnoughMasterNodes(Iterable<DiscoveryNode> nodes) {
+                return true;
+            }
+
+            @Override
+            public void logMinimumMasterNodesWarningIfNecessary(ClusterState oldState, ClusterState newState) {
+                // ignore
+            }
+
+        };
+
+        // reuse JoinTaskExecutor implementation from ZenDiscovery, but hack some checks
+        this.joinTaskExecutor = new JoinTaskExecutor(allocationService, electMasterService, logger) {
+
+            @Override
+            public ClusterTasksResult<DiscoveryNode> execute(ClusterState currentState, List<DiscoveryNode> joiningNodes) throws Exception {
+                // ZenDiscovery assumes that when a node becomes a fresh leader, that the previous cluster state had
+                // master node id set to null. As we're not doing such thing on becoming candidate (yet), we fake this here.
+                if (currentState.term() != getCurrentTerm()) {
+                    currentState = ClusterState.builder(currentState).term(getCurrentTerm())
+                        .nodes(DiscoveryNodes.builder(currentState.nodes()).masterNodeId(null)).build();
+                }
+                return super.execute(currentState, joiningNodes);
+            }
+
+        };
+
+        // reuse NodeRemovalClusterStateTaskExecutor implementation from ZenDiscovery, but don't provide rejoin callback as
+        // minimum_master_nodes check is disabled in the adapted ElectMasterService from above
+        this.nodeRemovalExecutor = new NodeRemovalClusterStateTaskExecutor(allocationService,
+            electMasterService,
+            s -> { throw new AssertionError("not implemented"); },
+            logger);
+
         noMasterBlock = DiscoverySettings.NO_MASTER_BLOCK_SETTING.get(settings);
 
         assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
@@ -386,6 +433,11 @@ public class Legislator extends AbstractComponent {
 
     public boolean hasElectionQuorum(VotingConfiguration votingConfiguration) {
         return consensusState.hasElectionQuorum(votingConfiguration);
+    }
+
+    public ClusterState getStateForMasterService() {
+        //TODO: set masterNodeId to null in cluster state when we're not leader
+        return getLastAcceptedState();
     }
 
     public enum PublicationTargetState {
@@ -773,8 +825,9 @@ public class Legislator extends AbstractComponent {
     public void handleJoinRequest(DiscoveryNode sourceNode, Join join, MembershipAction.JoinCallback joinCallback) {
         if (mode == Mode.LEADER) {
             // submit as cluster state update task
-            masterService.submitTask("handleJoinRequest: joining existing leader: " + join,
-                clusterState -> joinNodes(clusterState, Collections.singletonList(sourceNode)).resultingState);
+            masterService.submitStateUpdateTask("zen-disco-node-join",
+                sourceNode, ClusterStateTaskConfig.build(Priority.URGENT),
+                joinTaskExecutor, new NodeJoinController.JoinTaskListener(joinCallback, logger));
         } else {
             MembershipAction.JoinCallback prev = joinRequestAccumulator.put(sourceNode, joinCallback);
             if (prev != null) {
@@ -809,105 +862,21 @@ public class Legislator extends AbstractComponent {
             Map<DiscoveryNode, ClusterStateTaskListener> pendingAsTasks = getPendingAsTasks();
             joinRequestAccumulator.clear();
 
-            masterService.submitTask("handleJoin: becoming leader: " + join, clusterState ->
-                joinNodes(clusterState, pendingAsTasks.keySet().stream().collect(Collectors.toList())).resultingState);
+            final String source = "zen-disco-elected-as-master ([" + pendingAsTasks.size() + "] nodes joined)";
+            // noop listener, the election finished listener determines result
+            pendingAsTasks.put(NodeJoinController.BECOME_MASTER_TASK, (source1, e) -> {});
+            pendingAsTasks.put(NodeJoinController.FINISH_ELECTION_TASK, (source1, e) -> {}); // TODO: add proper listener
+            masterService.submitStateUpdateTasks(source, pendingAsTasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
     }
 
-    // copied from NodeJoinController.JoinTaskExecutor.execute(...)
-    public ClusterTasksResult<DiscoveryNode> joinNodes(ClusterState currentState, List<DiscoveryNode> joiningNodes) {
-        final ClusterTasksResult.Builder<DiscoveryNode> results = ClusterTasksResult.builder();
-
-        final DiscoveryNodes currentNodes = currentState.nodes();
-        ClusterState.Builder newState = becomeMasterAndTrimConflictingNodes(currentState, joiningNodes);
-
-        DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(newState.nodes());
-
-        assert nodesBuilder.isLocalNodeElectedMaster();
-
-        Version minClusterNodeVersion = newState.nodes().getMinNodeVersion();
-        Version maxClusterNodeVersion = newState.nodes().getMaxNodeVersion();
-        // we only enforce major version transitions on a fully formed clusters
-        final boolean enforceMajorVersion = currentState.getBlocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) == false;
-        // processing any joins
-        for (final DiscoveryNode node : joiningNodes) {
-            if (currentNodes.nodeExists(node)) {
-                logger.debug("received a join request for an existing node [{}]", node);
-            } else {
-                try {
-                    if (enforceMajorVersion) {
-                        MembershipAction.ensureMajorVersionBarrier(node.getVersion(), minClusterNodeVersion);
-                    }
-                    MembershipAction.ensureNodesCompatibility(node.getVersion(), minClusterNodeVersion, maxClusterNodeVersion);
-                    // we do this validation quite late to prevent race conditions between nodes joining and importing dangling indices
-                    // we have to reject nodes that don't support all indices we have in this cluster
-                    MembershipAction.ensureIndexCompatibility(node.getVersion(), currentState.getMetaData());
-                    nodesBuilder.add(node);
-                    minClusterNodeVersion = Version.min(minClusterNodeVersion, node.getVersion());
-                    maxClusterNodeVersion = Version.max(maxClusterNodeVersion, node.getVersion());
-                } catch (IllegalArgumentException | IllegalStateException e) {
-                    results.failure(node, e);
-                    continue;
-                }
-            }
-            results.success(node);
-        }
-        newState.nodes(nodesBuilder);
-        return results.build(newState.build());
-    }
-
-    // copied from NodeJoinController.JoinTaskExecutor.becomeMasterAndTrimConflictingNodes(...)
-    private ClusterState.Builder becomeMasterAndTrimConflictingNodes(ClusterState currentState, List<DiscoveryNode> joiningNodes) {
-        DiscoveryNodes currentNodes = currentState.nodes();
-        DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(currentNodes);
-        nodesBuilder.masterNodeId(currentState.nodes().getLocalNodeId());
-
-        for (final DiscoveryNode joiningNode : joiningNodes) {
-            final DiscoveryNode nodeWithSameId = nodesBuilder.get(joiningNode.getId());
-            if (nodeWithSameId != null && nodeWithSameId.equals(joiningNode) == false) {
-                logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameId, joiningNode);
-                nodesBuilder.remove(nodeWithSameId.getId());
-            }
-            final DiscoveryNode nodeWithSameAddress = currentNodes.findByAddress(joiningNode.getAddress());
-            if (nodeWithSameAddress != null && nodeWithSameAddress.equals(joiningNode) == false) {
-                logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameAddress,
-                    joiningNode);
-                nodesBuilder.remove(nodeWithSameAddress.getId());
-            }
-        }
-
-        return ClusterState.builder(currentState).nodes(nodesBuilder);
-    }
-
-    // copied from ZenDiscovery.NodeRemovalClusterStateTaskExecutor.execute(...)
-    public ClusterTasksResult<DiscoveryNode> removeNodes(ClusterState currentState, List<DiscoveryNode> nodes) {
-        final DiscoveryNodes.Builder remainingNodesBuilder = DiscoveryNodes.builder(currentState.nodes());
-        boolean removed = false;
-        for (final DiscoveryNode node : nodes) {
-            if (currentState.nodes().nodeExists(node)) {
-                remainingNodesBuilder.remove(node);
-                removed = true;
-            } else {
-                logger.debug("node [{}] does not exist in cluster state, ignoring", node);
-            }
-        }
-
-        if (!removed) {
-            // no nodes to remove, keep the current cluster state
-            return ClusterTasksResult.<DiscoveryNode>builder().successes(nodes).build(currentState);
-        }
-
-        final ClusterState remainingNodesClusterState = remainingNodesClusterState(currentState, remainingNodesBuilder);
-
-        final ClusterTasksResult.Builder<DiscoveryNode> resultBuilder = ClusterTasksResult.<DiscoveryNode>builder().successes(nodes);
-        return resultBuilder.build(remainingNodesClusterState);
-    }
-
-    // visible for testing
-    // hook is used in testing to ensure that correct cluster state is used to test whether a
-    // rejoin or reroute is needed
-    ClusterState remainingNodesClusterState(final ClusterState currentState, DiscoveryNodes.Builder remainingNodesBuilder) {
-        return ClusterState.builder(currentState).nodes(remainingNodesBuilder).build();
+    private void removeNode(final DiscoveryNode node, final String source, final String reason) {
+        masterService.submitStateUpdateTask(
+            source + "(" + node + "), reason(" + reason + ")",
+            new NodeRemovalClusterStateTaskExecutor.Task(node, reason),
+            ClusterStateTaskConfig.build(Priority.IMMEDIATE),
+            nodeRemovalExecutor,
+            nodeRemovalExecutor);
     }
 
     public LegislatorPublishResponse handlePublishRequest(DiscoveryNode sourceNode, PublishRequest publishRequest) {
@@ -1059,8 +1028,19 @@ public class Legislator extends AbstractComponent {
             // it will try to join that one, and not start seeking joins.
             if (mode == Mode.LEADER) {
                 activeLeaderFailureDetector.get().faultyNodes.remove(sender);
-                masterService.submitTask("join of " + sender,
-                    clusterState -> joinNodes(clusterState, Collections.singletonList(sender)).resultingState);
+                masterService.submitStateUpdateTask("zen-disco-node-join",
+                    sender, ClusterStateTaskConfig.build(Priority.URGENT),
+                    joinTaskExecutor, new NodeJoinController.JoinTaskListener(new MembershipAction.JoinCallback() {
+                        @Override
+                        public void onSuccess() {
+                            logger.trace("handleSeekJoins: initiated join of {} successful", sender);
+                        }
+
+                        @Override
+                        public void onFailure(Exception e) {
+                            logger.trace("handleSeekJoins: initiated join of {} failed: {}", sender, e.getMessage());
+                        }
+                    }, logger));
             }
             logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}, lastKnownLeader={}",
                 consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), mode, lastKnownLeader);
@@ -1188,8 +1168,7 @@ public class Legislator extends AbstractComponent {
         }
         if (mode == Mode.LEADER) {
             activeLeaderFailureDetector.get().addFaultyNode(sender);
-            masterService.submitTask("disconnect from " + sender,
-                clusterState -> removeNodes(clusterState, Collections.singletonList(sender)).resultingState);
+            removeNode(sender, "node_left", "handleDisconnectedNode");
         }
     }
 
@@ -1338,8 +1317,7 @@ public class Legislator extends AbstractComponent {
                         logger.debug("ActiveLeaderFailureDetector.onCheckFailure: {} consecutive failures to check [{}]",
                             failureCountSinceLastSuccess, node);
                         addFaultyNode(node);
-                        masterService.submitTask("node fault detection kicked out " + node,
-                            clusterState -> removeNodes(clusterState, Collections.singletonList(node)).resultingState);
+                        removeNode(node, "node_left", "ActiveLeaderFailureDetector.onCheckFailure");
                     } else {
                         scheduleNextWakeUp();
                     }
@@ -1556,9 +1534,5 @@ public class Legislator extends AbstractComponent {
                 }
             }
         }
-    }
-
-    public interface MasterService {
-        void submitTask(String reason, UnaryOperator<ClusterState> runnable);
     }
 }

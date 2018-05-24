@@ -20,18 +20,20 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.Builder;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
-import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
-import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.ClusterStateUpdateTask;
+import org.elasticsearch.cluster.ESAllocationTestCase;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNode.Role;
+import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
@@ -40,7 +42,10 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.concurrent.EsExecutors;
+import org.elasticsearch.common.util.concurrent.PrioritizedEsThreadPoolExecutor;
 import org.elasticsearch.common.util.set.Sets;
+import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
@@ -50,13 +55,13 @@ import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferJoin;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
-import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
@@ -71,20 +76,24 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
+import static org.elasticsearch.discovery.zen2.ConsensusStateTests.nextStateWithConfig;
+import static org.elasticsearch.discovery.zen2.ConsensusStateTests.nextStateWithValue;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_DELAY_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_HEARTBEAT_TIMEOUT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_MIN_DELAY_SETTING;
 import static org.elasticsearch.discovery.zen2.Legislator.CONSENSUS_PUBLISH_TIMEOUT_SETTING;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.not;
@@ -102,7 +111,7 @@ public class LegislatorTests extends ESTestCase {
 
         final long finalValue = randomInt();
         logger.info("--> proposing final value [{}] to [{}]", finalValue, leader.getId());
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
+        leader.handleClientValue(nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
@@ -223,7 +232,7 @@ public class LegislatorTests extends ESTestCase {
             leader = cluster.getAnyLeader();
         }
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.submitUpdateTask("reconfigure to all nodes", state -> nextStateWithConfig(state, allNodes));
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         leader.isConnected = false;
@@ -263,7 +272,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.submitUpdateTask("reconfigure to all nodes", state -> nextStateWithConfig(state, allNodes));
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -311,7 +320,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.submitUpdateTask("reconfigure to all nodes", state -> nextStateWithConfig(state, allNodes));
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
         cluster.assertConsistentStates();
 
@@ -325,7 +334,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> nodes disconnected - starting publication");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
+        leader.handleClientValue(nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
 
         logger.info("--> publication started - now rebooting nodes");
 
@@ -374,7 +383,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.submitUpdateTask("reconfigure to all nodes", state -> nextStateWithConfig(state, allNodes));
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -422,7 +431,7 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> start of reconfiguration to make all nodes into voting nodes");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        leader.submitUpdateTask("reconfigure to all nodes", state -> nextStateWithConfig(state, allNodes));
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
         logger.info("--> end of reconfiguration to make all nodes into voting nodes");
@@ -435,7 +444,7 @@ public class LegislatorTests extends ESTestCase {
             }
         }
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomLong()));
+        leader.handleClientValue(nextStateWithValue(leader.legislator.getLastAcceptedState(), randomLong()));
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
@@ -534,7 +543,8 @@ public class LegislatorTests extends ESTestCase {
 
             deliverNextMessageUntilQuiescent();
 
-            while (tasks.isEmpty() == false && getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
+            while (tasks.stream().anyMatch(ClusterNode.TaskWithExecutionTime::canExecute) &&
+                getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
                 doNextWakeUp();
                 deliverNextMessageUntilQuiescent();
             }
@@ -602,15 +612,13 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
                         logger.debug("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
-                        clusterNode.handleClientValue(
-                            ConsensusStateTests.nextStateWithValue(clusterNode.legislator.getLastAcceptedState(), newValue));
+                        clusterNode.submitUpdateTask("new value [" + newValue + "]", state -> nextStateWithValue(state, newValue));
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final VotingConfiguration newConfig = randomConfiguration();
                         logger.debug("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
-                        clusterNode.handleClientValue(
-                            ConsensusStateTests.nextStateWithConfig(clusterNode.legislator.getLastAcceptedState(), newConfig));
+                        clusterNode.submitUpdateTask("new config [" + newConfig + "]", state -> nextStateWithConfig(state, newConfig));
                     } else if (rarely()) {
                         // reboot random node
                         final ClusterNode clusterNode = randomLegislator();
@@ -628,7 +636,7 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislator();
                         logger.debug("----> [safety {}] failing [{}]", iteration, clusterNode.getId());
                         clusterNode.legislator.handleFailure();
-                    } else if (tasks.isEmpty() == false) {
+                    } else if (tasks.stream().anyMatch(ClusterNode.TaskWithExecutionTime::canExecute)) {
                         // execute next scheduled task
                         logger.debug("----> [safety {}] executing first task scheduled after time [{}ms]", iteration, currentTimeMillis);
                         doNextWakeUp();
@@ -647,13 +655,16 @@ public class LegislatorTests extends ESTestCase {
         private void doNextWakeUp() {
             final long nextTaskExecutionTime = getNextTaskExecutionTime();
 
-            assert nextTaskExecutionTime >= currentTimeMillis;
-            logger.trace("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
-                nextTaskExecutionTime - currentTimeMillis, currentTimeMillis, nextTaskExecutionTime);
-            currentTimeMillis = nextTaskExecutionTime;
+            if (nextTaskExecutionTime >= currentTimeMillis) {
+                logger.trace("----> advancing time by [{}ms] from [{}ms] to [{}ms]",
+                    nextTaskExecutionTime - currentTimeMillis, currentTimeMillis, nextTaskExecutionTime);
+                currentTimeMillis = nextTaskExecutionTime;
+            } else {
+                logger.trace("----> not advancing time");
+            }
 
             for (final ClusterNode.TaskWithExecutionTime task : tasks) {
-                if (task.getExecutionTimeMillis() == nextTaskExecutionTime) {
+                if (task.getExecutionTimeMillis() <= nextTaskExecutionTime && task.canExecute()) {
                     tasks.remove(task);
                     logger.trace("----> executing {}", task);
                     task.run();
@@ -664,7 +675,9 @@ public class LegislatorTests extends ESTestCase {
 
         private Long getNextTaskExecutionTime() {
             return tasks.stream()
-                .map(ClusterNode.TaskWithExecutionTime::getExecutionTimeMillis).min(Long::compareTo).get();
+                .filter(ClusterNode.TaskWithExecutionTime::canExecute)
+                .map(ClusterNode.TaskWithExecutionTime::getExecutionTimeMillis)
+                .min(Long::compareTo).get();
         }
 
         private long delayVariability = DEFAULT_DELAY_VARIABILITY;
@@ -741,7 +754,7 @@ public class LegislatorTests extends ESTestCase {
                                TransportResponseHandler<OfferJoin> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    OfferJoin offerJoin = e.handleSeekJoins(sender, seekJoins);
+                    OfferJoin offerJoin = e.handleSeekJoins(sender.clone(), seekJoins);
                     sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(offerJoin));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
@@ -765,7 +778,7 @@ public class LegislatorTests extends ESTestCase {
                           TransportResponseHandler<TransportResponse.Empty> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    e.handleJoinRequest(sender, join, new MembershipAction.JoinCallback() {
+                    e.handleJoinRequest(sender.clone(), join, new MembershipAction.JoinCallback() {
                         @Override
                         public void onSuccess() {
                             sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
@@ -896,12 +909,12 @@ public class LegislatorTests extends ESTestCase {
             private final int index;
             private final MockTransport transport;
             private final FutureExecutor futureExecutor;
-            private final List<PendingTask> pendingTasks = new ArrayList<>();
 
             PersistedState persistedState;
             Legislator legislator;
             boolean isConnected = true;
             DiscoveryNode localNode;
+            MasterService masterService;
             FakeClusterApplier clusterApplier;
 
             ClusterNode(int index) {
@@ -921,58 +934,54 @@ public class LegislatorTests extends ESTestCase {
                     EnumSet.allOf(Role.class), Version.CURRENT);
             }
 
+            private void setUpLegislatorAndMasterService() {
+                MasterService masterService = new FakeThreadPoolMasterService("fake threadpool for " + localNode, futureExecutor);
+                this.legislator = createLegislator(masterService);
+                this.masterService = masterService;
+
+                masterService.setClusterStatePublisher((clusterChangedEvent, publishListener, ackListener) -> {
+                    try {
+                        legislator.handleClientValue(clusterChangedEvent.state(), publishListener);
+                    } catch (Exception e) {
+                        assertThat(e.getMessage(), not(containsString("is in progress")));
+                        logger.trace(() -> new ParameterizedMessage("[{}] publishing: [{}] failed: {}",
+                            localNode.getName(), clusterChangedEvent.source(), e.getMessage()));
+                        publishListener.onFailure(new Discovery.FailedToCommitClusterStateException("failure while publishing", e));
+                    }
+                });
+
+                masterService.setClusterStateSupplier(legislator::getStateForMasterService);
+                masterService.start();
+            }
+
+            public void submitUpdateTask(String source, UnaryOperator<ClusterState> clusterStateUpdate) {
+                logger.trace("[{}] submitUpdateTask: enqueueing [{}]", localNode.getId(), source);
+                masterService.submitStateUpdateTask(source,
+                    new ClusterStateUpdateTask() {
+                        @Override
+                        public ClusterState execute(ClusterState currentState) {
+                            return clusterStateUpdate.apply(currentState);
+                        }
+
+                        @Override
+                        public void onFailure(String source, Exception e) {
+                            logger.debug(() -> new ParameterizedMessage("failed to publish: [{}]", source), e);
+                        }
+                    });
+            }
+
             public void handleClientValue(ClusterState clusterState) {
                 legislator.handleClientValue(clusterState, new ActionListener<Void>() {
                     @Override
-                    public void onResponse(Void aVoid) {
-                        scheduleRunPendingTasks();
+                    public void onResponse(Void ignore) {
+                        logger.trace("successfully published: [{}]", clusterState);
                     }
 
                     @Override
                     public void onFailure(Exception e) {
-                        scheduleRunPendingTasks();
-                    }
-
-                    private void scheduleRunPendingTasks() {
-                        futureExecutor.schedule(TimeValue.ZERO, "scheduleRunPendingTasks", ClusterNode.this::runPendingTasks);
+                        logger.debug(() -> new ParameterizedMessage("failed to publish: [{}]", clusterState), e);
                     }
                 });
-            }
-
-            private void runPendingTasks() {
-                // TODO this batches tasks more aggressively than the real MasterService does, which weakens the properties we are
-                // testing here. Make the batching more realistic.
-                List<PendingTask> currentPendingTasks = new ArrayList<>(pendingTasks);
-                pendingTasks.clear();
-                if (currentPendingTasks.size() == 0) {
-                    return;
-                }
-
-                try {
-                    if (legislator.getMode() == Legislator.Mode.LEADER) {
-                        ClusterState newState = legislator.getLastAcceptedState();
-                        for (final PendingTask pendingTask : currentPendingTasks) {
-                            logger.trace("[{}] running [{}]", localNode.getId(), pendingTask);
-                            newState = pendingTask.run(newState);
-                        }
-                        assert Objects.equals(newState.getNodes().getMasterNodeId(), localNode.getId()) : newState;
-                        assert newState.getNodes().getNodes().get(localNode.getId()) != null;
-                        handleClientValue(ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion()
-                            // incrementVersion() gives the new state a random UUID, but we override this for test repeatability:
-                            .stateUUID(UUIDs.randomBase64UUID(random())).build());
-                    }
-                } catch (ConsensusMessageRejectedException e) {
-                    logger.trace(() -> new ParameterizedMessage("[{}] runPendingTasks: failed, rescheduling: {}",
-                        localNode.getId(), e.getMessage()));
-                    pendingTasks.addAll(currentPendingTasks);
-                }
-            }
-
-            private void sendMasterServiceTask(String reason, UnaryOperator<ClusterState> task) {
-                PendingTask pendingTask = new PendingTask(task, reason, masterServicesTaskId++);
-                logger.trace("[{}] sendMasterServiceTask: enqueueing [{}]", localNode.getId(), pendingTask);
-                pendingTasks.add(pendingTask);
-                futureExecutor.schedule(TimeValue.ZERO, "sendMasterServiceTask: " + pendingTask, this::runPendingTasks);
             }
 
             ClusterNode initialise(VotingConfiguration initialConfiguration) {
@@ -980,7 +989,7 @@ public class LegislatorTests extends ESTestCase {
                 assert legislator == null;
                 persistedState = new BasePersistedState(0L,
                     ConsensusStateTests.clusterState(0L, 0L, localNode, initialConfiguration, initialConfiguration, 42L));
-                createNewLegislator();
+                setUpLegislatorAndMasterService();
                 return this;
             }
 
@@ -989,7 +998,6 @@ public class LegislatorTests extends ESTestCase {
                 logger.trace("reboot: taking down [{}]", localNode);
                 tasks.removeIf(task -> task.scheduledFor(localNode));
                 inFlightMessages.removeIf(action -> action.hasDestination(localNode));
-                pendingTasks.clear();
                 localNode = createDiscoveryNode();
                 logger.trace("reboot: starting up [{}]", localNode);
                 try {
@@ -1002,15 +1010,16 @@ public class LegislatorTests extends ESTestCase {
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
-                createNewLegislator();
+                setUpLegislatorAndMasterService();
             }
 
-            private void createNewLegislator() {
+            private Legislator createLegislator(MasterService masterService) {
                 Settings settings = Settings.builder()
                     .put("node.name", localNode.getId())
                     .build();
                 clusterApplier = new FakeClusterApplier(settings);
-                legislator = new Legislator(settings, persistedState, transport, this::sendMasterServiceTask, localNode,
+                return new Legislator(settings, persistedState, transport, masterService, ESAllocationTestCase.createAllocationService(),
+                    localNode,
                     new CurrentTimeSupplier(), futureExecutor,
                     () -> clusterNodes.stream().filter(cn -> cn.isConnected || cn.getLocalNode().equals(localNode))
                         .map(ClusterNode::getLocalNode).collect(Collectors.toList()), clusterApplier);
@@ -1052,6 +1061,7 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterState newClusterState = clusterStateSupplier.get();
                         assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
                             + oldClusterState.version() + " to stale version " + newClusterState.version();
+                        logger.trace("[{}] applied cluster state with version [{}]", localNode.getId(), newClusterState.version());
                         lastAppliedClusterState = newClusterState;
                         listener.onSuccess(source);
                     });
@@ -1065,36 +1075,19 @@ public class LegislatorTests extends ESTestCase {
 
             private class FutureExecutor implements Legislator.FutureExecutor {
 
-                @Override
-                public void schedule(TimeValue delay, String description, Runnable task) {
+                public void schedule(TimeValue delay, String description, Runnable task, BooleanSupplier waitCondition) {
                     assert delay.getMillis() >= 0;
                     final long actualDelay = delay.getMillis() + randomLongBetween(0L, delayVariability);
                     final long executionTimeMillis = currentTimeMillis + actualDelay;
                     logger.debug("[{}] scheduling [{}]: requested delay [{}ms] after [{}ms], " +
                             "scheduling with delay [{}ms] at [{}ms]",
                         localNode.getId(), description, delay.getMillis(), currentTimeMillis, actualDelay, executionTimeMillis);
-                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, localNode, description));
-                }
-            }
-
-            private class PendingTask {
-                private final UnaryOperator<ClusterState> task;
-                private final String description;
-                private final long taskId;
-
-                PendingTask(UnaryOperator<ClusterState> task, String description, long taskId) {
-                    this.task = task;
-                    this.description = description;
-                    this.taskId = taskId;
+                    tasks.add(new TaskWithExecutionTime(executionTimeMillis, task, localNode, description, waitCondition));
                 }
 
                 @Override
-                public String toString() {
-                    return description + " [" + taskId + "]";
-                }
-
-                ClusterState run(ClusterState clusterState) {
-                    return task.apply(clusterState);
+                public void schedule(TimeValue delay, String description, Runnable task) {
+                    schedule(delay, description, task, () -> false);
                 }
             }
 
@@ -1176,12 +1169,19 @@ public class LegislatorTests extends ESTestCase {
                 final Runnable task;
                 private final DiscoveryNode taskNode;
                 private final String description;
+                private final BooleanSupplier waitCondition;
 
-                TaskWithExecutionTime(long executionTimeMillis, Runnable task, DiscoveryNode taskNode, String description) {
+                TaskWithExecutionTime(long executionTimeMillis, Runnable task, DiscoveryNode taskNode, String description,
+                                      BooleanSupplier waitCondition) {
                     this.executionTimeMillis = executionTimeMillis;
                     this.task = task;
                     this.taskNode = taskNode;
                     this.description = description;
+                    this.waitCondition = waitCondition;
+                }
+
+                public boolean canExecute() {
+                    return waitCondition.getAsBoolean() == false;
                 }
 
                 public long getExecutionTimeMillis() {
@@ -1209,6 +1209,73 @@ public class LegislatorTests extends ESTestCase {
             public long getAsLong() {
                 return currentTimeMillis;
             }
+        }
+
+    }
+
+    static class FakeThreadPoolMasterService extends MasterService {
+
+        private final String name;
+        private final ClusterNode.FutureExecutor futureExecutor;
+        private boolean taskInProgress = false;
+
+        FakeThreadPoolMasterService(String name, ClusterNode.FutureExecutor futureExecutor) {
+            super(Settings.EMPTY, null);
+            this.name = name;
+            this.futureExecutor = futureExecutor;
+        }
+
+        @Override
+        protected PrioritizedEsThreadPoolExecutor createThreadPoolExecutor() {
+            return new PrioritizedEsThreadPoolExecutor(name, 1, 1, 1, TimeUnit.SECONDS, EsExecutors.daemonThreadFactory(name),
+                null, null) {
+
+                @Override
+                public void execute(Runnable command, final TimeValue timeout, final Runnable timeoutCallback) {
+                    futureExecutor.schedule(timeout, command.toString(), command, () -> taskInProgress);
+                }
+
+                @Override
+                public void execute(Runnable command) {
+                    futureExecutor.schedule(TimeValue.timeValueMillis(0L), command.toString(), command, () -> taskInProgress);
+                }
+            };
+        }
+
+        @Override
+        protected Builder incrementVersion(ClusterState clusterState) {
+            // generate cluster UUID deterministically for repeatable tests
+            return ClusterState.builder(clusterState).incrementVersion().stateUUID(UUIDs.randomBase64UUID(random()));
+        }
+
+        @Override
+        protected void publish(ClusterChangedEvent clusterChangedEvent, TaskOutputs taskOutputs, long startTimeNS) {
+            assert taskInProgress == false;
+            taskInProgress = true;
+            ActionListener<Void> publishListener = getPublishListener(clusterChangedEvent, taskOutputs, startTimeNS);
+            clusterStatePublisher.publish(clusterChangedEvent, new ActionListener<Void>() {
+
+                    private boolean listenerCalled = false;
+
+                    @Override
+                    public void onResponse(Void aVoid) {
+                        assert listenerCalled == false;
+                        listenerCalled = true;
+                        assert taskInProgress;
+                        taskInProgress = false;
+                        publishListener.onResponse(null);
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        assert listenerCalled == false;
+                        listenerCalled = true;
+                        assert taskInProgress;
+                        taskInProgress = false;
+                        publishListener.onFailure(e);
+                    }
+                },
+                taskOutputs.createAckListener(threadPool, clusterChangedEvent.state()));
         }
     }
 }
