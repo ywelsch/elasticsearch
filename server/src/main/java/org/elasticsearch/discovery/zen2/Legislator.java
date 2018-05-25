@@ -20,6 +20,7 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
@@ -40,6 +41,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.discovery.Discovery.AckListener;
 import org.elasticsearch.discovery.Discovery.FailedToCommitClusterStateException;
 import org.elasticsearch.discovery.DiscoverySettings;
 import org.elasticsearch.discovery.zen.MasterFaultDetection;
@@ -324,7 +326,15 @@ public class Legislator extends AbstractComponent {
         return Optional.empty();
     }
 
-    public void handleClientValue(ClusterState clusterState, final ActionListener<Void> completionListener) {
+    /**
+     * Publish a new cluster state. May throw ConsensusMessageRejectedException (NB, not FailedToCommitClusterStateException) if the
+     * publication cannot even be started, or else notifies the given completionListener on completion.
+     *
+     * @param clusterState The new cluster state to publish.
+     * @param completionListener Receives notification of completion of the publication, whether successful, failed, or timed out.
+     * @param ackListener Receives notification of success or failure for each individual node, but not if timed out.
+     */
+    public void handleClientValue(ClusterState clusterState, ActionListener<Void> completionListener, AckListener ackListener) {
         if (mode != Mode.LEADER) {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
@@ -336,7 +346,7 @@ public class Legislator extends AbstractComponent {
         assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
 
         final PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
-        final Publication publication = new Publication(publishRequest, completionListener);
+        final Publication publication = new Publication(publishRequest, completionListener, ackListener);
 
         assert currentPublication.isPresent() == false
             : "[" + currentPublication.get() + "] in progress, cannot start [" + publication + ']';
@@ -410,11 +420,13 @@ public class Legislator extends AbstractComponent {
         private final List<PublicationTarget> publicationTargets;
         private final PublishRequest publishRequest;
         private final ActionListener<Void> completionListener;
+        private final AckListener ackListener;
         private boolean isCompleted;
 
-        private Publication(PublishRequest publishRequest, ActionListener<Void> completionListener) {
+        private Publication(PublishRequest publishRequest, ActionListener<Void> completionListener, AckListener ackListener) {
             this.publishRequest = publishRequest;
             this.completionListener = completionListener;
+            this.ackListener = ackListener;
             applyCommitReference = new AtomicReference<>();
 
             publicationTargets = new ArrayList<>(publishRequest.getAcceptedState().getNodes().getNodes().size());
@@ -461,9 +473,11 @@ public class Legislator extends AbstractComponent {
 
             for (final PublicationTarget target : publicationTargets) {
                 if (target.discoveryNode.equals(localNode) && target.state.isFailed()) {
-                    logger.debug("onPossibleCompletion: publish-to-self failed when publishing [{}]", this);
+                    logger.debug("onPossibleCompletion: [{}] failed on master", this);
                     onCompletion();
-                    completionListener.onFailure(new FailedToCommitClusterStateException("publish-to-self failed"));
+                    FailedToCommitClusterStateException exception = new FailedToCommitClusterStateException("publish-to-self failed");
+                    ackListener.onNodeAck(localNode, exception); // other nodes have acked, but not the master.
+                    completionListener.onFailure(exception);
                     return;
                 }
             }
@@ -474,23 +488,23 @@ public class Legislator extends AbstractComponent {
                 + "]: current version is now [" + consensusState.getLastAcceptedVersion()
                 + "] in term [" + consensusState.getLastAcceptedTerm() + "]";
 
-            logger.trace("onPossibleCompletion: success when publishing [{}]", this);
             onCompletion();
-            if (applyCommitReference.get() == null) {
-                completionListener.onFailure(new FailedToCommitClusterStateException("did not receive a quorum of successful responses"));
-            } else {
-                clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterApplyListener() {
-                    @Override
-                    public void onFailure(String source, Exception e) {
-                        completionListener.onFailure(e);
-                    }
+            assert applyCommitReference.get() != null;
+            logger.trace("onPossibleCompletion: [{}] was successful, applying new state locally", this);
+            clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterApplyListener() {
+                @Override
+                public void onFailure(String source, Exception e) {
+                    becomeCandidate("clusterApplier#onNewClusterState");
+                    ackListener.onNodeAck(localNode, e);
+                    completionListener.onFailure(e);
+                }
 
-                    @Override
-                    public void onSuccess(String source) {
-                        completionListener.onResponse(null);
-                    }
-                });
-            }
+                @Override
+                public void onSuccess(String source) {
+                    ackListener.onNodeAck(localNode, null);
+                    completionListener.onResponse(null);
+                }
+            });
         }
 
         // For assertions only: verify that this invariant holds
@@ -545,7 +559,8 @@ public class Legislator extends AbstractComponent {
         }
 
         public void onTimeout() {
-            failActiveTargets();
+            publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::onTimeOut);
+            onPossibleCompletion();
 
             if (mode == Mode.LEADER && applyCommitReference.get() == null) {
                 logger.debug("Publication.onTimeout(): failed to commit version [{}] in term [{}]",
@@ -562,6 +577,7 @@ public class Legislator extends AbstractComponent {
         private class PublicationTarget {
             private final DiscoveryNode discoveryNode;
             private final PublicationTargetStateMachine state = new PublicationTargetStateMachine();
+            private boolean ackIsPending = true;
 
             private PublicationTarget(DiscoveryNode discoveryNode) {
                 this.discoveryNode = discoveryNode;
@@ -616,6 +632,15 @@ public class Legislator extends AbstractComponent {
             public void setFailed() {
                 assert isActive();
                 state.setState(PublicationTargetState.FAILED);
+                ackOnce(new ElasticsearchException("publication failed"));
+            }
+
+            public void onTimeOut() {
+                assert isActive();
+                state.setState(PublicationTargetState.FAILED);
+                if (applyCommitReference.get() == null) {
+                    ackOnce(new ElasticsearchException("publication timed out"));
+                }
             }
 
             public void onFaultyNode(DiscoveryNode faultyNode) {
@@ -624,6 +649,13 @@ public class Legislator extends AbstractComponent {
                         publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
                     setFailed();
                     onPossibleCommitFailure();
+                }
+            }
+
+            private void ackOnce(Exception e) {
+                if (ackIsPending && localNode.equals(discoveryNode) == false) {
+                    ackIsPending = false;
+                    ackListener.onNodeAck(discoveryNode, e);
                 }
             }
 
@@ -728,6 +760,7 @@ public class Legislator extends AbstractComponent {
                     state.setState(PublicationTargetState.FAILED);
                     onPossibleCommitFailure();
                     assert publicationCompletedIffAllTargetsInactive();
+                    ackOnce(exp);
                 }
 
                 @Override
@@ -748,6 +781,7 @@ public class Legislator extends AbstractComponent {
                     state.setState(PublicationTargetState.APPLIED_COMMIT);
                     onPossibleCompletion();
                     assert publicationCompletedIffAllTargetsInactive();
+                    ackOnce(null);
                 }
 
                 @Override
@@ -760,6 +794,7 @@ public class Legislator extends AbstractComponent {
                     state.setState(PublicationTargetState.FAILED);
                     onPossibleCompletion();
                     assert publicationCompletedIffAllTargetsInactive();
+                    ackOnce(exp);
                 }
 
                 @Override

@@ -27,11 +27,11 @@ import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterState.Builder;
-import org.elasticsearch.cluster.ClusterStateTaskListener;
-import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
-import org.elasticsearch.cluster.service.ClusterApplier;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNode.Role;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.cluster.service.ClusterApplier;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
@@ -41,6 +41,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.set.Sets;
+import org.elasticsearch.discovery.Discovery.AckListener;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.discovery.zen2.ConsensusState.BasePersistedState;
 import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
@@ -50,13 +51,13 @@ import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
+import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferJoin;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
-import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
@@ -66,9 +67,11 @@ import org.hamcrest.Matcher;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -89,12 +92,13 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.hamcrest.core.Is.is;
 
 public class LegislatorTests extends ESTestCase {
 
     public void testCanProposeValueAfterStabilisation() {
-        Cluster cluster = new Cluster(randomIntBetween(1, 5));
+        final Cluster cluster = new Cluster(randomIntBetween(1, 5));
         cluster.runRandomly(true);
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
@@ -102,7 +106,7 @@ public class LegislatorTests extends ESTestCase {
 
         final long finalValue = randomInt();
         logger.info("--> proposing final value [{}] to [{}]", finalValue, leader.getId());
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), finalValue));
+        leader.proposeValue(finalValue);
         cluster.deliverNextMessageUntilQuiescent();
 
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
@@ -121,7 +125,7 @@ public class LegislatorTests extends ESTestCase {
     }
 
     public void testNodeJoiningAndLeaving() {
-        Cluster cluster = new Cluster(randomIntBetween(1, 3));
+        final Cluster cluster = new Cluster(randomIntBetween(1, 3));
         cluster.runRandomly(true);
         cluster.stabilise();
 
@@ -144,7 +148,7 @@ public class LegislatorTests extends ESTestCase {
         }
 
         // pick a subset of nodes to disconnect so that the remaining connected nodes still have a voting quorum
-        ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode leader = cluster.getAnyLeader();
 
         VotingConfiguration config = leader.legislator.getLastCommittedState().get().getLastCommittedConfiguration();
         Set<String> quorumOfVotingNodes = randomUnique(() -> randomFrom(config.getNodeIds()), config.getNodeIds().size() / 2 + 1);
@@ -179,7 +183,7 @@ public class LegislatorTests extends ESTestCase {
     }
 
     public void testCanAbdicateAfterStabilisation() {
-        Cluster cluster = new Cluster(randomIntBetween(1, 5));
+        final Cluster cluster = new Cluster(randomIntBetween(1, 5));
         cluster.runRandomly(true);
         cluster.stabilise();
         final ClusterNode leader = cluster.getAnyLeader();
@@ -205,26 +209,8 @@ public class LegislatorTests extends ESTestCase {
     }
 
     public void testStabilisationWithDisconnectedLeader() {
-        Cluster cluster = new Cluster(3);
-        cluster.runRandomly(true);
-        cluster.stabilise();
-        ClusterNode leader = cluster.getAnyLeader();
-
-        final VotingConfiguration allNodes = new VotingConfiguration(
-            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
-
-        // TODO: have the following automatically done as part of a reconfiguration subsystem
-        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
-            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
-            // abdicate to self to acquire all join votes
-            leader.legislator.abdicateTo(leader.localNode);
-
-            cluster.stabilise();
-            leader = cluster.getAnyLeader();
-        }
-
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
 
         leader.isConnected = false;
         if (randomBoolean()) {
@@ -236,37 +222,15 @@ public class LegislatorTests extends ESTestCase {
         // and only then will the leader step down.
         // TODO: improve failure detection
         cluster.stabilise(2 * cluster.DEFAULT_STABILISATION_TIME, Cluster.DEFAULT_DELAY_VARIABILITY);
-        final ClusterNode newLeader = cluster.getAnyLeader();
 
+        final ClusterNode newLeader = cluster.getAnyLeader();
         assertNotEquals(leader, newLeader);
         assertTrue(newLeader.isConnected);
     }
 
     public void testFastElectionWhenLeaderDropsConnections() {
-        Cluster cluster = new Cluster(3);
-        cluster.runRandomly(true);
-        cluster.stabilise();
-        ClusterNode leader = cluster.getAnyLeader();
-
-        final VotingConfiguration allNodes = new VotingConfiguration(
-            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
-
-        // TODO: have the following automatically done as part of a reconfiguration subsystem
-        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
-            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
-            // abdicate to self to acquire all join votes
-            leader.legislator.abdicateTo(leader.localNode);
-
-            cluster.stabilise();
-            leader = cluster.getAnyLeader();
-        }
-
-        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
-
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
-
-        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
 
         leader.isConnected = false;
 
@@ -281,51 +245,21 @@ public class LegislatorTests extends ESTestCase {
         leader.legislator.handleFailure();
         logger.info("--> finished failing old leader");
 
-        cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() * 2 + Cluster.DEFAULT_DELAY_VARIABILITY,
-            Cluster.DEFAULT_DELAY_VARIABILITY);
-
-        // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
-        // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
-        cluster.assertConsistentStates();
-        cluster.assertUniqueLeaderAndExpectedModes();
+        cluster.stabilise(cluster.DEFAULT_ELECTION_TIME, Cluster.DEFAULT_DELAY_VARIABILITY);
     }
 
-    public void testFastFailureWhenAQuorumReboots() {
-        Cluster cluster = new Cluster(3);
-        cluster.runRandomly(true);
-        cluster.stabilise();
-        ClusterNode leader = cluster.getAnyLeader();
+    public void testFastFailureWhenAQuorumRebootsUncleanly() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
 
-        final VotingConfiguration allNodes = new VotingConfiguration(
-            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
-
-        // TODO: have the following automatically done as part of a reconfiguration subsystem
-        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
-            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
-            // abdicate to self to acquire all join votes
-            leader.legislator.abdicateTo(leader.localNode);
-
-            cluster.stabilise();
-            leader = cluster.getAnyLeader();
-        }
-
-        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
-
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
-        cluster.assertConsistentStates();
-
-        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
-
-        for (final ClusterNode clusterNode : cluster.clusterNodes) {
-            if (clusterNode.equals(leader) == false) {
-                clusterNode.isConnected = false;
-            }
-        }
+        follower0.isConnected = false;
+        follower1.isConnected = false;
 
         logger.info("--> nodes disconnected - starting publication");
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomInt()));
+        leader.proposeRandomValue();
 
         logger.info("--> publication started - now rebooting nodes");
 
@@ -340,142 +274,284 @@ public class LegislatorTests extends ESTestCase {
 
         logger.info("--> nodes rebooted - now stabilising");
 
-        cluster.stabilise(CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+        cluster.stabilise(cluster.DEFAULT_ELECTION_TIME, Cluster.DEFAULT_DELAY_VARIABILITY);
 
-        cluster.assertConsistentStates();
-
+        DiscoveryNodes finalDiscoveryNodes = leader.legislator.getLastCommittedState().get().getNodes();
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
-            assertTrue(clusterNode.localNode + " is in committed cluster state",
-                leader.legislator.getLastCommittedState().get().getNodes().nodeExists(clusterNode.localNode));
+            assertTrue(clusterNode.localNode + " is in cluster state", finalDiscoveryNodes.nodeExists(clusterNode.localNode));
         }
-
-        // TODO want to assert that we stabilised quickly by failing the earlier publication but cannot since overlapping publications
-        // are currently allowed. But this will assert that in future.
     }
 
     public void testFastRemovalWhenFollowerDropsConnections() {
-        Cluster cluster = new Cluster(3);
-        cluster.runRandomly(true);
-        cluster.stabilise();
-        ClusterNode leader = cluster.getAnyLeader();
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
 
-        final VotingConfiguration allNodes = new VotingConfiguration(
-            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
-
-        // TODO: have the following automatically done as part of a reconfiguration subsystem
-        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
-            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
-            // abdicate to self to acquire all join votes
-            leader.legislator.abdicateTo(leader.localNode);
-
-            cluster.stabilise();
-            leader = cluster.getAnyLeader();
-        }
-
-        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
-
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
-        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
-
-        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
-
-        ClusterNode nodeToDisconnect;
-        do {
-            nodeToDisconnect = cluster.randomLegislator();
-        } while (nodeToDisconnect.legislator.getMode() == Mode.LEADER);
-
-        assertThat(leader.getLastAppliedClusterState().nodes().get(nodeToDisconnect.localNode.getId()), not(nullValue()));
+        assertThat(leader.getLastAppliedClusterState().nodes().get(follower0.localNode.getId()), not(nullValue()));
         long lastAppliedVersion = leader.getLastAppliedClusterState().version();
 
-        nodeToDisconnect.isConnected = false;
+        follower0.isConnected = false;
 
         logger.info("--> notifying {} of node disconnection", leader.getLocalNode());
-        leader.legislator.handleDisconnectedNode(nodeToDisconnect.localNode);
+        leader.legislator.handleDisconnectedNode(follower0.localNode);
 
-        logger.info("--> failing {}", nodeToDisconnect.getLocalNode());
-        nodeToDisconnect.legislator.handleFailure();
+        logger.info("--> failing {}", follower0.getLocalNode());
+        follower0.legislator.handleFailure();
 
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
 
-        assertThat(leader.getLastAppliedClusterState().nodes().get(nodeToDisconnect.localNode.getId()), nullValue());
+        assertThat(leader.getLastAppliedClusterState().nodes().get(follower0.localNode.getId()), nullValue());
         assertThat(leader.getLastAppliedClusterState().version(), is(lastAppliedVersion + 1));
     }
 
     public void testLagDetectionCausesRejoin() {
-        Cluster cluster = new Cluster(3);
-        cluster.runRandomly(true);
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+
+        logger.info("--> disconnecting {}", follower0.getLocalNode());
+        follower0.isConnected = false;
+
+        leader.proposeRandomValue();
+        cluster.deliverNextMessageUntilQuiescent();
+
+        logger.info("--> reconnecting {}", follower0.getLocalNode());
+        follower0.isConnected = true;
+
         cluster.stabilise();
-        ClusterNode leader = cluster.getAnyLeader();
+    }
 
-        final VotingConfiguration allNodes = new VotingConfiguration(
-            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet()));
+    public void testAckListenerReceivesAcksFromAllNodes() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
 
-        // TODO: have the following automatically done as part of a reconfiguration subsystem
-        if (leader.legislator.hasElectionQuorum(allNodes) == false) {
-            logger.info("--> leader does not have a join quorum for the new configuration, abdicating to self");
-            // abdicate to self to acquire all join votes
-            leader.legislator.abdicateTo(leader.localNode);
-
-            cluster.stabilise();
-            leader = cluster.getAnyLeader();
-        }
-
-        logger.info("--> start of reconfiguration to make all nodes into voting nodes");
-
-        leader.handleClientValue(ConsensusStateTests.nextStateWithConfig(leader.legislator.getLastAcceptedState(), allNodes));
+        AckCollector ackCollector = leader.proposeRandomValue();
         cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
-
-        logger.info("--> end of reconfiguration to make all nodes into voting nodes");
-
         for (final ClusterNode clusterNode : cluster.clusterNodes) {
-            if (clusterNode != leader) {
-                logger.info("--> disconnecting {}", clusterNode.getLocalNode());
-                clusterNode.isConnected = false;
-                break;
+            assertTrue("expected ack from " + clusterNode, ackCollector.hasAckedSuccessfully(clusterNode));
+        }
+        assertThat("leader should be last to ack", ackCollector.getSuccessfulAckIndex(leader), equalTo(2));
+    }
+
+    public void testAckListenerReceivesNackFromFollower() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        follower0.setClusterStateApplyResponse(ClusterStateApplyResponse.FAIL);
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+        assertTrue("expected ack from " + leader, ackCollector.hasAckedSuccessfully(leader));
+        assertTrue("expected nack from " + follower0, ackCollector.hasAckedUnsuccessfully(follower0));
+        assertTrue("expected ack from " + follower1, ackCollector.hasAckedSuccessfully(follower1));
+        assertThat("leader should be last to ack", ackCollector.getSuccessfulAckIndex(leader), equalTo(1));
+    }
+
+
+    public void testAckListenerReceivesNackFromLeader() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+        final long startingTerm = leader.legislator.getCurrentTerm();
+
+        leader.setClusterStateApplyResponse(ClusterStateApplyResponse.FAIL);
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.runUntil(cluster.currentTimeMillis + 2 * Cluster.DEFAULT_DELAY_VARIABILITY);
+        assertTrue("expected nack from " + leader, ackCollector.hasAckedUnsuccessfully(leader));
+        assertTrue("expected ack from " + follower0, ackCollector.hasAckedSuccessfully(follower0));
+        assertTrue("expected ack from " + follower1, ackCollector.hasAckedSuccessfully(follower1));
+        assertTrue(leader.legislator.getMode() != Mode.LEADER || leader.legislator.getCurrentTerm() > startingTerm);
+        leader.setClusterStateApplyResponse(ClusterStateApplyResponse.SUCCEED);
+        cluster.stabilise();
+        assertTrue(leader.legislator.getMode() != Mode.LEADER || leader.legislator.getCurrentTerm() > startingTerm);
+    }
+
+    public void testAckListenerReceivesNoAckFromHangingFollower() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        follower0.setClusterStateApplyResponse(ClusterStateApplyResponse.HANG);
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.runUntil(cluster.currentTimeMillis + Cluster.DEFAULT_DELAY_VARIABILITY);
+        assertTrue("expected immediate ack from " + follower1, ackCollector.hasAckedSuccessfully(follower1));
+        assertFalse("expected no ack from " + leader, ackCollector.hasAckedSuccessfully(leader));
+        cluster.stabilise(cluster.DEFAULT_STABILISATION_TIME, 0L);
+        assertTrue("expected eventual ack from " + leader, ackCollector.hasAckedSuccessfully(leader));
+        assertFalse("expected no ack from " + follower0, ackCollector.hasAcked(follower0));
+    }
+
+    public void testAckListenerReceivesNacksIfPublicationTimesOut() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        follower0.isConnected = false;
+        follower1.isConnected = false;
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.runUntil(cluster.currentTimeMillis + Cluster.DEFAULT_DELAY_VARIABILITY);
+        assertFalse("expected no immediate ack from " + leader, ackCollector.hasAcked(leader));
+        assertFalse("expected no immediate ack from " + follower0, ackCollector.hasAcked(follower0));
+        assertFalse("expected no immediate ack from " + follower1, ackCollector.hasAcked(follower1));
+        follower0.isConnected = true;
+        follower1.isConnected = true;
+        cluster.stabilise(cluster.DEFAULT_STABILISATION_TIME, 0L);
+        assertThat("leader should remain the same", cluster.getAnyLeader(), sameInstance(leader));
+        assertTrue("expected eventual nack from " + follower0, ackCollector.hasAckedUnsuccessfully(follower0));
+        assertTrue("expected eventual nack from " + follower1, ackCollector.hasAckedUnsuccessfully(follower1));
+        assertTrue("expected eventual nack from " + leader, ackCollector.hasAckedUnsuccessfully(leader));
+    }
+
+    public void testAckListenerReceivesNacksIfLeaderStandsDown() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        leader.isConnected = false;
+        follower0.legislator.handleDisconnectedNode(leader.localNode);
+        follower1.legislator.handleDisconnectedNode(leader.localNode);
+        cluster.runUntil(cluster.currentTimeMillis + cluster.DEFAULT_ELECTION_TIME);
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.runUntil(cluster.currentTimeMillis + Cluster.DEFAULT_DELAY_VARIABILITY);
+        leader.isConnected = true;
+        cluster.stabilise(cluster.DEFAULT_STABILISATION_TIME, 0L);
+        assertTrue("expected nack from " + leader, ackCollector.hasAckedUnsuccessfully(leader));
+        assertTrue("expected nack from " + follower0, ackCollector.hasAckedUnsuccessfully(follower0));
+        assertTrue("expected nack from " + follower1, ackCollector.hasAckedUnsuccessfully(follower1));
+    }
+
+    public void testAckListenerReceivesNacksFromFollowerInHigherTerm() {
+        final Cluster cluster = createStabilisedThreeNodeCluster();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        follower0.legislator.handleStartJoin(follower0.localNode, new StartJoinRequest(follower0.legislator.getCurrentTerm() + 1));
+        AckCollector ackCollector = leader.proposeRandomValue();
+        cluster.stabilise(cluster.DEFAULT_STABILISATION_TIME, 0L);
+        assertTrue("expected ack from " + leader, ackCollector.hasAckedSuccessfully(leader));
+        assertTrue("expected nack from " + follower0, ackCollector.hasAckedUnsuccessfully(follower0));
+        assertTrue("expected ack from " + follower1, ackCollector.hasAckedSuccessfully(follower1));
+    }
+
+    class AckCollector implements AckListener {
+
+        private final Set<DiscoveryNode> ackedNodes = new HashSet<>();
+        private final List<DiscoveryNode> successfulNodes = new ArrayList<>();
+        private final List<DiscoveryNode> unsuccessfulNodes = new ArrayList<>();
+
+        @Override
+        public void onNodeAck(DiscoveryNode node, Exception e) {
+            assertTrue("duplicate ack from " + node, ackedNodes.add(node));
+            if (e == null) {
+                successfulNodes.add(node);
+            } else {
+                unsuccessfulNodes.add(node);
             }
         }
 
-        leader.handleClientValue(ConsensusStateTests.nextStateWithValue(leader.legislator.getLastAcceptedState(), randomLong()));
-        cluster.deliverNextMessageUntilQuiescent();
-
-        for (final ClusterNode clusterNode : cluster.clusterNodes) {
-            logger.info("--> reconnecting {}", clusterNode.getLocalNode());
-            clusterNode.isConnected = true;
+        boolean hasAckedSuccessfully(ClusterNode clusterNode) {
+            return successfulNodes.contains(clusterNode.localNode);
         }
 
+        boolean hasAckedUnsuccessfully(ClusterNode clusterNode) {
+            return unsuccessfulNodes.contains(clusterNode.localNode);
+        }
+
+        boolean hasAcked(ClusterNode clusterNode) {
+            return ackedNodes.contains(clusterNode.localNode);
+        }
+
+        int getSuccessfulAckIndex(ClusterNode clusterNode) {
+            assert successfulNodes.contains(clusterNode.localNode) : "get index of " + clusterNode;
+            return successfulNodes.indexOf(clusterNode.localNode);
+        }
+    }
+
+    /**
+     * How to behave with a new cluster state
+     */
+    enum ClusterStateApplyResponse {
+        /**
+         * Apply the state (default)
+         */
+        SUCCEED,
+
+        /**
+         * Reject the state with an exception.
+         */
+        FAIL,
+
+        /**
+         * Never respond either way.
+         */
+        HANG,
+    }
+
+    private Cluster createStabilisedThreeNodeCluster() {
+        final Cluster cluster = new Cluster(3);
+        logger.info("--> createThreeNodeCluster: initial stabilisation");
+
+        cluster.stabilise(cluster.DEFAULT_ELECTION_TIME, 0L);
+        logger.info("--> createThreeNodeCluster: reconfigure so that all nodes have a vote");
+        cluster.getAnyLeader().proposeConfiguration(new VotingConfiguration(
+            cluster.clusterNodes.stream().map(cn -> cn.localNode.getId()).collect(Collectors.toSet())));
+        cluster.stabilise(Cluster.DEFAULT_DELAY_VARIABILITY, 0L);
+        cluster.runRandomly(false);
         cluster.stabilise();
 
-        // Furthermore the first one to wake up causes an election to complete successfully, because we run to quiescence
-        // before waking any other nodes up. Therefore the cluster has a unique leader and all connected nodes are FOLLOWERs.
-        cluster.assertConsistentStates();
-        cluster.assertUniqueLeaderAndExpectedModes();
+        final ClusterNode leader = cluster.getAnyLeader();
+        final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
+        final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
+
+        assertThat("leader should start out as LEADER", leader.legislator.getMode(), equalTo(Mode.LEADER));
+        assertThat("follower0 should start out as FOLLOWER", follower0.legislator.getMode(), equalTo(Mode.FOLLOWER));
+        assertThat("follower1 should start out as FOLLOWER", follower1.legislator.getMode(), equalTo(Mode.FOLLOWER));
+
+        Matcher<Long> isCorrectVersion = is(leader.getLastAppliedClusterState().version());
+        for (final ClusterNode clusterNode : cluster.clusterNodes) {
+            assertThat(clusterNode.getLastAppliedClusterState().version(), isCorrectVersion);
+            assertThat(clusterNode.legislator.getLastAcceptedState().version(), isCorrectVersion);
+            assertThat(clusterNode.legislator.getLastCommittedState().get().version(), isCorrectVersion);
+        }
+        assertThat(leader.getLastAppliedClusterState().getLastAcceptedConfiguration().getNodeIds().size(), is(3));
+        assertThat(leader.getLastAppliedClusterState().getLastCommittedConfiguration().getNodeIds().size(), is(3));
+
+        logger.info("--> createThreeNodeCluster: end of setup");
+
+        return cluster;
     }
 
     class Cluster {
-        private final List<ClusterNode> clusterNodes;
+        final List<ClusterNode> clusterNodes;
         private final List<InFlightMessage> inFlightMessages = new ArrayList<>();
-        private long currentTimeMillis = 0L;
+        long currentTimeMillis = 0L;
         Map<Long, ClusterState> committedStatesByVersion = new HashMap<>();
-        private static final long DEFAULT_DELAY_VARIABILITY = 100L;
-        private static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
+        static final long DEFAULT_DELAY_VARIABILITY = 100L;
+        static final long RANDOM_MODE_DELAY_VARIABILITY = 10000L;
         private long masterServicesTaskId = 0L;
 
         // How long does it take for the cluster to stabilise?
 
         // Each heartbeat takes at most this long:
-        private final long DEFAULT_MAX_HEARTBEAT_TIME
+        final long DEFAULT_MAX_HEARTBEAT_TIME
             = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis()
             + CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(Settings.EMPTY).millis()
             + 2 * DEFAULT_DELAY_VARIABILITY;
         // Multiple heartbeat failures are needed before the leader's failure is detected:
-        private final long DEFAULT_MAX_FAILURE_DETECTION_TIME
+        final long DEFAULT_MAX_FAILURE_DETECTION_TIME
             = DEFAULT_MAX_HEARTBEAT_TIME * CONSENSUS_LEADER_CHECK_RETRY_COUNT_SETTING.get(Settings.EMPTY);
         // When stabilising, there are no election collisions, because we run to quiescence before waking any other nodes up.
         // Therefore elections takes this long:
-        private final long DEFAULT_ELECTION_TIME
+        final long DEFAULT_ELECTION_TIME
             = 2 * (CONSENSUS_MIN_DELAY_SETTING.get(Settings.EMPTY).millis() + DEFAULT_DELAY_VARIABILITY);
         // Lag detection takes this long to notice that a follower is lagging the leader:
-        private final long DEFAULT_LAG_DETECTION_TIME
+        final long DEFAULT_LAG_DETECTION_TIME
             = CONSENSUS_HEARTBEAT_DELAY_SETTING.get(Settings.EMPTY).millis() // before the heartbeat that hears about the lag
             + CONSENSUS_PUBLISH_TIMEOUT_SETTING.get(Settings.EMPTY).millis() // waiting for the lag
             + 2 * DEFAULT_DELAY_VARIABILITY;
@@ -489,7 +565,7 @@ public class LegislatorTests extends ESTestCase {
         // detection must notice this omission, then the master must notice the node is rejecting heartbeats and remove it from the cluster,
         // then the follower must notice it is missing from the cluster and rejoin.
         //
-        private final long DEFAULT_STABILISATION_TIME = RANDOM_MODE_DELAY_VARIABILITY
+        final long DEFAULT_STABILISATION_TIME = RANDOM_MODE_DELAY_VARIABILITY
             + Math.max(DEFAULT_MAX_FAILURE_DETECTION_TIME + DEFAULT_ELECTION_TIME, // case 1
             DEFAULT_LAG_DETECTION_TIME + DEFAULT_MAX_FAILURE_DETECTION_TIME + DEFAULT_MAX_HEARTBEAT_TIME); // case 2
 
@@ -508,22 +584,22 @@ public class LegislatorTests extends ESTestCase {
             }
         }
 
-        public void addNodes(int nodeCount) {
+        void addNodes(int nodeCount) {
             int numCurrentNodes = clusterNodes.size();
             for (int i = 0; i < nodeCount; i++) {
                 clusterNodes.add(new ClusterNode(numCurrentNodes + i).initialise(VotingConfiguration.EMPTY_CONFIG));
             }
         }
 
-        public int getNodeCount() {
+        int getNodeCount() {
             return clusterNodes.size();
         }
 
-        public void stabilise() {
+        void stabilise() {
             stabilise(DEFAULT_STABILISATION_TIME, DEFAULT_DELAY_VARIABILITY);
         }
 
-        public void stabilise(long stabilisationTimeMillis, long delayVariability) {
+        void stabilise(long stabilisationTimeMillis, long delayVariability) {
             // Stabilisation phase: just wake up nodes in order for long enough to allow a leader to be elected
 
             final long stabilisationPhaseEndMillis = currentTimeMillis + stabilisationTimeMillis;
@@ -531,17 +607,20 @@ public class LegislatorTests extends ESTestCase {
                 currentTimeMillis, stabilisationTimeMillis, stabilisationPhaseEndMillis, delayVariability);
 
             setDelayVariability(delayVariability);
-
-            deliverNextMessageUntilQuiescent();
-
-            while (tasks.isEmpty() == false && getNextTaskExecutionTime() <= stabilisationPhaseEndMillis) {
-                doNextWakeUp();
-                deliverNextMessageUntilQuiescent();
-            }
+            runUntil(stabilisationPhaseEndMillis);
 
             logger.info("--> end of stabilisation phase at [{}ms]", currentTimeMillis);
 
             assertUniqueLeaderAndExpectedModes();
+        }
+
+        void runUntil(long endTime) {
+            deliverNextMessageUntilQuiescent();
+
+            while (tasks.isEmpty() == false && getNextTaskExecutionTime() <= endTime) {
+                doNextWakeUp();
+                deliverNextMessageUntilQuiescent();
+            }
         }
 
         /**
@@ -576,7 +655,7 @@ public class LegislatorTests extends ESTestCase {
          * @return Any node that is a LEADER. Throws an exception if there is no such node. It is up to the caller to
          * check the modes of all the other nodes to make sure, if expected, that there are no other LEADER nodes.
          */
-        private ClusterNode getAnyLeader() {
+        ClusterNode getAnyLeader() {
             List<ClusterNode> leaders = clusterNodes.stream()
                 .filter(clusterNode -> clusterNode.legislator.getMode() == Legislator.Mode.LEADER)
                 .collect(Collectors.toList());
@@ -586,7 +665,7 @@ public class LegislatorTests extends ESTestCase {
 
         private final List<ClusterNode.TaskWithExecutionTime> tasks = new ArrayList<>();
 
-        private void runRandomly(boolean reconfigure) {
+        void runRandomly(boolean reconfigure) {
             // Safety phase: behave quite randomly and verify that there is no divergence, but without any expectation of progress.
 
             final int iterations = scaledRandomIntBetween(50, 10000);
@@ -602,15 +681,13 @@ public class LegislatorTests extends ESTestCase {
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final int newValue = randomInt();
                         logger.debug("----> [safety {}] proposing new value [{}] to [{}]", iteration, newValue, clusterNode.getId());
-                        clusterNode.handleClientValue(
-                            ConsensusStateTests.nextStateWithValue(clusterNode.legislator.getLastAcceptedState(), newValue));
+                        clusterNode.proposeValue(newValue);
                     } else if (reconfigure && rarely()) {
                         // perform a reconfiguration
                         final ClusterNode clusterNode = randomLegislatorPreferringLeaders();
                         final VotingConfiguration newConfig = randomConfiguration();
                         logger.debug("----> [safety {}] proposing reconfig [{}] to [{}]", iteration, newConfig, clusterNode.getId());
-                        clusterNode.handleClientValue(
-                            ConsensusStateTests.nextStateWithConfig(clusterNode.legislator.getLastAcceptedState(), newConfig));
+                        clusterNode.proposeConfiguration(newConfig);
                     } else if (rarely()) {
                         // reboot random node
                         final ClusterNode clusterNode = randomLegislator();
@@ -824,7 +901,7 @@ public class LegislatorTests extends ESTestCase {
             inFlightMessages.remove(0).run();
         }
 
-        private void deliverNextMessageUntilQuiescent() {
+        void deliverNextMessageUntilQuiescent() {
             while (inFlightMessages.size() > 0) {
                 try {
                     deliverNextMessage();
@@ -863,8 +940,19 @@ public class LegislatorTests extends ESTestCase {
             return randomLegislator();
         }
 
-        public void setDelayVariability(long delayVariability) {
+        void setDelayVariability(long delayVariability) {
             this.delayVariability = delayVariability;
+        }
+
+        ClusterNode getAnyNodeExcept(ClusterNode... avoidNodes) {
+            List<ClusterNode> shuffledNodes = new ArrayList<>(clusterNodes);
+            Collections.shuffle(shuffledNodes, random());
+            for (final ClusterNode clusterNode : shuffledNodes) {
+                if (Arrays.stream(avoidNodes).allMatch(avoidNode -> avoidNode != clusterNode)) {
+                    return clusterNode;
+                }
+            }
+            throw new AssertionError("no suitable node found");
         }
 
         class InFlightMessage implements Runnable {
@@ -903,12 +991,18 @@ public class LegislatorTests extends ESTestCase {
             boolean isConnected = true;
             DiscoveryNode localNode;
             FakeClusterApplier clusterApplier;
+            ClusterStateApplyResponse clusterStateApplyResponse = ClusterStateApplyResponse.SUCCEED;
 
             ClusterNode(int index) {
                 this.index = index;
                 this.futureExecutor = new FutureExecutor();
                 localNode = createDiscoveryNode();
                 transport = new MockTransport();
+            }
+
+            @Override
+            public String toString() {
+                return localNode.toString();
             }
 
             private DiscoveryNode createDiscoveryNode() {
@@ -921,7 +1015,8 @@ public class LegislatorTests extends ESTestCase {
                     EnumSet.allOf(Role.class), Version.CURRENT);
             }
 
-            public void handleClientValue(ClusterState clusterState) {
+            AckCollector handleClientValue(ClusterState clusterState) {
+                AckCollector ackCollector = new AckCollector();
                 legislator.handleClientValue(clusterState, new ActionListener<Void>() {
                     @Override
                     public void onResponse(Void aVoid) {
@@ -936,7 +1031,8 @@ public class LegislatorTests extends ESTestCase {
                     private void scheduleRunPendingTasks() {
                         futureExecutor.schedule(TimeValue.ZERO, "scheduleRunPendingTasks", ClusterNode.this::runPendingTasks);
                     }
-                });
+                }, ackCollector);
+                return ackCollector;
             }
 
             private void runPendingTasks() {
@@ -959,7 +1055,7 @@ public class LegislatorTests extends ESTestCase {
                         assert newState.getNodes().getNodes().get(localNode.getId()) != null;
                         handleClientValue(ClusterState.builder(newState).term(legislator.getCurrentTerm()).incrementVersion()
                             // incrementVersion() gives the new state a random UUID, but we override this for test repeatability:
-                            .stateUUID(UUIDs.randomBase64UUID(random())).build());
+                                .stateUUID(UUIDs.randomBase64UUID(random())).build());
                     }
                 } catch (ConsensusMessageRejectedException e) {
                     logger.trace(() -> new ParameterizedMessage("[{}] runPendingTasks: failed, rescheduling: {}",
@@ -1024,8 +1120,24 @@ public class LegislatorTests extends ESTestCase {
                 return localNode;
             }
 
-            public ClusterState getLastAppliedClusterState() {
+            ClusterState getLastAppliedClusterState() {
                 return clusterApplier.lastAppliedClusterState;
+            }
+
+            void setClusterStateApplyResponse(ClusterStateApplyResponse clusterStateApplyResponse) {
+                this.clusterStateApplyResponse = clusterStateApplyResponse;
+            }
+
+            AckCollector proposeConfiguration(VotingConfiguration votingConfiguration) {
+                return handleClientValue(ConsensusStateTests.nextStateWithConfig(legislator.getLastAcceptedState(), votingConfiguration));
+            }
+
+            AckCollector proposeValue(long value) {
+                return handleClientValue(ConsensusStateTests.nextStateWithValue(legislator.getLastAcceptedState(), value));
+            }
+
+            AckCollector proposeRandomValue() {
+                return proposeValue(randomInt());
             }
 
             private class FakeClusterApplier implements ClusterApplier {
@@ -1037,7 +1149,6 @@ public class LegislatorTests extends ESTestCase {
                     clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
                 }
 
-
                 @Override
                 public void setInitialState(ClusterState initialState) {
                     assert lastAppliedClusterState == null;
@@ -1047,14 +1158,33 @@ public class LegislatorTests extends ESTestCase {
 
                 @Override
                 public void onNewClusterState(String source, Supplier<ClusterState> clusterStateSupplier, ClusterApplyListener listener) {
-                    futureExecutor.schedule(TimeValue.ZERO, "apply cluster state from [" + source + "]", () -> {
-                        final ClusterState oldClusterState = lastAppliedClusterState;
-                        final ClusterState newClusterState = clusterStateSupplier.get();
-                        assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
-                            + oldClusterState.version() + " to stale version " + newClusterState.version();
-                        lastAppliedClusterState = newClusterState;
-                        listener.onSuccess(source);
-                    });
+                    switch (clusterStateApplyResponse) {
+                        case SUCCEED:
+                            futureExecutor.schedule(TimeValue.ZERO, "apply cluster state from [" + source + "]", () -> {
+                                final ClusterState oldClusterState = clusterApplier.lastAppliedClusterState;
+                                final ClusterState newClusterState = clusterStateSupplier.get();
+                                assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
+                                    + oldClusterState.version() + " to stale version " + newClusterState.version();
+                                clusterApplier.lastAppliedClusterState = newClusterState;
+                                listener.onSuccess(source);
+                            });
+                            break;
+                        case FAIL:
+                            futureExecutor.schedule(TimeValue.ZERO, "fail to apply cluster state from [" + source + "]",
+                                () -> listener.onFailure(source, new ElasticsearchException("cluster state application failed")));
+                            break;
+                        case HANG:
+                            if (randomBoolean()) {
+                                futureExecutor.schedule(TimeValue.ZERO, "apply cluster state from [" + source + "] without ack", () -> {
+                                    final ClusterState oldClusterState = clusterApplier.lastAppliedClusterState;
+                                    final ClusterState newClusterState = clusterStateSupplier.get();
+                                    assert oldClusterState.version() <= newClusterState.version() : "updating cluster state from version "
+                                        + oldClusterState.version() + " to stale version " + newClusterState.version();
+                                    clusterApplier.lastAppliedClusterState = newClusterState;
+                                });
+                            }
+                            break;
+                    }
                 }
 
                 @Override
@@ -1184,7 +1314,7 @@ public class LegislatorTests extends ESTestCase {
                     this.description = description;
                 }
 
-                public long getExecutionTimeMillis() {
+                long getExecutionTimeMillis() {
                     return executionTimeMillis;
                 }
 
@@ -1193,7 +1323,7 @@ public class LegislatorTests extends ESTestCase {
                     return "[" + description + "] on [" + taskNode + "] scheduled at time [" + executionTimeMillis + "ms]";
                 }
 
-                public boolean scheduledFor(DiscoveryNode discoveryNode) {
+                boolean scheduledFor(DiscoveryNode discoveryNode) {
                     return taskNode.equals(discoveryNode);
                 }
 
