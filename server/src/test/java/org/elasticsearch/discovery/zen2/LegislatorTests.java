@@ -42,6 +42,7 @@ import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.unit.TimeValue;
@@ -56,13 +57,16 @@ import org.elasticsearch.discovery.zen2.ConsensusState.PersistedState;
 import org.elasticsearch.discovery.zen2.Legislator.Mode;
 import org.elasticsearch.discovery.zen2.Legislator.Transport;
 import org.elasticsearch.discovery.zen2.LegislatorTests.Cluster.ClusterNode;
+import org.elasticsearch.discovery.zen2.Messages.AbdicationRequest;
 import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatRequest;
 import org.elasticsearch.discovery.zen2.Messages.HeartbeatResponse;
 import org.elasticsearch.discovery.zen2.Messages.Join;
+import org.elasticsearch.discovery.zen2.Messages.LeaderCheckRequest;
 import org.elasticsearch.discovery.zen2.Messages.LeaderCheckResponse;
 import org.elasticsearch.discovery.zen2.Messages.LegislatorPublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.OfferJoin;
+import org.elasticsearch.discovery.zen2.Messages.PrejoinHandoverRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
@@ -440,7 +444,7 @@ public class LegislatorTests extends ESTestCase {
         final ClusterNode follower0 = cluster.getAnyNodeExcept(leader);
         final ClusterNode follower1 = cluster.getAnyNodeExcept(leader, follower0);
 
-        follower0.legislator.handleStartJoin(follower0.localNode, new StartJoinRequest(follower0.legislator.getCurrentTerm() + 1));
+        follower0.legislator.handleStartJoin(new StartJoinRequest(follower0.localNode, follower0.legislator.getCurrentTerm() + 1));
         AckCollector ackCollector = leader.submitRandomValue();
         cluster.stabilise(cluster.DEFAULT_STABILISATION_TIME, 0L);
         assertTrue("expected ack from " + leader, ackCollector.hasAckedSuccessfully(leader));
@@ -798,7 +802,7 @@ public class LegislatorTests extends ESTestCase {
                                     TransportResponseHandler<LegislatorPublishResponse> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    LegislatorPublishResponse publishResponse = e.handlePublishRequest(sender, publishRequest);
+                    LegislatorPublishResponse publishResponse = e.handlePublishRequest(publishRequest);
                     sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(publishResponse));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
@@ -843,7 +847,7 @@ public class LegislatorTests extends ESTestCase {
                                TransportResponseHandler<OfferJoin> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    OfferJoin offerJoin = e.handleSeekJoins(copy(sender), seekJoins);
+                    OfferJoin offerJoin = e.handleSeekJoins(serialize(seekJoins, SeekJoins::new));
                     sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(offerJoin));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
@@ -855,7 +859,7 @@ public class LegislatorTests extends ESTestCase {
                                TransportResponseHandler<TransportResponse.Empty> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    e.handleStartJoin(sender, startJoinRequest);
+                    e.handleStartJoin(startJoinRequest);
                     sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
@@ -867,7 +871,7 @@ public class LegislatorTests extends ESTestCase {
                           TransportResponseHandler<TransportResponse.Empty> responseHandler) {
             sendFromTo(sender, destination, e -> {
                 try {
-                    e.handleJoinRequest(copy(sender), join, new MembershipAction.JoinCallback() {
+                    e.handleJoinRequest(serialize(join, Join::new), new MembershipAction.JoinCallback() {
                         @Override
                         public void onSuccess() {
                             sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(TransportResponse.Empty.INSTANCE));
@@ -884,20 +888,21 @@ public class LegislatorTests extends ESTestCase {
             });
         }
 
-        void sendPreJoinHandoverFrom(DiscoveryNode sender, DiscoveryNode destination) {
-            sendFromTo(sender, destination, e -> e.handlePreJoinHandover(sender));
+        void sendPreJoinHandoverFrom(DiscoveryNode sender, DiscoveryNode destination, PrejoinHandoverRequest prejoinHandoverRequest) {
+            sendFromTo(sender, destination, e -> e.handlePreJoinHandover(prejoinHandoverRequest));
         }
 
-        void sendAbdicationFrom(DiscoveryNode sender, DiscoveryNode destination, long currentTerm) {
-            sendFromTo(sender, destination, e -> e.handleAbdication(sender, currentTerm));
+        void sendAbdicationFrom(DiscoveryNode sender, DiscoveryNode destination, AbdicationRequest abdicationRequest) {
+            sendFromTo(sender, destination, e -> e.handleAbdication(abdicationRequest));
         }
 
         void sendLeaderCheckRequestFrom(DiscoveryNode sender, DiscoveryNode destination,
+                                        LeaderCheckRequest leaderCheckRequest,
                                         TransportResponseHandler<LeaderCheckResponse> responseHandler) {
 
             sendFromTo(sender, destination, e -> {
                 try {
-                    LeaderCheckResponse response = e.handleLeaderCheckRequest(sender);
+                    LeaderCheckResponse response = e.handleLeaderCheckRequest(leaderCheckRequest);
                     sendFromTo(destination, sender, e2 -> responseHandler.handleResponse(response));
                 } catch (Exception ex) {
                     sendFromTo(destination, sender, e2 -> responseHandler.handleException(new TransportException(ex)));
@@ -1057,7 +1062,8 @@ public class LegislatorTests extends ESTestCase {
                     ESAllocationTestCase.createAllocationService(), localNode,
                     new CurrentTimeSupplier(), futureExecutor,
                     () -> clusterNodes.stream().filter(cn -> cn.isConnected || cn.getLocalNode().equals(localNode))
-                        .map(ClusterNode::getLocalNode).collect(Collectors.toList()), clusterApplier);
+                        .map(ClusterNode::getLocalNode).collect(Collectors.toList()), clusterApplier, random());
+                legislator.start();
                 this.masterService = masterService;
 
                 masterService.setClusterStatePublisher((clusterChangedEvent, publishListener, ackListener) -> {
@@ -1279,24 +1285,24 @@ public class LegislatorTests extends ESTestCase {
                 }
 
                 @Override
-                public void sendPreJoinHandover(DiscoveryNode destination) {
+                public void sendPreJoinHandover(DiscoveryNode destination, PrejoinHandoverRequest prejoinHandoverRequest) {
                     if (isConnected) {
-                        sendPreJoinHandoverFrom(localNode, destination);
+                        sendPreJoinHandoverFrom(localNode, destination, prejoinHandoverRequest);
                     }
                 }
 
                 @Override
-                public void sendAbdication(DiscoveryNode destination, long currentTerm) {
+                public void sendAbdication(DiscoveryNode destination, AbdicationRequest abdicationRequest) {
                     if (isConnected) {
-                        sendAbdicationFrom(localNode, destination, currentTerm);
+                        sendAbdicationFrom(localNode, destination, abdicationRequest);
                     }
                 }
 
                 @Override
-                public void sendLeaderCheckRequest(DiscoveryNode destination,
+                public void sendLeaderCheckRequest(DiscoveryNode destination, LeaderCheckRequest leaderCheckRequest,
                                                    TransportResponseHandler<LeaderCheckResponse> responseHandler) {
                     if (isConnected) {
-                        sendLeaderCheckRequestFrom(localNode, destination, responseHandler);
+                        sendLeaderCheckRequestFrom(localNode, destination, leaderCheckRequest, responseHandler);
                     }
                 }
             }
@@ -1452,8 +1458,15 @@ public class LegislatorTests extends ESTestCase {
     }
 
     // TODO: remove this once we use proper transport layer with serialization or once we've fixed NodeJoinController / TaskBatching
-    public static DiscoveryNode copy(DiscoveryNode node) {
-        return new DiscoveryNode(node.getName(), node.getId(), node.getEphemeralId(), node.getHostName(), node.getHostAddress(),
-            node.getAddress(), node.getAttributes(), node.getRoles(), node.getVersion());
+    public <T extends Writeable> T serialize(T t, Writeable.Reader<T> reader) {
+        try {
+            BytesStreamOutput outStream = new BytesStreamOutput();
+            t.writeTo(outStream);
+            StreamInput inStream = outStream.bytes().streamInput();
+            return reader.read(inStream);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
+
 }

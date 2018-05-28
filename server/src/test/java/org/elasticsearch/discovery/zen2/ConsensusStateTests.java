@@ -33,6 +33,7 @@ import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.Join;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
+import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 
@@ -44,8 +45,8 @@ import static org.hamcrest.Matchers.equalTo;
 
 public class ConsensusStateTests extends ESTestCase {
 
-    public static ConsensusState createInitialState(PersistedState storage) {
-        return new ConsensusState(Settings.EMPTY, storage);
+    public static ConsensusState createInitialState(PersistedState storage, DiscoveryNode localNode) {
+        return new ConsensusState(Settings.EMPTY, localNode, storage);
     }
 
     public static ClusterState clusterState(long term, long version, DiscoveryNode localNode, VotingConfiguration lastCommittedConfig,
@@ -96,19 +97,19 @@ public class ConsensusStateTests extends ESTestCase {
         PersistedState s2 = new BasePersistedState(0L, state1);
         PersistedState s3 = new BasePersistedState(0L, state1);
 
-        ConsensusState n1 = createInitialState(s1);
-        ConsensusState n2 = createInitialState(s2);
-        ConsensusState n3 = createInitialState(s3);
+        ConsensusState n1 = createInitialState(s1, node1);
+        ConsensusState n2 = createInitialState(s2, node2);
+        ConsensusState n3 = createInitialState(s3, node3);
 
         assertThat(n1.getCurrentTerm(), equalTo(0L));
-        Join v1 = n1.handleStartJoin(node2, 1);
+        Join v1 = n1.handleStartJoin(new StartJoinRequest(node2, 1));
         assertThat(n1.getCurrentTerm(), equalTo(1L));
 
         assertThat(n2.getCurrentTerm(), equalTo(0L));
-        Join v2 = n2.handleStartJoin(node2, 1);
+        Join v2 = n2.handleStartJoin(new StartJoinRequest(node2, 1));
         assertThat(n2.getCurrentTerm(), equalTo(1L));
 
-        n1.handleJoin(node2, v2);
+        n1.handleJoin(v2);
 
         VotingConfiguration newConfig = new VotingConfiguration(Collections.singleton(node2.getId()));
         ClusterState state2 = nextStateWithTermValueAndConfig(state1, 1, 5, newConfig);
@@ -116,14 +117,14 @@ public class ConsensusStateTests extends ESTestCase {
         assertTrue(state1.getLastCommittedConfiguration().hasQuorum(Collections.singleton(node1.getId())));
 
         expectThrows(ConsensusMessageRejectedException.class, () -> n1.handleClientValue(state2));
-        n1.handleJoin(node1, v1);
+        n1.handleJoin(v1);
 
         PublishRequest publishRequest2 = n1.handleClientValue(state2);
 
         PublishResponse n1PublishResponse = n1.handlePublishRequest(publishRequest2);
         PublishResponse n2PublishResponse = n2.handlePublishRequest(publishRequest2);
         expectThrows(ConsensusMessageRejectedException.class, () -> n3.handlePublishRequest(publishRequest2));
-        n3.handleStartJoin(node2, 1);
+        n3.handleStartJoin(new StartJoinRequest(node2, 1));
 
         assertFalse(n1.handlePublishResponse(node1, n1PublishResponse).isPresent());
         Optional<ApplyCommit> n1Commit = n1.handlePublishResponse(node2, n2PublishResponse);

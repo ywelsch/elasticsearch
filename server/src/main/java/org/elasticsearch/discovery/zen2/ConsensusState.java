@@ -27,6 +27,7 @@ import org.elasticsearch.discovery.zen2.Messages.ApplyCommit;
 import org.elasticsearch.discovery.zen2.Messages.PublishRequest;
 import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.Join;
+import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -36,6 +37,8 @@ import java.util.Optional;
  * The safety core of the consensus algorithm
  */
 public class ConsensusState extends AbstractComponent {
+
+    private final DiscoveryNode localNode;
 
     // persisted state
     final PersistedState persistedState;
@@ -48,8 +51,10 @@ public class ConsensusState extends AbstractComponent {
     private VotingConfiguration lastPublishedConfiguration;
     private NodeCollection publishVotes;
 
-    public ConsensusState(Settings settings, PersistedState persistedState) {
+    public ConsensusState(Settings settings, DiscoveryNode localNode, PersistedState persistedState) {
         super(settings);
+
+        this.localNode = localNode;
 
         // persisted state
         this.persistedState = persistedState;
@@ -111,23 +116,22 @@ public class ConsensusState extends AbstractComponent {
      * May be safely called at any time to move this instance to a new term. It is vitally important for safety that
      * the resulting Join is sent to no more than one node.
      *
-     * @param targetNode The node to join
-     * @param newTerm The new term
+     * @param startJoinRequest The startJoinRequest
      * @return A Join that must be sent to at most one other node.
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
-    public Join handleStartJoin(DiscoveryNode targetNode, long newTerm) {
-        if (newTerm <= getCurrentTerm()) {
+    public Join handleStartJoin(StartJoinRequest startJoinRequest) {
+        if (startJoinRequest.getTerm() <= getCurrentTerm()) {
             logger.debug("handleStartJoin: ignored as term provided [{}] not greater than current term [{}]",
-                newTerm, getCurrentTerm());
-            throw new ConsensusMessageRejectedException("incoming term " + newTerm + " not greater than than current term "
-                + getCurrentTerm());
+                startJoinRequest.getTerm(), getCurrentTerm());
+            throw new ConsensusMessageRejectedException("incoming term " + startJoinRequest.getTerm() +
+                " not greater than than current term " + getCurrentTerm());
         }
 
-        logger.debug("handleStartJoin: updating term from [{}] to [{}]", getCurrentTerm(), newTerm);
+        logger.debug("handleStartJoin: updating term from [{}] to [{}]", getCurrentTerm(), startJoinRequest.getTerm());
 
-        persistedState.setCurrentTerm(newTerm);
-        assert persistedState.getCurrentTerm() == newTerm;
+        persistedState.setCurrentTerm(startJoinRequest.getTerm());
+        assert persistedState.getCurrentTerm() == startJoinRequest.getTerm();
         joinVotes = new NodeCollection();
         electionWon = false;
         startedJoinSinceLastReboot = true;
@@ -135,17 +139,16 @@ public class ConsensusState extends AbstractComponent {
         lastPublishedConfiguration = persistedState.getLastAcceptedConfiguration();
         publishVotes = new NodeCollection();
 
-        return new Join(targetNode, getLastAcceptedVersion(), getCurrentTerm(), getLastAcceptedTerm());
+        return new Join(localNode, startJoinRequest.getSourceNode(), getLastAcceptedVersion(), getCurrentTerm(), getLastAcceptedTerm());
     }
 
     /**
      * May be called on receipt of a Join from the given sourceNode.
      *
-     * @param sourceNode The sender of the Join received.
      * @param join       The Join received.
      * @throws ConsensusMessageRejectedException if the arguments were incompatible with the current state of this object.
      */
-    public void handleJoin(DiscoveryNode sourceNode, Join join) {
+    public void handleJoin(Join join) {
         if (startedJoinSinceLastReboot == false) {
             logger.debug("handleJoin: ignored join as term was not incremented yet after reboot");
             throw new ConsensusMessageRejectedException("ignored join as term was not incremented yet after reboot");
@@ -173,11 +176,11 @@ public class ConsensusState extends AbstractComponent {
                 "incoming version " + join.getLastAcceptedVersion() + " of join higher than current version " + getLastAcceptedVersion());
         }
 
-        joinVotes.add(sourceNode);
+        joinVotes.add(join.getSourceNode());
         boolean prevElectionWon = electionWon;
         electionWon = isElectionQuorum(joinVotes);
         logger.debug("handleJoin: added join {} from [{}] for election, electionWon={} lastAcceptedTerm={} lastAcceptedVersion={}", join,
-            sourceNode, electionWon, lastAcceptedTerm, getLastAcceptedVersion());
+            join.getSourceNode(), electionWon, lastAcceptedTerm, getLastAcceptedVersion());
 
         if (electionWon && prevElectionWon == false) {
             lastPublishedVersion = getLastAcceptedVersion();
@@ -296,7 +299,7 @@ public class ConsensusState extends AbstractComponent {
         if (isPublishQuorum(publishVotes)) {
             logger.trace("handlePublishResponse: value committed for version [{}] and term [{}]",
                 publishResponse.getVersion(), publishResponse.getTerm());
-            return Optional.of(new ApplyCommit(publishResponse.getTerm(), publishResponse.getVersion()));
+            return Optional.of(new ApplyCommit(localNode, publishResponse.getTerm(), publishResponse.getVersion()));
         }
 
         return Optional.empty();
