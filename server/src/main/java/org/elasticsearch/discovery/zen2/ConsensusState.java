@@ -210,8 +210,8 @@ public class ConsensusState extends AbstractComponent {
             logger.debug("handleClientValue: ignored request due to version mismatch " +
                     "(expected: [term {} version >{}], actual: [term {} version {}])",
                 getCurrentTerm(), lastPublishedVersion, clusterState.term(), clusterState.version());
-            throw new ConsensusMessageRejectedException("incoming term " + clusterState.term() + " does not match current term " +
-                getCurrentTerm());
+            throw new ConsensusMessageRejectedException("incoming cluster state version " + clusterState.version() +
+                " lower or equal to last published version " + lastPublishedVersion);
         }
 
         if (clusterState.getLastAcceptedConfiguration().equals(getLastAcceptedConfiguration()) == false

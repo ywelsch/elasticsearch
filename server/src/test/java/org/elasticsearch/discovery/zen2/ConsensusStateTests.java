@@ -56,19 +56,26 @@ public class ConsensusStateTests extends ESTestCase {
 
     public static ClusterState clusterState(long term, long version, DiscoveryNodes discoveryNodes, VotingConfiguration lastCommittedConfig,
                                             VotingConfiguration lastAcceptedConfig, long value) {
-        return ClusterState.builder(ClusterName.DEFAULT)
+        return setValue(ClusterState.builder(ClusterName.DEFAULT)
             .version(version)
             .term(term)
             .lastCommittedConfiguration(lastCommittedConfig)
             .lastAcceptedConfiguration(lastAcceptedConfig)
             .nodes(discoveryNodes)
             .metaData(MetaData.builder()
+                .clusterUUID(UUIDs.randomBase64UUID(random()))) // generate cluster UUID deterministically for repeatable tests
+            .stateUUID(UUIDs.randomBase64UUID(random())) // generate cluster state UUID deterministically for repeatable tests
+            .build(), value);
+    }
+
+    public static ClusterState setValue(ClusterState clusterState, long value) {
+        return ClusterState.builder(clusterState).metaData(
+            MetaData.builder(clusterState.metaData())
                 .persistentSettings(Settings.builder()
+                    .put(clusterState.metaData().persistentSettings())
                     .put("value", value)
                     .build())
-                .clusterUUID(UUIDs.randomBase64UUID(random())) // generate cluster UUID deterministically for repeatable tests
                 .build())
-            .stateUUID(UUIDs.randomBase64UUID(random())) // generate cluster state UUID deterministically for repeatable tests
             .build();
     }
 
@@ -152,12 +159,6 @@ public class ConsensusStateTests extends ESTestCase {
         return clusterState(lastState.term(), lastState.version() + 1, lastState.nodes(),
             lastState.getLastCommittedConfiguration(), lastState.getLastAcceptedConfiguration(),
             newValue);
-    }
-
-    static ClusterState nextStateWithConfig(ClusterState lastState, VotingConfiguration newConfig) {
-        return clusterState(lastState.term(), lastState.version() + 1, lastState.nodes(),
-            lastState.getLastCommittedConfiguration(), newConfig,
-            value(lastState));
     }
 
 }

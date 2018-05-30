@@ -18,6 +18,7 @@
  */
 package org.elasticsearch.test;
 
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.common.component.Lifecycle;
 import org.elasticsearch.common.component.LifecycleListener;
@@ -25,10 +26,10 @@ import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoveryStats;
 
 public class NoopDiscovery implements Discovery {
-
+    
     @Override
-    public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {
-
+    public void publish(ClusterChangedEvent clusterChangedEvent, ActionListener<Void> publishListener, AckListener ackListener) {
+        publishListener.onResponse(null);
     }
 
     @Override

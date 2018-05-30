@@ -36,6 +36,7 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.Discovery.AckListener;
 import org.elasticsearch.threadpool.ThreadPool;
 
@@ -52,7 +53,10 @@ public class ClusterServiceUtils {
     public static MasterService createMasterService(ThreadPool threadPool, ClusterState initialClusterState) {
         MasterService masterService = new MasterService(Settings.EMPTY, threadPool);
         AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
-        masterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
+        masterService.setClusterStatePublisher((event, publishListener, ackListener) -> {
+            clusterStateRef.set(event.state());
+            publishListener.onResponse(null);
+        });
         masterService.setClusterStateSupplier(clusterStateRef::get);
         masterService.start();
         return masterService;
@@ -158,8 +162,8 @@ public class ClusterServiceUtils {
         return clusterService;
     }
 
-    public static BiConsumer<ClusterChangedEvent, AckListener> createClusterStatePublisher(ClusterApplier clusterApplier) {
-        return (event, ackListener) -> {
+    public static Discovery.Publisher createClusterStatePublisher(ClusterApplier clusterApplier) {
+        return (event, publishListener, ackListener) -> {
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<Exception> ex = new AtomicReference<>();
             clusterApplier.onNewClusterState("mock_publish_to_self[" + event.source() + "]", () -> event.state(),
@@ -179,10 +183,14 @@ public class ClusterServiceUtils {
             try {
                 latch.await();
             } catch (InterruptedException e) {
-                Throwables.rethrow(e);
+                Thread.currentThread().interrupt();
+                publishListener.onFailure(e);
+                return;
             }
             if (ex.get() != null) {
-                Throwables.rethrow(ex.get());
+                publishListener.onFailure(ex.get());
+            } else {
+                publishListener.onResponse(null);
             }
         };
     }

@@ -19,6 +19,7 @@
 
 package org.elasticsearch.discovery.zen;
 
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.support.replication.ClusterStateCreationUtils;
@@ -68,6 +69,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -231,7 +233,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
                 ClusterChangedEvent clusterChangedEvent = new ClusterChangedEvent("testing", newState, state);
                 AssertingAckListener listener = new AssertingAckListener(newState.nodes().getSize() - 1);
                 expectedFDNodes = masterZen.getFaultDetectionNodes();
-                masterZen.publish(clusterChangedEvent, listener);
+                masterZen.publish(clusterChangedEvent, getNoopPublishListener(), listener);
                 listener.await(10, TimeUnit.SECONDS);
                 // publish was a success, update expected FD nodes based on new cluster state
                 expectedFDNodes = fdNodesForState(newState, masterNode);
@@ -284,7 +286,7 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
                 // publishing a new cluster state
                 ClusterChangedEvent clusterChangedEvent = new ClusterChangedEvent("testing", newState, state);
                 AssertingAckListener listener = new AssertingAckListener(newState.nodes().getSize() - 1);
-                masterZen.publish(clusterChangedEvent, listener);
+                masterZen.publish(clusterChangedEvent, getNoopPublishListener(), listener);
                 listener.await(1, TimeUnit.HOURS);
                 // publish was a success, check that queue as cleared
                 assertThat(masterZen.pendingClusterStates(), emptyArray());
@@ -296,6 +298,18 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
             IOUtils.close(toClose);
             terminate(threadPool);
         }
+    }
+
+    private ActionListener<Void> getNoopPublishListener() {
+        return new ActionListener<Void>() {
+           @Override
+           public void onResponse(Void aVoid) {
+           }
+
+           @Override
+           public void onFailure(Exception e) {
+           }
+       };
     }
 
     private ZenDiscovery buildZenDiscovery(Settings settings, TransportService service, MasterService masterService,

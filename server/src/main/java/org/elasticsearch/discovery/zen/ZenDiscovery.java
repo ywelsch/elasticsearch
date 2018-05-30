@@ -321,7 +321,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     }
 
     @Override
-    public void publish(ClusterChangedEvent clusterChangedEvent, AckListener ackListener) {
+    public void publish(ClusterChangedEvent clusterChangedEvent, ActionListener<Void> publishListener, AckListener ackListener) {
         ClusterState newState = clusterChangedEvent.state();
         assert newState.getNodes().isLocalNodeElectedMaster() : "Shouldn't publish state when not master " + clusterChangedEvent.source();
 
@@ -349,21 +349,20 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         }
 
         final DiscoveryNode localNode = newState.getNodes().getLocalNode();
-        final CountDownLatch latch = new CountDownLatch(1);
         final AtomicBoolean processedOrFailed = new AtomicBoolean();
         pendingStatesQueue.markAsCommitted(newState.stateUUID(),
             new PendingClusterStatesQueue.StateProcessedListener() {
                 @Override
                 public void onNewClusterStateProcessed() {
                     processedOrFailed.set(true);
-                    latch.countDown();
+                    publishListener.onResponse(null);
                     ackListener.onNodeAck(localNode, null);
                 }
 
                 @Override
                 public void onNewClusterStateFailed(Exception e) {
                     processedOrFailed.set(true);
-                    latch.countDown();
+                    publishListener.onFailure(e);
                     ackListener.onNodeAck(localNode, e);
                     logger.warn(() -> new ParameterizedMessage(
                             "failed while applying cluster state locally [{}]", clusterChangedEvent.source()), e);
@@ -383,14 +382,6 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     newState.version());
                 return;
             }
-        }
-        // indefinitely wait for cluster state to be applied locally
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            logger.debug(() -> new ParameterizedMessage(
-                    "interrupted while applying cluster state locally [{}]", clusterChangedEvent.source()), e);
-            Thread.currentThread().interrupt();
         }
     }
 

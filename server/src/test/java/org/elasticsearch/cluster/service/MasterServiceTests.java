@@ -115,7 +115,10 @@ public class MasterServiceTests extends ESTestCase {
                 .masterNodeId(makeMaster ? localNode.getId() : null))
             .blocks(ClusterBlocks.EMPTY_CLUSTER_BLOCK).build();
         AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>(initialClusterState);
-        timedMasterService.setClusterStatePublisher((event, ackListener) -> clusterStateRef.set(event.state()));
+        timedMasterService.setClusterStatePublisher((event, publishListener, ackListener) -> {
+            clusterStateRef.set(event.state());
+            publishListener.onResponse(null);
+        });
         timedMasterService.setClusterStateSupplier(clusterStateRef::get);
         timedMasterService.start();
         return timedMasterService;

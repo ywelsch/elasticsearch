@@ -74,6 +74,10 @@ public abstract class TaskBatcher {
                 // check that there won't be two tasks with the same identity for the same batching key
                 BatchedTask duplicateTask = tasksIdentity.get(existing.getTask());
                 if (duplicateTask != null) {
+                    // TODO: fix NodeJoinController and activate this assertion
+//                    assert false :
+//                        "task [" + duplicateTask.describeTasks(
+//                            Collections.singletonList(existing)) + "] with source [" + duplicateTask.source + "] is already queued";
                     throw new IllegalStateException("task [" + duplicateTask.describeTasks(
                         Collections.singletonList(existing)) + "] with source [" + duplicateTask.source + "] is already queued");
                 }
