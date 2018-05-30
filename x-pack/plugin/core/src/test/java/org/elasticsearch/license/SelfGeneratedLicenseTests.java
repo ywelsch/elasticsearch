@@ -49,7 +49,8 @@ public class SelfGeneratedLicenseTests extends ESTestCase {
                 .expiryDate(issueDate + TimeValue.timeValueHours(2).getMillis());
         License trialLicense = SelfGeneratedLicense.create(specBuilder);
         final String originalSignature = trialLicense.signature();
-        License tamperedLicense = License.builder().fromLicenseSpec(trialLicense, originalSignature)
+        final String originalSignatureV3 = trialLicense.signatureV3();
+        License tamperedLicense = License.builder().fromLicenseSpec(trialLicense, originalSignature, originalSignatureV3)
                 .expiryDate(System.currentTimeMillis() + TimeValue.timeValueHours(5).getMillis())
                 .build();
         assertThat(SelfGeneratedLicense.verify(trialLicense), equalTo(true));
@@ -108,6 +109,6 @@ public class SelfGeneratedLicenseTests extends ESTestCase {
         } catch (IOException e) {
             throw new IllegalStateException(e);
         }
-        return License.builder().fromLicenseSpec(spec, signature).build();
+        return License.builder().fromLicenseSpec(spec, signature, signature).build();
     }
 }

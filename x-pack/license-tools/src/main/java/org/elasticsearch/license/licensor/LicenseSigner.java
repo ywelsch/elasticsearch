@@ -61,7 +61,6 @@ public class LicenseSigner {
                 Collections.singletonMap(License.LICENSE_SPEC_VIEW_MODE, "true");
         licenseSpec.toXContent(contentBuilder, new ToXContent.MapParams(licenseSpecViewMode));
         final byte[] signedContent;
-        final boolean preV4 = licenseSpec.version() < License.VERSION_CRYPTO_ALGORITHMS;
         try {
             final Signature rsa = Signature.getInstance("SHA512withRSA");
             PrivateKey decryptedPrivateKey = CryptUtils.readEncryptedPrivateKey(Files.readAllBytes(privateKeyPath));
@@ -83,21 +82,40 @@ public class LicenseSigner {
         random.nextBytes(magic);
         final byte[] publicKeyBytes = Files.readAllBytes(publicKeyPath);
         PublicKey publicKey = CryptUtils.readPublicKey(publicKeyBytes);
-        final byte[] pubKeyFingerprint = preV4 ? Base64.getEncoder().encode(CryptUtils.writeEncryptedPublicKey(publicKey)) :
-                getPublicKeyFingerprint(publicKeyBytes);
+        final boolean preV4 = licenseSpec.version() < License.VERSION_CRYPTO_ALGORITHMS;
+
+        if (preV4) {
+            final byte[] pubKeyFingerprint = Base64.getEncoder().encode(CryptUtils.writeEncryptedPublicKey(publicKey));
+            final String signature = createSignature(licenseSpec.version(), signedContent, magic, pubKeyFingerprint);
+
+            return License.builder()
+                .fromLicenseSpec(licenseSpec, signature, signature)
+                .build();
+        } else {
+            final byte[] pubKeyFingerprintV3 = Base64.getEncoder().encode(CryptUtils.writeEncryptedPublicKey(publicKey));
+            final String signatureV3 = createSignature(License.VERSION_START_DATE, signedContent, magic, pubKeyFingerprintV3);
+
+            final byte[] pubKeyFingerprintV4 = getPublicKeyFingerprint(publicKeyBytes);
+            final String signatureV4 = createSignature(licenseSpec.version(), signedContent, magic, pubKeyFingerprintV4);
+
+            return License.builder()
+                .fromLicenseSpec(licenseSpec, signatureV4, signatureV3)
+                .build();
+        }
+    }
+
+    private String createSignature(int version, byte[] signedContent, byte[] magic, byte[] pubKeyFingerprint) {
         byte[] bytes = new byte[4 + 4 + MAGIC_LENGTH + 4 + pubKeyFingerprint.length + 4 + signedContent.length];
         ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
-        byteBuffer.putInt(licenseSpec.version())
-                .putInt(magic.length)
-                .put(magic)
-                .putInt(pubKeyFingerprint.length)
-                .put(pubKeyFingerprint)
-                .putInt(signedContent.length)
-                .put(signedContent);
+        byteBuffer.putInt(version)
+            .putInt(magic.length)
+            .put(magic)
+            .putInt(pubKeyFingerprint.length)
+            .put(pubKeyFingerprint)
+            .putInt(signedContent.length)
+            .put(signedContent);
 
-        return License.builder()
-                .fromLicenseSpec(licenseSpec, Base64.getEncoder().encodeToString(bytes))
-                .build();
+        return Base64.getEncoder().encodeToString(bytes);
     }
 
     private byte[] getPublicKeyFingerprint(byte[] keyBytes) {

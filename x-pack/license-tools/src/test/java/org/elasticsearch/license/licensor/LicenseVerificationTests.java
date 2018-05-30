@@ -45,7 +45,7 @@ public class LicenseVerificationTests extends ESTestCase {
         License license = TestUtils.generateSignedLicense(twoHours, pubKeyPath, priKeyPath);
 
         final License tamperedLicense = License.builder()
-                .fromLicenseSpec(license, license.signature())
+                .fromLicenseSpec(license, license.signature(), license.signatureV3())
                 .expiryDate(license.expiryDate() + 10 * 24 * 60 * 60 * 1000L)
                 .validate()
                 .build();

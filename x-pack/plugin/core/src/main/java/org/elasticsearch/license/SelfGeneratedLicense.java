@@ -36,26 +36,37 @@ class SelfGeneratedLicense {
                 .version(version)
                 .build();
         final String signature;
+        final String signatureV3;
         try {
             XContentBuilder contentBuilder = XContentFactory.contentBuilder(XContentType.JSON);
             spec.toXContent(contentBuilder, new ToXContent.MapParams(Collections.singletonMap(License.LICENSE_SPEC_VIEW_MODE, "true")));
-            byte[] encrypt;
             if (version < License.VERSION_CRYPTO_ALGORITHMS) {
-                encrypt = encryptV3Format(BytesReference.toBytes(BytesReference.bytes(contentBuilder)));
+                final byte[] encrypt = encryptV3Format(BytesReference.toBytes(BytesReference.bytes(contentBuilder)));
+                signature = createSignature(version, encrypt);
+                signatureV3 = signature;
             } else {
-                encrypt = encrypt(BytesReference.toBytes(BytesReference.bytes(contentBuilder)));
+                final byte[] encryptV3 = encryptV3Format(BytesReference.toBytes(BytesReference.bytes(contentBuilder)));
+                signatureV3 = createSignature(version, encryptV3);
+
+                final byte[] encryptV4 = encrypt(BytesReference.toBytes(BytesReference.bytes(contentBuilder)));
+                signature = createSignature(version, encryptV4);
             }
-            byte[] bytes = new byte[4 + 4 + encrypt.length];
-            ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
-            // Set -version in signature
-            byteBuffer.putInt(-version)
-                    .putInt(encrypt.length)
-                    .put(encrypt);
-            signature = Base64.getEncoder().encodeToString(bytes);
         } catch (IOException e) {
             throw new IllegalStateException(e);
         }
-        return License.builder().fromLicenseSpec(spec, signature).build();
+        return License.builder().fromLicenseSpec(spec, signature, signatureV3).build();
+    }
+
+    private static String createSignature(int version, byte[] encrypt) {
+        String signature;
+        byte[] bytes = new byte[4 + 4 + encrypt.length];
+        ByteBuffer byteBuffer = ByteBuffer.wrap(bytes);
+        // Set -version in signature
+        byteBuffer.putInt(-version)
+                .putInt(encrypt.length)
+                .put(encrypt);
+        signature = Base64.getEncoder().encodeToString(bytes);
+        return signature;
     }
 
     public static boolean verify(final License license) {
@@ -74,7 +85,7 @@ class SelfGeneratedLicense {
                     .createParser(NamedXContentRegistry.EMPTY, LoggingDeprecationHandler.INSTANCE, decryptedContent)) {
                 parser.nextToken();
                 expectedLicense = License.builder().fromLicenseSpec(License.fromXContent(parser),
-                        license.signature()).version(-version).build();
+                        license.signature(), license.signatureV3()).version(-version).build();
             }
             return license.equals(expectedLicense);
         } catch (IOException e) {

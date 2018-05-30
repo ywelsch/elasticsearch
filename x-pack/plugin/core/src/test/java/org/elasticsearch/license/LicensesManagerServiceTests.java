@@ -93,7 +93,7 @@ public class LicensesManagerServiceTests extends ESSingleNodeTestCase {
 
         // modify content of signed license
         License tamperedLicense = License.builder()
-                .fromLicenseSpec(signedLicense, signedLicense.signature())
+                .fromLicenseSpec(signedLicense, signedLicense.signature(), signedLicense.signatureV3())
                 .expiryDate(signedLicense.expiryDate() + 10 * 24 * 60 * 60 * 1000L)
                 .validate()
                 .build();

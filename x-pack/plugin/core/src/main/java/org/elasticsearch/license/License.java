@@ -17,6 +17,7 @@ import java.util.Locale;
 import org.apache.lucene.util.CollectionUtil;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchParseException;
+import org.elasticsearch.Version;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -70,6 +71,7 @@ public class License implements ToXContentObject {
     private final String subscriptionType;
     private final String feature;
     private final String signature;
+    private final String signatureV3;
     private final long expiryDate;
     private final long startDate;
     private final int maxNodes;
@@ -128,7 +130,8 @@ public class License implements ToXContentObject {
     }
 
     private License(int version, String uid, String issuer, String issuedTo, long issueDate, String type,
-                    String subscriptionType, String feature, String signature, long expiryDate, int maxNodes, long startDate) {
+                    String subscriptionType, String feature, String signature, String signatureV3, long expiryDate,
+                    int maxNodes, long startDate) {
         this.version = version;
         this.uid = uid;
         this.issuer = issuer;
@@ -138,6 +141,7 @@ public class License implements ToXContentObject {
         this.subscriptionType = subscriptionType;
         this.feature = feature;
         this.signature = signature;
+        this.signatureV3 = signatureV3;
         // We will validate that only a basic license can have the BASIC_SELF_GENERATED_LICENSE_EXPIRATION_MILLIS
         // in the validate() method.
         if (expiryDate == -1) {
@@ -225,6 +229,13 @@ public class License implements ToXContentObject {
      */
     public String signature() {
         return signature;
+    }
+
+    /**
+     * @return a string representing the signature of the v3 compatible license
+     */
+    public String signatureV3() {
+        return signatureV3;
     }
 
     /**
@@ -322,7 +333,17 @@ public class License implements ToXContentObject {
         builder.maxNodes(in.readInt());
         builder.issuedTo(in.readString());
         builder.issuer(in.readString());
+        if (in.getVersion().before(Version.V_6_4_0)) {
+            assert version <= VERSION_START_DATE;
+            final String signature = in.readOptionalString();
+            builder.signature(signature);
+            builder.signatureV3(signature);
+        } else {
+            builder.signature(in.readOptionalString());
+            builder.signatureV3(in.readOptionalString());
+        }
         builder.signature(in.readOptionalString());
+        builder.signatureV3(in.readOptionalString());
         if (version >= VERSION_START_DATE) {
             builder.startDate(in.readLong());
         }
@@ -330,7 +351,11 @@ public class License implements ToXContentObject {
     }
 
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeVInt(version);
+        if (out.getVersion().before(Version.V_6_4_0) && version > VERSION_START_DATE) {
+            out.writeVInt(VERSION_START_DATE);
+        } else {
+            out.writeVInt(version);
+        }
         out.writeString(uid);
         out.writeString(type);
         if (version == VERSION_START) {
@@ -344,7 +369,12 @@ public class License implements ToXContentObject {
         out.writeInt(maxNodes);
         out.writeString(issuedTo);
         out.writeString(issuer);
-        out.writeOptionalString(signature);
+        if (out.getVersion().before(Version.V_6_4_0) && version > VERSION_START_DATE) {
+            out.writeOptionalString(signatureV3);
+        } else {
+            out.writeOptionalString(signature);
+            out.writeOptionalString(signatureV3);
+        }
         if (version >= VERSION_START_DATE) {
             out.writeLong(startDate);
         }
@@ -408,6 +438,9 @@ public class License implements ToXContentObject {
         if (!licenseSpecMode && !restViewMode && signature != null) {
             builder.field(Fields.SIGNATURE, signature);
         }
+        if (!licenseSpecMode && !restViewMode && signatureV3 != null) {
+            builder.field(Fields.SIGNATURE_V3, signatureV3);
+        }
         if (restViewMode) {
             builder.humanReadable(previouslyHumanReadable);
         }
@@ -453,6 +486,8 @@ public class License implements ToXContentObject {
                         builder.issuer(parser.text());
                     } else if (Fields.SIGNATURE.equals(currentFieldName)) {
                         builder.signature(parser.text());
+                    } else if (Fields.SIGNATURE_V3.equals(currentFieldName)) {
+                        builder.signatureV3(parser.text());
                     } else if (Fields.VERSION.equals(currentFieldName)) {
                         builder.version(parser.intValue());
                     }
@@ -485,6 +520,9 @@ public class License implements ToXContentObject {
             }
             // signature version is the source of truth
             builder.version(version);
+        }
+        if (builder.signature != null && builder.signatureV3 == null && builder.version < VERSION_CRYPTO_ALGORITHMS) {
+            builder.signatureV3(builder.signature);
         }
         return builder.build();
     }
@@ -573,7 +611,8 @@ public class License implements ToXContentObject {
         if (subscriptionType != null ? !subscriptionType.equals(license.subscriptionType) : license.subscriptionType != null)
             return false;
         if (feature != null ? !feature.equals(license.feature) : license.feature != null) return false;
-        return !(signature != null ? !signature.equals(license.signature) : license.signature != null);
+        if (signature != null ? !signature.equals(license.signature) : license.signature != null) return false;
+        return !(signatureV3 != null ? !signatureV3.equals(license.signatureV3) : license.signatureV3 != null);
 
     }
 
@@ -587,6 +626,7 @@ public class License implements ToXContentObject {
         result = 31 * result + (subscriptionType != null ? subscriptionType.hashCode() : 0);
         result = 31 * result + (feature != null ? feature.hashCode() : 0);
         result = 31 * result + (signature != null ? signature.hashCode() : 0);
+        result = 31 * result + (signatureV3 != null ? signatureV3.hashCode() : 0);
         result = 31 * result + (int) (expiryDate ^ (expiryDate >>> 32));
         result = 31 * result + (int) (startDate ^ (startDate>>> 32));
         result = 31 * result + maxNodes;
@@ -611,6 +651,7 @@ public class License implements ToXContentObject {
         public static final String ISSUER = "issuer";
         public static final String VERSION = "version";
         public static final String SIGNATURE = "signature";
+        public static final String SIGNATURE_V3 = "signature_v3";
 
         public static final String LICENSES = "licenses";
         public static final String LICENSE = "license";
@@ -647,6 +688,7 @@ public class License implements ToXContentObject {
         private String subscriptionType;
         private String feature;
         private String signature;
+        private String signatureV3;
         private long expiryDate = -1;
         private long startDate = -1;
         private int maxNodes = -1;
@@ -708,12 +750,19 @@ public class License implements ToXContentObject {
             return this;
         }
 
+        public Builder signatureV3(String signatureV3) {
+            if (signatureV3 != null) {
+                this.signatureV3 = signatureV3;
+            }
+            return this;
+        }
+
         public Builder startDate(long startDate) {
             this.startDate = startDate;
             return this;
         }
 
-        public Builder fromLicenseSpec(License license, String signature) {
+        public Builder fromLicenseSpec(License license, String signature, String signatureV3) {
             return uid(license.uid())
                     .version(license.version())
                     .issuedTo(license.issuedTo())
@@ -725,7 +774,8 @@ public class License implements ToXContentObject {
                     .maxNodes(license.maxNodes())
                     .expiryDate(license.expiryDate())
                     .issuer(license.issuer())
-                    .signature(signature);
+                    .signature(signature)
+                    .signatureV3(signatureV3);
         }
 
         /**
@@ -742,7 +792,7 @@ public class License implements ToXContentObject {
 
         public License build() {
             return new License(version, uid, issuer, issuedTo, issueDate, type,
-                    subscriptionType, feature, signature, expiryDate, maxNodes, startDate);
+                    subscriptionType, feature, signature, signatureV3, expiryDate, maxNodes, startDate);
         }
 
         public Builder validate() {

@@ -57,7 +57,7 @@ public class LicenseVerificationToolTests extends CommandTestCase {
         final TimeValue oneHour = TimeValue.timeValueHours(1);
         License signedLicense = TestUtils.generateSignedLicense(oneHour, pubKeyPath, priKeyPath);
         License tamperedLicense = License.builder()
-            .fromLicenseSpec(signedLicense, signedLicense.signature())
+            .fromLicenseSpec(signedLicense, signedLicense.signature(), signedLicense.signatureV3())
             .expiryDate(signedLicense.expiryDate() + randomIntBetween(1, 1000)).build();
         UserException e = expectThrows(
                 UserException.class,
