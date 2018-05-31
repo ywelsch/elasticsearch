@@ -147,7 +147,7 @@ public class Legislator extends AbstractComponent {
     // Present if we are in the pre-voting phase, used to collect join offers.
     private Optional<OfferJoinCollector> currentOfferJoinCollector;
 
-    private volatile Optional<ClusterState> lastCommittedState; // the state that was last committed, can be exposed to the cluster state applier
+    private volatile Optional<ClusterState> lastCommittedState; // the state that was last committed, exposed to the cluster state applier
 
     // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
@@ -1708,7 +1708,8 @@ public class Legislator extends AbstractComponent {
                                 long localVersion2 = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
                                 if (leaderVersion > localVersion2 && running) {
                                     synchronized (mutex) {
-                                        logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
+                                        logger.debug(
+                                            "LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
                                             localVersion2, leaderVersion, publishTimeout);
                                         laggingUntilCommittedVersionExceeds = Math.max(1, localVersion2);
                                         heartbeatRequestResponder = new HeartbeatRequestResponder();
@@ -1842,7 +1843,8 @@ public class Legislator extends AbstractComponent {
         private HeartbeatResponse handleHeartbeatRequestUpdatingState(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
             synchronized (mutex) {
                 ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm()).ifPresent(join -> {
-                    logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}", join, heartbeatRequest.getTerm(), sourceNode);
+                    logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}",
+                        join, heartbeatRequest.getTerm(), sourceNode);
                     sendJoin(sourceNode, join);
                 });
 
