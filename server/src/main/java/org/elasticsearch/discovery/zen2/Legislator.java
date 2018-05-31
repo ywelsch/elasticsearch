@@ -21,10 +21,8 @@ package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.ElasticsearchException;
-import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.block.ClusterBlock;
@@ -80,7 +78,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
