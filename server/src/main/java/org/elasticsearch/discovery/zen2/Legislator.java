@@ -470,30 +470,6 @@ public class Legislator extends AbstractComponent {
         return leaderCheckResponder.handleLeaderCheckRequest(leaderCheckRequest);
     }
 
-//        if (mode != Mode.LEADER) {
-//            logger.debug("handleLeaderCheckRequest: currently {}, rejecting message from [{}]", mode, leaderCheckRequest.getSourceNode());
-//            throw new ConsensusMessageRejectedException("handleLeaderCheckRequest: currently {}, rejecting message from [{}]",
-//                mode, leaderCheckRequest.getSourceNode());
-//        }
-//
-//        // TODO: use last published state instead of last accepted state? Where can we access that state?
-//        if (consensusState.getLastAcceptedState().getNodes().nodeExists(leaderCheckRequest.getSourceNode()) == false) {
-//            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as not publication target",
-//                leaderCheckRequest.getSourceNode());
-//            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
-//        }
-//
-//        if (getFaultyNodes().contains(leaderCheckRequest.getSourceNode())) {
-//            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as it is faulty", leaderCheckRequest.getSourceNode());
-//            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
-//        }
-//
-//        LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
-//        logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", leaderCheckRequest.getSourceNode(), response);
-//        return response;
-//    }
-// MERGE TODO merge this
-
     // only for testing
     ClusterState getLastAcceptedState() {
         synchronized (mutex) {
@@ -1166,7 +1142,7 @@ public class Legislator extends AbstractComponent {
         }
     }
 
-    private OfferJoin handleSeekJoinsUnderLock(DiscoveryNode sender, SeekJoins seekJoins) {
+    private OfferJoin handleSeekJoinsUnderLock(SeekJoins seekJoins) {
         assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.debug("handleSeekJoins: received [{}] from [{}]", seekJoins, seekJoins.getSourceNode());
 
@@ -1822,7 +1798,10 @@ public class Legislator extends AbstractComponent {
                 activeLeaderFailureDetector.map(alfd -> new HashSet<>(alfd.faultyNodes)).orElse(new HashSet<>()));
         }
 
-        private LeaderCheckResponse handleLeaderCheckRequest(DiscoveryNode sender) {
+        private LeaderCheckResponse handleLeaderCheckRequest(LeaderCheckRequest leaderCheckRequest) {
+
+            DiscoveryNode sender = leaderCheckRequest.getSourceNode();
+
             if (mode != Mode.LEADER) {
                 logger.debug("handleLeaderCheckRequest: currently {}, rejecting message from [{}]", mode, sender);
                 throw new ConsensusMessageRejectedException("handleLeaderCheckRequest: currently {}, rejecting message from [{}]",
