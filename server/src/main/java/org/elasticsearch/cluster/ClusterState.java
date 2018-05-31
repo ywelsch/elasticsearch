@@ -23,6 +23,7 @@ import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 
+import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.cluster.block.ClusterBlock;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -45,6 +46,7 @@ import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -61,6 +63,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -90,7 +93,13 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
 
     public static final ClusterState EMPTY_STATE = builder(ClusterName.CLUSTER_NAME_SETTING.getDefault(Settings.EMPTY)).build();
 
-    public interface Custom extends NamedDiffable<Custom>, ToXContentFragment {
+    public interface FeatureAware {
+        default Optional<String> getRequiredFeature() {
+            return Optional.empty();
+        }
+    }
+
+    public interface Custom extends NamedDiffable<Custom>, ToXContentFragment, FeatureAware {
 
         /**
          * Returns <code>true</code> iff this {@link Custom} is private to the cluster and should never be send to a client.
@@ -692,16 +701,30 @@ public class ClusterState implements ToXContentFragment, Diffable<ClusterState> 
         // filter out custom states not supported by the other node
         int numberOfCustoms = 0;
         for (ObjectCursor<Custom> cursor : customs.values()) {
-            if (out.getVersion().onOrAfter(cursor.value.getMinimalSupportedVersion())) {
+            if (shouldSerializeCustom(out, cursor.value)) {
                 numberOfCustoms++;
             }
         }
         out.writeVInt(numberOfCustoms);
         for (ObjectCursor<Custom> cursor : customs.values()) {
-            if (out.getVersion().onOrAfter(cursor.value.getMinimalSupportedVersion())) {
+            if (shouldSerializeCustom(out, cursor.value)) {
                 out.writeNamedWriteable(cursor.value);
             }
         }
+    }
+
+    public static <T extends NamedDiffable & FeatureAware> boolean shouldSerializeCustom(StreamOutput output, T custom) {
+        if (output.getVersion().before(custom.getMinimalSupportedVersion())) {
+            return false;
+        }
+        if (custom.getRequiredFeature().isPresent()) {
+            final String requiredFeature = custom.getRequiredFeature().get();
+            // if it's a transport client, we're lenient and filter out
+            if (output.hasFeature(requiredFeature) == false && output.hasFeature(TransportClient.FEATURE_STRING)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static class ClusterStateDiff implements Diff<ClusterState> {

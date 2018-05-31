@@ -98,6 +98,8 @@ public abstract class TransportClient extends AbstractClient {
     public static final Setting<Boolean> CLIENT_TRANSPORT_SNIFF =
         Setting.boolSetting("client.transport.sniff", false, Setting.Property.NodeScope);
 
+    public static final String FEATURE_STRING = "transport_client";
+
     private static PluginsService newPluginService(final Settings settings, Collection<Class<? extends Plugin>> plugins) {
         final Settings.Builder settingsBuilder = Settings.builder()
                 .put(TcpTransport.PING_SCHEDULE.getKey(), "5s") // enable by default the transport schedule ping interval
@@ -131,7 +133,7 @@ public abstract class TransportClient extends AbstractClient {
         }
         final PluginsService pluginsService = newPluginService(providedSettings, plugins);
         final Settings settings = Settings.builder().put(defaultSettings).put(pluginsService.updatedSettings()).put(ThreadContext.PREFIX
-            + "." + "transport_client", true).build();
+            + "." + "transport_client", true).put(TcpTransport.FEATURE_PREFIX + "." + FEATURE_STRING, true).build();
         final List<Closeable> resourcesToClose = new ArrayList<>();
         final ThreadPool threadPool = new ThreadPool(settings);
         resourcesToClose.add(() -> ThreadPool.terminate(threadPool, 10, TimeUnit.SECONDS));

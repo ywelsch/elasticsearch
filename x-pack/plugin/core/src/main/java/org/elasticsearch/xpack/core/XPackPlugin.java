@@ -46,6 +46,7 @@ import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.TcpTransport;
 import org.elasticsearch.watcher.ResourceWatcherService;
 import org.elasticsearch.xpack.core.action.TransportXPackInfoAction;
 import org.elasticsearch.xpack.core.action.TransportXPackUsageAction;
@@ -72,6 +73,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -82,6 +84,7 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
     private static DeprecationLogger deprecationLogger = new DeprecationLogger(logger);
 
     public static final String XPACK_INSTALLED_NODE_ATTR = "xpack.installed";
+    public static final String FEATURE_STRING = "xpack";
 
     // TODO: clean up this library to not ask for write access to all system properties!
     static {
@@ -213,10 +216,19 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
             throw new IllegalArgumentException("Directly setting [" + xpackInstalledNodeAttrSetting + "] is not permitted");
         }
 
+        final String xpackFeatureSetting = TcpTransport.FEATURE_PREFIX + "." + FEATURE_STRING;
+
+        if (settings.get(xpackFeatureSetting) != null) {
+            throw new IllegalArgumentException("Directly setting [" + xpackFeatureSetting + "] is not permitted");
+        }
+
+        final Settings.Builder settingsBuilder = Settings.builder().put(super.additionalSettings())
+            .put(xpackFeatureSetting, true);
+
         if (transportClientMode) {
-            return super.additionalSettings();
+            return settingsBuilder.build();
         } else {
-            return Settings.builder().put(super.additionalSettings()).put(xpackInstalledNodeAttrSetting, "true").build();
+            return settingsBuilder.put(xpackInstalledNodeAttrSetting, "true").build();
         }
     }
 
@@ -315,5 +327,19 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
             }
         }
         return config;
+    }
+
+    public interface XPackClusterStateCustom extends ClusterState.Custom {
+        @Override
+        default Optional<String> getRequiredFeature() {
+            return Optional.of(XPackPlugin.FEATURE_STRING);
+        }
+    }
+
+    public interface XPackMetaDataCustom extends MetaData.Custom {
+        @Override
+        default Optional<String> getRequiredFeature() {
+            return Optional.of(XPackPlugin.FEATURE_STRING);
+        }
     }
 }
