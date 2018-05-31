@@ -23,6 +23,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.transport.TransportRequest;
 import org.elasticsearch.transport.TransportResponse;
 
@@ -77,8 +78,17 @@ public class Messages {
     }
 
     public static class SeekJoins extends TermVersion {
-        public SeekJoins(long term, long version) {
-            super(term, version);
+        public SeekJoins(DiscoveryNode sourceNode, long term, long version) {
+            super(sourceNode, term, version);
+        }
+
+        public SeekJoins(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
         }
 
         @Override
@@ -87,17 +97,19 @@ public class Messages {
         }
     }
 
-    public static class Join extends TransportResponse {
-        protected final DiscoveryNode targetNode;
-        protected final long term;
-        protected final long lastAcceptedVersion;
-        protected final long lastAcceptedTerm;
+    public static class Join extends TransportRequest {
+        private final DiscoveryNode sourceNode;
+        private final DiscoveryNode targetNode;
+        private final long term;
+        private final long lastAcceptedVersion;
+        private final long lastAcceptedTerm;
 
-        public Join(DiscoveryNode targetNode, long lastAcceptedVersion, long term, long lastAcceptedTerm) {
+        public Join(DiscoveryNode sourceNode, DiscoveryNode targetNode, long lastAcceptedVersion, long term, long lastAcceptedTerm) {
             assert term >= 0;
             assert lastAcceptedVersion >= 0;
             assert lastAcceptedTerm >= 0;
 
+            this.sourceNode = sourceNode;
             this.targetNode = targetNode;
             this.term = term;
             this.lastAcceptedVersion = lastAcceptedVersion;
@@ -105,6 +117,8 @@ public class Messages {
         }
 
         public Join(StreamInput in) throws IOException {
+            super(in);
+            sourceNode = new DiscoveryNode(in);
             targetNode = new DiscoveryNode(in);
             term = in.readLong();
             lastAcceptedVersion = in.readLong();
@@ -113,10 +127,16 @@ public class Messages {
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            sourceNode.writeTo(out);
             targetNode.writeTo(out);
             out.writeLong(term);
             out.writeLong(lastAcceptedVersion);
             out.writeLong(lastAcceptedTerm);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
         }
 
         public DiscoveryNode getTargetNode() {
@@ -142,6 +162,7 @@ public class Messages {
 
             Join join = (Join) o;
 
+            if (sourceNode.equals(join.sourceNode) == false) return false;
             if (targetNode.equals(join.targetNode) == false) return false;
             if (lastAcceptedVersion != join.lastAcceptedVersion) return false;
             if (term != join.term) return false;
@@ -151,6 +172,7 @@ public class Messages {
         @Override
         public int hashCode() {
             int result = (int) (lastAcceptedVersion ^ (lastAcceptedVersion >>> 32));
+            result = 31 * result + sourceNode.hashCode();
             result = 31 * result + targetNode.hashCode();
             result = 31 * result + (int) (term ^ (term >>> 32));
             result = 31 * result + (int) (lastAcceptedTerm ^ (lastAcceptedTerm >>> 32));
@@ -163,21 +185,43 @@ public class Messages {
                 "term=" + term +
                 ", lastAcceptedVersion=" + lastAcceptedVersion +
                 ", lastAcceptedTerm=" + lastAcceptedTerm +
+                ", sourceNode=" + sourceNode +
                 ", targetNode=" + targetNode +
                 '}';
         }
     }
 
-    public abstract static class TermVersion {
+    private abstract static class TermVersion extends TransportRequest implements Writeable {
+        protected final DiscoveryNode sourceNode;
         protected final long term;
         protected final long version;
 
-        public TermVersion(long term, long version) {
+        TermVersion(DiscoveryNode sourceNode, long term, long version) {
             assert term >= 0;
             assert version >= 0;
 
+            this.sourceNode = sourceNode;
             this.term = term;
             this.version = version;
+        }
+
+        TermVersion(StreamInput in) throws IOException {
+            super(in);
+            sourceNode = new DiscoveryNode(in);
+            term = in.readLong();
+            version = in.readLong();
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            sourceNode.writeTo(out);
+            out.writeLong(term);
+            out.writeLong(version);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
         }
 
         public long getTerm() {
@@ -196,13 +240,15 @@ public class Messages {
             TermVersion versionTerm = (TermVersion) o;
 
             if (term != versionTerm.term) return false;
-            return version == versionTerm.version;
+            if (version != versionTerm.version) return false;
+            return sourceNode.equals(versionTerm.sourceNode);
         }
 
         @Override
         public int hashCode() {
             int result = (int) (term ^ (term >>> 32));
             result = 31 * result + (int) (version ^ (version >>> 32));
+            result = 31 * result + sourceNode.hashCode();
             return result;
         }
 
@@ -211,6 +257,7 @@ public class Messages {
             return "TermVersion{" +
                 "term=" + term +
                 ", version=" + version +
+                ", sourceNode=" + sourceNode +
                 '}';
         }
     }
@@ -286,6 +333,13 @@ public class Messages {
             this.optionalJoin = Optional.ofNullable(in.readOptionalWriteable(Join::new));
         }
 
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            publishResponse.writeTo(out);
+            out.writeOptionalWriteable(optionalJoin.orElse(null));
+        }
+
         public PublishResponse getPublishResponse() {
             return publishResponse;
         }
@@ -307,6 +361,11 @@ public class Messages {
         }
 
         @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+        }
+
+        @Override
         public String toString() {
             return "PublishResponse{" +
                 "version=" + version +
@@ -317,8 +376,17 @@ public class Messages {
 
     public static class HeartbeatRequest extends TermVersion {
 
-        public HeartbeatRequest(long term, long version) {
-            super(term, version);
+        public HeartbeatRequest(DiscoveryNode sourceNode, long term, long version) {
+            super(sourceNode, term, version);
+        }
+
+        public HeartbeatRequest(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
         }
 
         @Override
@@ -341,6 +409,11 @@ public class Messages {
         }
 
         @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+        }
+
+        @Override
         public String toString() {
             return "HeartbeatResponse{" +
                 "version=" + version +
@@ -351,8 +424,17 @@ public class Messages {
 
     public static class ApplyCommit extends TermVersion {
 
-        public ApplyCommit(long term, long version) {
-            super(term, version);
+        public ApplyCommit(DiscoveryNode sourceNode, long term, long version) {
+            super(sourceNode, term, version);
+        }
+
+        public ApplyCommit(StreamInput in) throws IOException {
+            super(in);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
         }
 
         @Override
@@ -364,12 +446,17 @@ public class Messages {
         }
     }
 
-    public static class PublishRequest {
+    public static class PublishRequest extends TransportRequest {
 
         private final ClusterState acceptedState;
 
         public PublishRequest(ClusterState acceptedState) {
             this.acceptedState = acceptedState;
+        }
+
+        public PublishRequest(StreamInput in, DiscoveryNode localNode) throws IOException {
+            super(in);
+            acceptedState = ClusterState.readFrom(in, localNode);
         }
 
         public ClusterState getAcceptedState() {
@@ -397,25 +484,40 @@ public class Messages {
             return "PublishRequest{" +
                 "state=" + acceptedState + "}";
         }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            acceptedState.writeTo(out);
+        }
     }
 
     public static class StartJoinRequest extends TransportRequest {
 
+        private final DiscoveryNode sourceNode;
+
         private final long term;
 
-        public StartJoinRequest(long term) {
+        public StartJoinRequest(DiscoveryNode sourceNode, long term) {
+            this.sourceNode = sourceNode;
             this.term = term;
         }
 
         public StartJoinRequest(StreamInput input) throws IOException {
             super(input);
+            this.sourceNode = new DiscoveryNode(input);
             this.term = input.readLong();
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
+            sourceNode.writeTo(out);
             out.writeLong(term);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
         }
 
         public long getTerm() {
@@ -425,7 +527,8 @@ public class Messages {
         @Override
         public String toString() {
             return "StartJoinRequest{" +
-                "term=" + term + "}";
+                "term=" + term +
+                ",node=" + sourceNode + "}";
         }
     }
 
@@ -434,6 +537,10 @@ public class Messages {
 
         public LeaderCheckResponse(long version) {
             this.version = version;
+        }
+
+        public LeaderCheckResponse(StreamInput in) throws IOException {
+            version = in.readLong();
         }
 
         @Override
@@ -446,5 +553,94 @@ public class Messages {
         public long getVersion() {
             return version;
         }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            out.writeLong(version);
+        }
+    }
+
+    public static class AbdicationRequest extends TransportRequest {
+
+        private final DiscoveryNode sourceNode;
+        private final long term;
+
+        public AbdicationRequest(DiscoveryNode sourceNode, long term) {
+            this.sourceNode = sourceNode;
+            this.term = term;
+        }
+
+        public AbdicationRequest(StreamInput in) throws IOException {
+            super(in);
+            sourceNode = new DiscoveryNode(in);
+            term = in.readLong();
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            sourceNode.writeTo(out);
+            out.writeLong(term);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
+        }
+
+        public long getTerm() {
+            return term;
+        }
+
+    }
+
+    public static class LeaderCheckRequest extends TransportRequest {
+
+        private final DiscoveryNode sourceNode;
+
+        public LeaderCheckRequest(DiscoveryNode sourceNode) {
+            this.sourceNode = sourceNode;
+        }
+
+        public LeaderCheckRequest(StreamInput in) throws IOException {
+            super(in);
+            sourceNode = new DiscoveryNode(in);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            sourceNode.writeTo(out);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
+        }
+
+    }
+
+    public static class PrejoinHandoverRequest extends TransportRequest {
+
+        private final DiscoveryNode sourceNode;
+
+        public PrejoinHandoverRequest(DiscoveryNode sourceNode) {
+            this.sourceNode = sourceNode;
+        }
+
+        public PrejoinHandoverRequest(StreamInput in) throws IOException {
+            super(in);
+            sourceNode = new DiscoveryNode(in);
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            super.writeTo(out);
+            sourceNode.writeTo(out);
+        }
+
+        public DiscoveryNode getSourceNode() {
+            return sourceNode;
+        }
+
     }
 }
