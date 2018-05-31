@@ -325,14 +325,15 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         ClusterState newState = clusterChangedEvent.state();
         assert newState.getNodes().isLocalNodeElectedMaster() : "Shouldn't publish state when not master " + clusterChangedEvent.source();
 
-        // state got changed locally (maybe because another master published to us)
-        if (clusterChangedEvent.previousState() != this.committedState.get()) {
-            throw new FailedToCommitClusterStateException("state was mutated while calculating new CS update");
-        }
-
-        pendingStatesQueue.addPending(newState);
-
         try {
+
+            // state got changed locally (maybe because another master published to us)
+            if (clusterChangedEvent.previousState() != this.committedState.get()) {
+                throw new FailedToCommitClusterStateException("state was mutated while calculating new CS update");
+            }
+
+            pendingStatesQueue.addPending(newState);
+
             publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
         } catch (FailedToCommitClusterStateException t) {
             // cluster service logs a WARN message
@@ -345,7 +346,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
                 rejoin("zen-disco-failed-to-publish");
             }
-            throw t;
+
+            publishListener.onFailure(t);
+            return;
         }
 
         final DiscoveryNode localNode = newState.getNodes().getLocalNode();

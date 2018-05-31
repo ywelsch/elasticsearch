@@ -1295,7 +1295,7 @@ public class Legislator extends AbstractComponent {
                 throw new ConsensusMessageRejectedException("abdicateTo: not currently leading, so cannot abdicate.");
             }
             logger.debug("abdicateTo: abdicating to [{}]", newLeader);
-        transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.getCurrentTerm()));
+            transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.getCurrentTerm()));
         }
     }
 
