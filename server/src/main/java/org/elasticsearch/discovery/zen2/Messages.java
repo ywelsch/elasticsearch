@@ -191,12 +191,12 @@ public class Messages {
         }
     }
 
-    public abstract static class TermVersion extends TransportRequest implements Writeable {
+    private abstract static class TermVersion extends TransportRequest implements Writeable {
         protected final DiscoveryNode sourceNode;
         protected final long term;
         protected final long version;
 
-        public TermVersion(DiscoveryNode sourceNode, long term, long version) {
+        TermVersion(DiscoveryNode sourceNode, long term, long version) {
             assert term >= 0;
             assert version >= 0;
 
@@ -205,7 +205,7 @@ public class Messages {
             this.version = version;
         }
 
-        public TermVersion(StreamInput in) throws IOException {
+        TermVersion(StreamInput in) throws IOException {
             super(in);
             sourceNode = new DiscoveryNode(in);
             term = in.readLong();
