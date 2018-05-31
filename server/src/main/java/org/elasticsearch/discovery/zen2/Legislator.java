@@ -1420,7 +1420,6 @@ public class Legislator extends AbstractComponent {
 
         @SuppressForbidden(reason = "Argument to Math.abs() is definitely not Long.MIN_VALUE")
         private long randomNonNegativeLong() {
-            // Is java.util.Random threadsafe? no synchronisation required if so.
             long result = random.nextLong();
             return result == Long.MIN_VALUE ? 0 : Math.abs(result);
         }
