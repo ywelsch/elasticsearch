@@ -57,6 +57,7 @@ import org.elasticsearch.transport.TransportChannel;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseOptions;
 import org.elasticsearch.transport.TransportService;
+import org.hamcrest.core.IsInstanceOf;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -314,8 +315,8 @@ public class ZenDiscoveryUnitTests extends ESTestCase {
 
         @Override
         public void onFailure(Exception e) {
-            assertThat(e, notNullValue());
-            exception = (Discovery.FailedToCommitClusterStateException) e; // fail on other exception types
+            assertThat(e, IsInstanceOf.instanceOf(Discovery.FailedToCommitClusterStateException.class));
+            exception = (Discovery.FailedToCommitClusterStateException) e;
             onResponse(null);
         }
 
