@@ -21,9 +21,12 @@ package org.elasticsearch.discovery.zen2;
 
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
+import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseHandler;
 import org.elasticsearch.transport.TransportService;
@@ -62,7 +65,7 @@ public class LegislatorTransport implements Legislator.Transport {
                     try {
                         channel.sendResponse(TransportResponse.Empty.INSTANCE);
                     } catch (IOException e) {
-                        assert false;
+                        onFailure(e);
                     }
                 }
 
@@ -70,8 +73,9 @@ public class LegislatorTransport implements Legislator.Transport {
                 public void onFailure(Exception e) {
                     try {
                         channel.sendResponse(e);
-                    } catch (IOException e1) {
-                        assert false;
+                    } catch (Exception inner) {
+                        inner.addSuppressed(e);
+                        Loggers.getLogger(Legislator.class).warn("failed to send back failure on join request", inner);
                     }
                 }
             }));
@@ -88,7 +92,7 @@ public class LegislatorTransport implements Legislator.Transport {
                     try {
                         channel.sendResponse(TransportResponse.Empty.INSTANCE);
                     } catch (IOException e) {
-                        assert false;
+                        onFailure(e);
                     }
                 }
 
@@ -96,8 +100,9 @@ public class LegislatorTransport implements Legislator.Transport {
                 public void onFailure(Exception e) {
                     try {
                         channel.sendResponse(e);
-                    } catch (IOException e1) {
-                        assert false;
+                    } catch (Exception inner) {
+                        inner.addSuppressed(e);
+                        Loggers.getLogger(Legislator.class).warn("failed to send back failure on join request", inner);
                     }
                 }
             }));
@@ -141,7 +146,9 @@ public class LegislatorTransport implements Legislator.Transport {
     @Override
     public void sendHeartbeatRequest(DiscoveryNode destination, Messages.HeartbeatRequest heartbeatRequest,
                                      TransportResponseHandler<Messages.HeartbeatResponse> responseHandler) {
-        transportService.sendRequest(destination, HEARTBEAT_ACTION_NAME, heartbeatRequest, responseHandler);
+        final TransportRequestOptions options = TransportRequestOptions.builder().withType(TransportRequestOptions.Type.PING)
+            .withTimeout(TimeValue.timeValueSeconds(30)).build();
+        transportService.sendRequest(destination, HEARTBEAT_ACTION_NAME, heartbeatRequest, options, responseHandler);
     }
 
     @Override
@@ -183,7 +190,9 @@ public class LegislatorTransport implements Legislator.Transport {
     @Override
     public void sendLeaderCheckRequest(DiscoveryNode destination, Messages.LeaderCheckRequest leaderCheckRequest,
                                        TransportResponseHandler<Messages.LeaderCheckResponse> responseHandler) {
-        transportService.sendRequest(destination, LEADERCHECK_ACTION_NAME, leaderCheckRequest, responseHandler);
+        final TransportRequestOptions options = TransportRequestOptions.builder().withType(TransportRequestOptions.Type.PING)
+            .withTimeout(TimeValue.timeValueSeconds(30)).build();
+        transportService.sendRequest(destination, LEADERCHECK_ACTION_NAME, leaderCheckRequest, options, responseHandler);
     }
 
     @Override

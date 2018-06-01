@@ -358,6 +358,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         if (mode != Mode.FOLLOWER) {
             logger.debug("{}: becoming FOLLOWER of [{}] (was {}, lastKnownLeader was [{}])", method, leaderNode, mode, lastKnownLeader);
 
+            clearJoins();
             assert activeFollowerFailureDetector.isPresent() == false;
             mode = Mode.FOLLOWER;
             final ActiveFollowerFailureDetector activeFollowerFailureDetector = new ActiveFollowerFailureDetector();
