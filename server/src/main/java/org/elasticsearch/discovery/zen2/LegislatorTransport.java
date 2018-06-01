@@ -51,7 +51,7 @@ public class LegislatorTransport implements Legislator.Transport {
     public static void registerTransportActions(TransportService transportService, Legislator legislator) {
 
         transportService.registerRequestHandler(PUBLISH_ACTION_NAME, ThreadPool.Names.GENERIC, false, false,
-            in -> new Messages.PublishRequest(in, legislator.getLocalNode()),
+            in -> new Messages.PublishRequest(in, transportService.getLocalNode()),
             (request, channel) -> channel.sendResponse(legislator.handlePublishRequest(request)));
 
         transportService.registerRequestHandler(APPLY_COMMIT_ACTION_NAME, ThreadPool.Names.GENERIC, false, false,
@@ -184,6 +184,11 @@ public class LegislatorTransport implements Legislator.Transport {
     public void sendLeaderCheckRequest(DiscoveryNode destination, Messages.LeaderCheckRequest leaderCheckRequest,
                                        TransportResponseHandler<Messages.LeaderCheckResponse> responseHandler) {
         transportService.sendRequest(destination, LEADERCHECK_ACTION_NAME, leaderCheckRequest, responseHandler);
+    }
+
+    @Override
+    public DiscoveryNode getLocalNode() {
+        return transportService.getLocalNode();
     }
 
 }

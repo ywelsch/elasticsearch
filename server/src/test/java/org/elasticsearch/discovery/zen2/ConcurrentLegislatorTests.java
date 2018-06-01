@@ -27,7 +27,6 @@ import org.elasticsearch.cluster.ESAllocationTestCase;
 import org.elasticsearch.cluster.NodeConnectionsService;
 import org.elasticsearch.cluster.ack.AckedRequest;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
@@ -42,7 +41,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -57,36 +55,38 @@ public class ConcurrentLegislatorTests extends ESTestCase {
 
     public void testSimpleClusterFormation() throws Exception {
         final int numClusterNodes = randomIntBetween(1, 10);
+        final int numVotingNodes = randomIntBetween(1, numClusterNodes);
         final List<ClusterNode> clusterNodes = new ArrayList<>(numClusterNodes);
+
         for (int i = 0; i < numClusterNodes; i++) {
-            clusterNodes.add(new ClusterNode("node" + i));
+            clusterNodes.add(
+                new ClusterNode("node" + i,
+                    () -> new ClusterState.VotingConfiguration(clusterNodes.stream()
+                        .map(node -> node.mockTransportService.getLocalNode().getId())
+                        .limit(numVotingNodes).collect(Collectors.toSet())),
+                    () -> clusterNodes.stream().map(node -> node.mockTransportService.getLocalNode()).collect(Collectors.toList())));
         }
 
         try {
+            clusterNodes.forEach(node -> node.mockTransportService.start());
+
+            clusterNodes.forEach(node -> node.start());
+
             for (ClusterNode node1 : clusterNodes) {
                 for (ClusterNode node2 : clusterNodes) {
                     if (node1 != node2) {
-                        node1.mockTransportService.connectToNode(node2.localNode);
+                        node1.mockTransportService.connectToNode(node2.mockTransportService.getLocalNode());
                     }
                 }
             }
-
-            List<DiscoveryNode> allNodes = clusterNodes.stream().map(node -> node.localNode).collect(Collectors.toList());
-
-            Set<String> votingNodes = randomSubsetOf(allNodes).stream().map(DiscoveryNode::getId).collect(Collectors.toSet());
-            if (votingNodes.isEmpty()) {
-                votingNodes = Collections.singleton(allNodes.get(0).getId());
-            }
-            ClusterState.VotingConfiguration initialConfig = new ClusterState.VotingConfiguration(votingNodes);
-
-            clusterNodes.forEach(node -> node.initialise(initialConfig, () -> allNodes));
 
             assertBusy(() -> clusterNodes.forEach(node -> {
                 assertThat(node.clusterService.state().nodes().getSize(), equalTo(numClusterNodes));
             }));
 
             DiscoveryNode masterNode = clusterNodes.get(0).clusterService.state().nodes().getMasterNode();
-            ClusterNode master = clusterNodes.stream().filter(n -> n.localNode.equals(masterNode)).findAny().get();
+            ClusterNode master = clusterNodes.stream()
+                .filter(n -> n.mockTransportService.getLocalNode().equals(masterNode)).findAny().get();
 
             PlainActionFuture<Void> fut = new PlainActionFuture<>();
             master.clusterService.submitStateUpdateTask("change value to 13", new AckedClusterStateUpdateTask<Void>(
@@ -122,13 +122,13 @@ public class ConcurrentLegislatorTests extends ESTestCase {
 
     class ClusterNode implements Closeable {
         private final Settings settings;
-        private final DiscoveryNode localNode;
         private final ThreadPool threadPool;
         private final MockTransportService mockTransportService;
-        private Legislator legislator;
+        private final Legislator legislator;
         final ClusterService clusterService;
 
-        ClusterNode(String name) {
+        ClusterNode(String name, Supplier<ClusterState.VotingConfiguration> initialConfigurationSupplier,
+                    Supplier<List<DiscoveryNode>> nodeSupplier) {
             settings = Settings.builder()
                 .put("node.name", name)
                 .build();
@@ -137,46 +137,34 @@ public class ConcurrentLegislatorTests extends ESTestCase {
 
             mockTransportService = MockTransportService.createNewService(settings, Version.CURRENT,
                 threadPool, null);
-            mockTransportService.start();
-            mockTransportService.acceptIncomingRequests();
-
-            localNode = mockTransportService.getLocalNode();
 
             ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
             clusterService = new ClusterService(settings, clusterSettings, threadPool, Collections.emptyMap());
-        }
-
-        void initialise(ClusterState.VotingConfiguration initialConfiguration, Supplier<List<DiscoveryNode>> nodeSupplier) {
-            ConsensusState.BasePersistedState persistedState = new ConsensusState.BasePersistedState(0L,
-                clusterState(0L, 0L, localNode, initialConfiguration, initialConfiguration, 42L));
+            clusterService.setNodeConnectionsService(new NodeConnectionsService(settings, threadPool, mockTransportService));
 
             Legislator.FutureExecutor futureExecutor = (delay, description, task) ->
                 threadPool.schedule(delay, ThreadPool.Names.GENERIC, task);
 
             Legislator.Transport transport = new LegislatorTransport(mockTransportService);
 
-            legislator = new Legislator(settings, persistedState, transport, clusterService.getMasterService(),
-                ESAllocationTestCase.createAllocationService(), localNode,
+            Supplier<ConsensusState.PersistedState> persistedStateSupplier = () -> {
+                final ClusterState.VotingConfiguration initialConfiguration = initialConfigurationSupplier.get();
+                return new ConsensusState.BasePersistedState(0L,
+                    clusterState(0L, 0L, mockTransportService.getLocalNode(), initialConfiguration, initialConfiguration, 42L));
+            };
+            legislator = new Legislator(settings, persistedStateSupplier, transport, clusterService.getMasterService(),
+                ESAllocationTestCase.createAllocationService(),
                 System::nanoTime, futureExecutor, nodeSupplier, clusterService.getClusterApplierService(), new Random());
 
+            registerTransportActions(mockTransportService, legislator);
+
             clusterService.getMasterService().setClusterStatePublisher(legislator::publish);
+        }
 
-            clusterService.setNodeConnectionsService(new NodeConnectionsService(Settings.EMPTY, null, null) {
-                @Override
-                public void connectToNodes(DiscoveryNodes discoveryNodes) {
-                    // skip
-                }
-
-                @Override
-                public void disconnectFromNodesExcept(DiscoveryNodes nodesToKeep) {
-                    // skip
-                }
-            });
-
+        void start() {
             legislator.start();
             clusterService.start();
-
-            registerTransportActions(mockTransportService, legislator);
+            mockTransportService.acceptIncomingRequests();
             legislator.startInitialJoin();
         }
 

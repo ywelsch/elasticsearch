@@ -1058,8 +1058,8 @@ public class LegislatorTests extends ESTestCase {
                     .put("node.name", localNode.getId())
                     .build();
                 clusterApplier = new FakeClusterApplier(settings);
-                this.legislator = new Legislator(settings, persistedState, transport, masterService,
-                    ESAllocationTestCase.createAllocationService(), localNode,
+                this.legislator = new Legislator(settings, () -> persistedState, transport, masterService,
+                    ESAllocationTestCase.createAllocationService(),
                     new CurrentTimeSupplier(), futureExecutor,
                     () -> clusterNodes.stream().filter(cn -> cn.isConnected || cn.getLocalNode().equals(localNode))
                         .map(ClusterNode::getLocalNode).collect(Collectors.toList()), clusterApplier, random());
@@ -1295,6 +1295,11 @@ public class LegislatorTests extends ESTestCase {
                     if (isConnected) {
                         sendLeaderCheckRequestFrom(localNode, destination, leaderCheckRequest, responseHandler);
                     }
+                }
+
+                @Override
+                public DiscoveryNode getLocalNode() {
+                    return localNode;
                 }
             }
 

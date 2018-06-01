@@ -20,6 +20,7 @@
 package org.elasticsearch.discovery.zen2;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterChangedEvent;
@@ -118,10 +119,11 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         Setting.timeSetting("discovery.zen2.publication_timeout",
             TimeValue.timeValueMillis(30000), TimeValue.timeValueMillis(1), Setting.Property.NodeScope);
 
-    private final ConsensusState consensusState;
+    private final Supplier<ConsensusState.PersistedState> persistedStateSupplier;
+    private final SetOnce<ConsensusState> consensusState = new SetOnce<>();
     private final Transport transport;
     private final MasterService masterService;
-    private final DiscoveryNode localNode;
+    private final SetOnce<DiscoveryNode> localNode = new SetOnce<>();
     private final Supplier<List<DiscoveryNode>> nodeSupplier;
     private final TimeValue minDelay;
     private final TimeValue maxDelay;
@@ -134,7 +136,6 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     private final Random random;
     private final ClusterApplier clusterApplier;
     private final ClusterBlock noMasterBlock; // TODO make dynamic
-    private final LeaderCheckRequest leaderCheckRequest;
 
     private final Object mutex = new Object();
 
@@ -162,9 +163,9 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     private Optional<Publication> currentPublication = Optional.empty();
     private long laggingUntilCommittedVersionExceeds;
 
-    public Legislator(Settings settings, ConsensusState.PersistedState persistedState,
+    public Legislator(Settings settings, Supplier<ConsensusState.PersistedState> persistedStateSupplier,
                       Transport transport, MasterService masterService, AllocationService allocationService,
-                      DiscoveryNode localNode, LongSupplier currentTimeSupplier,
+                      LongSupplier currentTimeSupplier,
                       FutureExecutor futureExecutor, Supplier<List<DiscoveryNode>> nodeSupplier,
                       ClusterApplier clusterApplier, Random random) {
         super(settings);
@@ -175,16 +176,14 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         heartbeatTimeout = CONSENSUS_HEARTBEAT_TIMEOUT_SETTING.get(settings);
         publishTimeout = CONSENSUS_PUBLISH_TIMEOUT_SETTING.get(settings);
         this.random = random;
+        this.persistedStateSupplier = persistedStateSupplier;
 
-        consensusState = new ConsensusState(settings, localNode, persistedState);
         this.transport = transport;
         this.masterService = masterService;
-        this.localNode = localNode;
         this.currentTimeSupplier = currentTimeSupplier;
         this.futureExecutor = futureExecutor;
         this.nodeSupplier = nodeSupplier;
         this.clusterApplier = clusterApplier;
-        this.leaderCheckRequest = new LeaderCheckRequest(localNode);
         lastKnownLeader = Optional.empty();
         lastCommittedState = Optional.empty();
         lastJoin = Optional.empty();
@@ -221,7 +220,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
                 final long currentTerm;
                 synchronized (mutex) {
-                    currentTerm = consensusState.getCurrentTerm(); // TODO perhaps this can be a volatile read?
+                    currentTerm = consensusState.get().getCurrentTerm(); // TODO perhaps this can be a volatile read?
                 }
                 if (currentState.term() != currentTerm) {
                     // ZenDiscovery assumes that when a node becomes a fresh leader, that the previous cluster state had master node id set
@@ -246,14 +245,20 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         noMasterBlock = DiscoverySettings.NO_MASTER_BLOCK_SETTING.get(settings);
 
         masterService.setClusterStateSupplier(this::getStateForMasterService);
-
-        assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
-            "local node mismatch, expected " + localNode + " but got " + persistedState.getLastAcceptedState().nodes().getLocalNode();
     }
 
     @Override
     protected void doStart() {
+        final DiscoveryNode localNode = transport.getLocalNode();
+        assert localNode != null;
+
+        ConsensusState.PersistedState persistedState = persistedStateSupplier.get();
+        assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
+            "local node mismatch, expected " + localNode + " but got " + persistedState.getLastAcceptedState().nodes().getLocalNode();
+
         synchronized (mutex) {
+            this.localNode.set(localNode);
+            consensusState.set(new ConsensusState(settings, localNode, persistedState));
             // copied from ZenDiscovery#doStart()
             ClusterState.Builder builder = clusterApplier.newClusterStateBuilder();
             ClusterState initialState = builder
@@ -295,7 +300,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     }
 
     public DiscoveryNode getLocalNode() {
-        return localNode; // final and immutable so no lock needed
+        return localNode.get(); // final and immutable so no lock needed
     }
 
     // only for testing
@@ -342,7 +347,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         this.activeLeaderFailureDetector = Optional.of(activeLeaderFailureDetector);
         stopSeekJoinsScheduler();
         stopActiveFollowerFailureDetector();
-        lastKnownLeader = Optional.of(localNode);
+        lastKnownLeader = Optional.of(localNode.get());
         leaderCheckResponder = new LeaderCheckResponder();
         heartbeatRequestResponder = new HeartbeatRequestResponder();
     }
@@ -412,14 +417,15 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         clearJoins(); // TODO: is this the right place?
 
         currentOfferJoinCollector = Optional.of(new OfferJoinCollector());
-        SeekJoins seekJoins = new SeekJoins(localNode, consensusState.getCurrentTerm(), consensusState.getLastAcceptedVersion());
+        SeekJoins seekJoins = new SeekJoins(localNode.get(), consensusState.get().getCurrentTerm(),
+            consensusState.get().getLastAcceptedVersion());
         currentOfferJoinCollector.get().start(seekJoins);
     }
 
     private Join joinLeaderInTerm(StartJoinRequest startJoinRequest) {
         assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.debug("joinLeaderInTerm: from [{}] with term {}", startJoinRequest.getSourceNode(), startJoinRequest.getTerm());
-        Join join = consensusState.handleStartJoin(startJoinRequest);
+        Join join = consensusState.get().handleStartJoin(startJoinRequest);
         lastJoin = Optional.of(join);
         if (mode == Mode.CANDIDATE) {
             // refresh required because current term has changed
@@ -439,7 +445,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
     private Optional<Join> ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
         assert Thread.holdsLock(mutex) : "Legislator mutex not held";
-        if (consensusState.getCurrentTerm() < targetTerm) {
+        if (consensusState.get().getCurrentTerm() < targetTerm) {
             return Optional.of(joinLeaderInTerm(new StartJoinRequest(sourceNode, targetTerm)));
         }
         return Optional.empty();
@@ -470,9 +476,10 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
             throw new ConsensusMessageRejectedException("[{}] is in progress", currentPublication.get());
         }
 
-        assert localNode.equals(clusterState.getNodes().get(localNode.getId())) : localNode + " should be in published " + clusterState;
+        assert localNode.get().equals(clusterState.getNodes().get(localNode.get().getId())) :
+            localNode.get() + " should be in published " + clusterState;
 
-        final PublishRequest publishRequest = consensusState.handleClientValue(clusterState);
+        final PublishRequest publishRequest = consensusState.get().handleClientValue(clusterState);
         final Publication publication = new Publication(publishRequest, completionListener, ackListener);
 
         assert currentPublication.isPresent() == false
@@ -493,14 +500,14 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     // only for testing
     ClusterState getLastAcceptedState() {
         synchronized (mutex) {
-            return consensusState.getLastAcceptedState();
+            return consensusState.get().getLastAcceptedState();
         }
     }
 
     // only for testing
     long getCurrentTerm() {
         synchronized (mutex) {
-            return consensusState.getCurrentTerm();
+            return consensusState.get().getCurrentTerm();
         }
     }
 
@@ -511,7 +518,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     public ClusterState getStateForMasterService() {
         synchronized (mutex) {
             //TODO: set masterNodeId to null in cluster state when we're not leader
-            return consensusState.getLastAcceptedState();
+            return consensusState.get().getLastAcceptedState();
         }
     }
 
@@ -521,7 +528,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
             handleClientValue(clusterChangedEvent.state(), publishListener, ackListener);
         } catch (Exception e) {
             logger.trace(() -> new ParameterizedMessage("[{}] publishing: [{}] failed: {}",
-                localNode.getName(), clusterChangedEvent.source(), e.getMessage()));
+                localNode.get().getName(), clusterChangedEvent.source(), e.getMessage()));
             publishListener.onFailure(new Discovery.FailedToCommitClusterStateException("failure while publishing", e));
         }
     }
@@ -604,21 +611,21 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
             }
 
             for (final PublicationTarget target : publicationTargets) {
-                if (target.discoveryNode.equals(localNode) && target.state.isFailed()) {
+                if (target.discoveryNode.equals(localNode.get()) && target.state.isFailed()) {
                     logger.debug("onPossibleCompletion: [{}] failed on master", this);
                     onCompletion();
                     FailedToCommitClusterStateException exception = new FailedToCommitClusterStateException("publish-to-self failed");
-                    ackListener.onNodeAck(localNode, exception); // other nodes have acked, but not the master.
+                    ackListener.onNodeAck(localNode.get(), exception); // other nodes have acked, but not the master.
                     completionListener.onFailure(exception);
                     return;
                 }
             }
 
-            assert consensusState.getLastAcceptedTerm() == applyCommitReference.get().term
-                && consensusState.getLastAcceptedVersion() == applyCommitReference.get().version
+            assert consensusState.get().getLastAcceptedTerm() == applyCommitReference.get().term
+                && consensusState.get().getLastAcceptedVersion() == applyCommitReference.get().version
                 : "onPossibleCompletion: term or version mismatch when publishing [" + this
-                + "]: current version is now [" + consensusState.getLastAcceptedVersion()
-                + "] in term [" + consensusState.getLastAcceptedTerm() + "]";
+                + "]: current version is now [" + consensusState.get().getLastAcceptedVersion()
+                + "] in term [" + consensusState.get().getLastAcceptedTerm() + "]";
 
             onCompletion();
             assert applyCommitReference.get() != null;
@@ -629,13 +636,13 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                     synchronized (mutex) {
                         becomeCandidate("clusterApplier#onNewClusterState");
                     }
-                    ackListener.onNodeAck(localNode, e);
+                    ackListener.onNodeAck(localNode.get(), e);
                     completionListener.onFailure(e);
                 }
 
                 @Override
                 public void onSuccess(String source) {
-                    ackListener.onNodeAck(localNode, null);
+                    ackListener.onNodeAck(localNode.get(), null);
                     completionListener.onResponse(null);
                 }
             });
@@ -675,16 +682,16 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 }
             }
 
-            if (consensusState.electionWon() == false) {
+            if (consensusState.get().electionWon() == false) {
                 logger.debug("onPossibleCommitFailure: node stepped down as leader while publishing");
                 failActiveTargets();
             }
 
-            if (false == consensusState.isPublishQuorum(possiblySuccessfulNodes)) {
+            if (false == consensusState.get().isPublishQuorum(possiblySuccessfulNodes)) {
                 logger.debug("onPossibleCommitFailure: non-failed nodes do not form a quorum, so publication cannot succeed");
                 failActiveTargets();
-                if (publishRequest.getAcceptedState().term() == consensusState.getCurrentTerm() &&
-                    publishRequest.getAcceptedState().version() == consensusState.getLastPublishedVersion()) {
+                if (publishRequest.getAcceptedState().term() == consensusState.get().getCurrentTerm() &&
+                    publishRequest.getAcceptedState().version() == consensusState.get().getLastPublishedVersion()) {
                     becomeCandidate("Publication.onPossibleCommitFailure");
                 }
             }
@@ -746,11 +753,11 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 assert state.isWaitingForQuorum() : state;
 
                 logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, discoveryNode);
-                assert consensusState.getCurrentTerm() >= publishResponse.getTerm();
+                assert consensusState.get().getCurrentTerm() >= publishResponse.getTerm();
                 if (applyCommitReference.get() != null) {
                     sendApplyCommit();
                 } else {
-                    Optional<ApplyCommit> optionalCommit = consensusState.handlePublishResponse(discoveryNode, publishResponse);
+                    Optional<ApplyCommit> optionalCommit = consensusState.get().handlePublishResponse(discoveryNode, publishResponse);
                     optionalCommit.ifPresent(Publication.this::onCommitted);
                 }
             }
@@ -804,7 +811,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
             private void ackOnce(Exception e) {
                 assert Thread.holdsLock(mutex) : "Legislator mutex not held";
-                if (ackIsPending && localNode.equals(discoveryNode) == false) {
+                if (ackIsPending && localNode.get().equals(discoveryNode) == false) {
                     ackIsPending = false;
                     ackListener.onNodeAck(discoveryNode, e);
                 }
@@ -891,19 +898,19 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
                     if (response.getJoin().isPresent()) {
                         Join join = response.getJoin().get();
-                        if (join.getTerm() == consensusState.getCurrentTerm()) {
+                        if (join.getTerm() == consensusState.get().getCurrentTerm()) {
                             handleJoin(join);
                         }
                     }
-                    if (consensusState.electionWon() == false) {
+                    if (consensusState.get().electionWon() == false) {
                         logger.debug("PublishResponseHandler.handleResponse: stepped down as leader while publishing value {}",
                             response.getPublishResponse());
                         onPossibleCommitFailure();
-                    } else if (response.getPublishResponse().getTerm() != consensusState.getCurrentTerm() ||
-                        response.getPublishResponse().getVersion() != consensusState.getLastPublishedVersion()) {
+                    } else if (response.getPublishResponse().getTerm() != consensusState.get().getCurrentTerm() ||
+                        response.getPublishResponse().getVersion() != consensusState.get().getLastPublishedVersion()) {
                         logger.debug("PublishResponseHandler.handleResponse: [{}] is at wrong version or term {}/{} (vs {}/{})",
                             discoveryNode, response.getPublishResponse().getTerm(), response.getPublishResponse().getVersion(),
-                            consensusState.getCurrentTerm(), consensusState.getLastPublishedVersion());
+                            consensusState.get().getCurrentTerm(), consensusState.get().getLastPublishedVersion());
                         state.setState(PublicationTargetState.FAILED);
                         onPossibleCommitFailure();
                     } else {
@@ -1028,15 +1035,15 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
     private void handleJoin(Join join) {
         assert Thread.holdsLock(mutex) : "Legislator mutex not held";
-        Optional<Join> optionalJoin = ensureTermAtLeast(localNode, join.getTerm());
+        Optional<Join> optionalJoin = ensureTermAtLeast(localNode.get(), join.getTerm());
         if (optionalJoin.isPresent()) {
             handleJoin(optionalJoin.get()); // someone thinks we should be master, so let's try to become one
         }
 
-        boolean prevElectionWon = consensusState.electionWon();
-        consensusState.handleJoin(join);
-        assert !prevElectionWon || consensusState.electionWon(); // we cannot go from won to not won
-        if (prevElectionWon == false && consensusState.electionWon()) {
+        boolean prevElectionWon = consensusState.get().electionWon();
+        consensusState.get().handleJoin(join);
+        assert !prevElectionWon || consensusState.get().electionWon(); // we cannot go from won to not won
+        if (prevElectionWon == false && consensusState.get().electionWon()) {
             assert mode == Mode.CANDIDATE : "expected candidate but was " + mode;
 
             becomeLeader("handleJoin");
@@ -1083,8 +1090,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
         logger.trace("handlePublishRequest: handling [{}] from [{}]", publishRequest, sourceNode);
 
-        final PublishResponse publishResponse = consensusState.handlePublishRequest(publishRequest);
-        if (sourceNode.equals(localNode)) {
+        final PublishResponse publishResponse = consensusState.get().handlePublishRequest(publishRequest);
+        if (sourceNode.equals(localNode.get())) {
             // responder refreshes required because lastAcceptedState has changed
             leaderCheckResponder = new LeaderCheckResponder();
             heartbeatRequestResponder = new HeartbeatRequestResponder();
@@ -1145,15 +1152,15 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.trace("handleApplyCommit: applying {} from [{}]", applyCommit, sourceNode);
         try {
-            consensusState.handleCommit(applyCommit);
+            consensusState.get().handleCommit(applyCommit);
         } catch (ConsensusMessageRejectedException e) {
             applyListener.onFailure(e);
             return;
         }
 
         // mark state as commmitted
-        lastCommittedState = Optional.of(consensusState.getLastAcceptedState());
-        if (sourceNode.equals(localNode)) {
+        lastCommittedState = Optional.of(consensusState.get().getLastAcceptedState());
+        if (sourceNode.equals(localNode.get())) {
             // master node applies the committed state at the end of the publication process, not here.
             applyListener.onResponse(null);
         } else {
@@ -1199,12 +1206,12 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         }
 
         if (shouldOfferJoin) {
-            OfferJoin offerJoin = new Messages.OfferJoin(consensusState.getLastAcceptedVersion(),
-                consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+            OfferJoin offerJoin = new Messages.OfferJoin(consensusState.get().getLastAcceptedVersion(),
+                consensusState.get().getCurrentTerm(), consensusState.get().getLastAcceptedTerm());
             logger.debug("handleSeekJoins: candidate received [{}] from [{}] and responding with [{}]", seekJoins,
                 seekJoins.getSourceNode(), offerJoin);
             return offerJoin;
-        } else if (consensusState.getCurrentTerm() < seekJoins.getTerm() && mode == Mode.LEADER) {
+        } else if (consensusState.get().getCurrentTerm() < seekJoins.getTerm() && mode == Mode.LEADER) {
             // This is a _rare_ case that can occur if this node is the leader but pauses for long enough for other
             // nodes to consider it failed, leading to `sender` winning a pre-voting round and increments its term, but
             // then this node comes back to life and commits another value in its term, re-establishing itself as the
@@ -1214,8 +1221,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
             // this node to perform an election in a yet-higher term so that `sender` can re-join the cluster.
             final long newTerm = seekJoins.getTerm() + 1;
             logger.debug("handleSeekJoins: leader in term {} handling [{}] from [{}] by starting an election in term {}",
-                consensusState.getCurrentTerm(), seekJoins, seekJoins.getSourceNode(), newTerm);
-            sendStartJoin(new StartJoinRequest(localNode, newTerm));
+                consensusState.get().getCurrentTerm(), seekJoins, seekJoins.getSourceNode(), newTerm);
+            sendStartJoin(new StartJoinRequest(localNode.get(), newTerm));
             throw new ConsensusMessageRejectedException("I'm still a leader");
 
             // TODO what about a node that sent a join to a different node in our term? Is it now stuck until the next term?
@@ -1242,7 +1249,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                     }, logger));
             }
             logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}, lastKnownLeader={}",
-                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), mode, lastKnownLeader);
+                consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm(), mode, lastKnownLeader);
             throw new ConsensusMessageRejectedException("not offering join");
         }
     }
@@ -1299,22 +1306,23 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
         assert currentOfferJoinCollector.get() == offerJoinCollector;
 
-        if (offerJoin.getLastAcceptedTerm() > consensusState.getLastAcceptedTerm()
-            || (offerJoin.getLastAcceptedTerm() == consensusState.getLastAcceptedTerm()
-            && offerJoin.getLastAcceptedVersion() > consensusState.getLastAcceptedVersion())) {
+        if (offerJoin.getLastAcceptedTerm() > consensusState.get().getLastAcceptedTerm()
+            || (offerJoin.getLastAcceptedTerm() == consensusState.get().getLastAcceptedTerm()
+            && offerJoin.getLastAcceptedVersion() > consensusState.get().getLastAcceptedVersion())) {
             logger.debug("handleOfferJoin: handing over pre-voting to [{}] because of {}", sender, offerJoin);
             currentOfferJoinCollector = Optional.empty();
-            transport.sendPreJoinHandover(sender, new PrejoinHandoverRequest(localNode));
+            transport.sendPreJoinHandover(sender, new PrejoinHandoverRequest(localNode.get()));
             return;
         }
 
         logger.debug("handleOfferJoin: received {} from [{}]", offerJoin, sender);
         offerJoinCollector.add(sender, offerJoin.getTerm());
 
-        if (consensusState.isElectionQuorum(offerJoinCollector.joinsOffered)) {
+        if (consensusState.get().isElectionQuorum(offerJoinCollector.joinsOffered)) {
             logger.debug("handleOfferJoin: received a quorum of OfferJoin messages, so starting an election.");
             currentOfferJoinCollector = Optional.empty();
-            sendStartJoin(new StartJoinRequest(localNode, Math.max(consensusState.getCurrentTerm(), offerJoinCollector.maxTermSeen) + 1));
+            sendStartJoin(new StartJoinRequest(localNode.get(),
+                Math.max(consensusState.get().getCurrentTerm(), offerJoinCollector.maxTermSeen) + 1));
         }
     }
 
@@ -1332,7 +1340,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 throw new ConsensusMessageRejectedException("abdicateTo: not currently leading, so cannot abdicate.");
             }
             logger.debug("abdicateTo: abdicating to [{}]", newLeader);
-            transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.getCurrentTerm()));
+            transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.get().getCurrentTerm()));
         }
     }
 
@@ -1340,7 +1348,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         // No synchronisation required
         logger.debug("handleAbdication: accepting abdication from [{}] in term {}", abdicationRequest.getSourceNode(),
             abdicationRequest.getTerm());
-        sendStartJoin(new StartJoinRequest(localNode, abdicationRequest.getTerm() + 1));
+        sendStartJoin(new StartJoinRequest(localNode.get(), abdicationRequest.getTerm() + 1));
     }
 
     private void sendStartJoin(StartJoinRequest startJoinRequest) {
@@ -1390,11 +1398,11 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
     public void invariant() {
         synchronized (mutex) {
             if (mode == Mode.LEADER) {
-                assert consensusState.electionWon();
-                assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
+                assert consensusState.get().electionWon();
+                assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode.get());
             } else if (mode == Mode.FOLLOWER) {
-                assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
-                assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
+                assert consensusState.get().electionWon() == false : localNode.get() + " is FOLLOWER so electionWon() should be false";
+                assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode.get()) == false);
             } else {
                 assert mode == Mode.CANDIDATE;
             }
@@ -1433,6 +1441,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
         void sendLeaderCheckRequest(DiscoveryNode destination, LeaderCheckRequest leaderCheckRequest,
                                     TransportResponseHandler<LeaderCheckResponse> responseHandler);
+
+        DiscoveryNode getLocalNode();
     }
 
     public interface FutureExecutor {
@@ -1481,7 +1491,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 logger.debug("SeekJoinsScheduler.handleWakeUp: " +
                         "waking up as {} at [{}] with running={}, version={}, term={}, lastAcceptedTerm={}",
                     mode, currentTimeSupplier.getAsLong(), running,
-                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+                    consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm(),
+                    consensusState.get().getLastAcceptedTerm());
 
                 if (running) {
                     scheduleNextWakeUp();
@@ -1530,7 +1541,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                     logger.trace("ActiveLeaderFailureDetector.handleWakeUp: " +
                             "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
                         mode, currentTimeSupplier.getAsLong(), running(),
-                        consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+                        consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm(),
+                        consensusState.get().getLastAcceptedTerm());
 
                     if (running()) {
                         assert mode == Mode.LEADER;
@@ -1574,8 +1586,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                     inFlight = true;
                     futureExecutor.schedule(heartbeatTimeout, "FollowerCheck#onTimeout", this::onTimeout);
 
-                    HeartbeatRequest heartbeatRequest = new HeartbeatRequest(localNode,
-                        consensusState.getCurrentTerm(), consensusState.getLastPublishedVersion());
+                    HeartbeatRequest heartbeatRequest = new HeartbeatRequest(localNode.get(),
+                        consensusState.get().getCurrentTerm(), consensusState.get().getLastPublishedVersion());
 
                     transport.sendHeartbeatRequest(followerNode, heartbeatRequest, new TransportResponseHandler<HeartbeatResponse>() {
 
@@ -1637,7 +1649,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
             // add any missing nodes
             for (DiscoveryNode node : clusterState.nodes()) {
-                if (node.equals(localNode)) {
+                if (node.equals(localNode.get())) {
                     // no need to monitor the local node
                     continue;
                 }
@@ -1693,7 +1705,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 logger.trace("ActiveFollowerFailureDetector.handleWakeUp: " +
                         "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
                     mode, currentTimeSupplier.getAsLong(), running,
-                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+                    consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm(),
+                    consensusState.get().getLastAcceptedTerm());
 
                 if (running) {
                     assert mode == Mode.FOLLOWER;
@@ -1743,6 +1756,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 inFlight = true;
                 futureExecutor.schedule(heartbeatTimeout, "LeaderCheck#onTimeout", this::onTimeout);
 
+                final LeaderCheckRequest leaderCheckRequest = new LeaderCheckRequest(localNode.get()); // TODO: cache this
                 transport.sendLeaderCheckRequest(leader, leaderCheckRequest, new TransportResponseHandler<LeaderCheckResponse>() {
 
                     @Override
@@ -1829,7 +1843,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
         LeaderCheckResponder() {
             assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             mode = Legislator.this.mode;
-            lastAcceptedNodes = consensusState.getLastAcceptedState().getNodes();
+            lastAcceptedNodes = consensusState.get().getLastAcceptedState().getNodes();
             faultyNodes = Collections.unmodifiableSet(
                 activeLeaderFailureDetector.map(alfd -> new HashSet<>(alfd.faultyNodes)).orElse(new HashSet<>()));
         }
@@ -1855,7 +1869,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
             }
 
-            LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
+            LeaderCheckResponse response = new LeaderCheckResponse(consensusState.get().getLastPublishedVersion());
             logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
             return response;
         }
@@ -1872,14 +1886,14 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
             assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             mode = Legislator.this.mode;
             lastKnownLeader = Legislator.this.lastKnownLeader;
-            currentTerm = consensusState.getCurrentTerm();
+            currentTerm = consensusState.get().getCurrentTerm();
             laggingUntilCommittedVersionExceeds = Legislator.this.laggingUntilCommittedVersionExceeds;
-            lastAcceptedVersion = consensusState.getLastAcceptedVersion();
+            lastAcceptedVersion = consensusState.get().getLastAcceptedVersion();
         }
 
         HeartbeatResponse handleHeartbeatRequest(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
             logger.trace("handleHeartbeatRequest: handling [{}] from [{}])", heartbeatRequest, sourceNode);
-            assert sourceNode.equals(localNode) == false; // localNode is final & immutable so this is ok
+            assert sourceNode.equals(localNode.get()) == false; // localNode is final & immutable so this is ok
 
             if (currentTerm < heartbeatRequest.getTerm()
                 || mode != Mode.FOLLOWER
@@ -1915,7 +1929,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                     sendJoin(sourceNode, join);
                 });
 
-                if (consensusState.getCurrentTerm() != heartbeatRequest.getTerm()) {
+                if (consensusState.get().getCurrentTerm() != heartbeatRequest.getTerm()) {
                     logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] as current term is {}",
                         heartbeatRequest, sourceNode, currentTerm);
                     throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: requested term is {} but current term is {}",
@@ -1924,7 +1938,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
                 becomeFollower("handleHeartbeatRequest", sourceNode);
 
-                return new HeartbeatResponse(consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm());
+                return new HeartbeatResponse(consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm());
             }
         }
     }
