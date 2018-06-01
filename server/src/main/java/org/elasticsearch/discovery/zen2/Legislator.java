@@ -22,6 +22,7 @@ package org.elasticsearch.discovery.zen2;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
@@ -36,14 +37,14 @@ import org.elasticsearch.cluster.service.MasterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.SuppressForbidden;
-import org.elasticsearch.common.component.AbstractComponent;
+import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.discovery.Discovery.AckListener;
-import org.elasticsearch.discovery.Discovery.FailedToCommitClusterStateException;
+import org.elasticsearch.discovery.Discovery;
 import org.elasticsearch.discovery.DiscoverySettings;
+import org.elasticsearch.discovery.DiscoveryStats;
 import org.elasticsearch.discovery.zen.ElectMasterService;
 import org.elasticsearch.discovery.zen.MasterFaultDetection;
 import org.elasticsearch.discovery.zen.MembershipAction;
@@ -92,7 +93,7 @@ import static org.elasticsearch.gateway.GatewayService.STATE_NOT_RECOVERED_BLOCK
  * A Legislator, following the Paxos metaphor, is responsible for making sure that actions happen in a timely fashion
  * and for turning messages from the outside world into actions performed on the ConsensusState.
  */
-public class Legislator extends AbstractComponent {
+public class Legislator extends AbstractLifecycleComponent implements Discovery {
     // TODO On the happy path (publish-and-commit) we log at TRACE and everything else is logged at DEBUG. Increase levels as appropriate.
 
     public static final Setting<TimeValue> CONSENSUS_MIN_DELAY_SETTING =
@@ -244,11 +245,14 @@ public class Legislator extends AbstractComponent {
 
         noMasterBlock = DiscoverySettings.NO_MASTER_BLOCK_SETTING.get(settings);
 
+        masterService.setClusterStateSupplier(this::getStateForMasterService);
+
         assert localNode.equals(persistedState.getLastAcceptedState().nodes().getLocalNode()) :
             "local node mismatch, expected " + localNode + " but got " + persistedState.getLastAcceptedState().nodes().getLocalNode();
     }
 
-    public void start() {
+    @Override
+    protected void doStart() {
         synchronized (mutex) {
             // copied from ZenDiscovery#doStart()
             ClusterState.Builder builder = clusterApplier.newClusterStateBuilder();
@@ -262,9 +266,25 @@ public class Legislator extends AbstractComponent {
             // copied from ZenDiscovery#doStart()
 
             // TODO perhaps the code above needs no synchronisation?
-
-            becomeCandidate("start");
         }
+    }
+
+    @Override
+    public void startInitialJoin() {
+        // TODO: do we need to do something here?
+        synchronized (mutex) {
+            becomeCandidate("startInitialJoin");
+        }
+    }
+
+    @Override
+    protected void doStop() {
+
+    }
+
+    @Override
+    protected void doClose() {
+
     }
 
     // only for testing
@@ -493,6 +513,23 @@ public class Legislator extends AbstractComponent {
             //TODO: set masterNodeId to null in cluster state when we're not leader
             return consensusState.getLastAcceptedState();
         }
+    }
+
+    @Override
+    public void publish(ClusterChangedEvent clusterChangedEvent, ActionListener<Void> publishListener, AckListener ackListener) {
+        try {
+            handleClientValue(clusterChangedEvent.state(), publishListener, ackListener);
+        } catch (Exception e) {
+            logger.trace(() -> new ParameterizedMessage("[{}] publishing: [{}] failed: {}",
+                localNode.getName(), clusterChangedEvent.source(), e.getMessage()));
+            publishListener.onFailure(new Discovery.FailedToCommitClusterStateException("failure while publishing", e));
+        }
+    }
+
+    @Override
+    public DiscoveryStats stats() {
+        // TODO: implement
+        return new DiscoveryStats(null, null);
     }
 
     public enum PublicationTargetState {

@@ -1066,19 +1066,10 @@ public class LegislatorTests extends ESTestCase {
                 legislator.start();
                 this.masterService = masterService;
 
-                masterService.setClusterStatePublisher((clusterChangedEvent, publishListener, ackListener) -> {
-                    try {
-                        legislator.handleClientValue(clusterChangedEvent.state(), publishListener, ackListener);
-                    } catch (Exception e) {
-                        assertThat(e.getMessage(), not(containsString("is in progress")));
-                        logger.trace(() -> new ParameterizedMessage("[{}] publishing: [{}] failed: {}",
-                            localNode.getName(), clusterChangedEvent.source(), e.getMessage()));
-                        publishListener.onFailure(new Discovery.FailedToCommitClusterStateException("failure while publishing", e));
-                    }
-                });
+                masterService.setClusterStatePublisher(legislator::publish);
 
-                masterService.setClusterStateSupplier(legislator::getStateForMasterService);
                 masterService.start();
+                legislator.startInitialJoin();
             }
 
             public AckCollector submitUpdateTask(String source, UnaryOperator<ClusterState> clusterStateUpdate) {
@@ -1438,6 +1429,7 @@ public class LegislatorTests extends ESTestCase {
 
                     @Override
                     public void onFailure(Exception e) {
+                        assertThat(e.getMessage(), not(containsString("is in progress")));
                         assert listenerCalled == false;
                         listenerCalled = true;
                         assert waitForPublish;
