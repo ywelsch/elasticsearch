@@ -23,7 +23,6 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.ClusterState.VotingConfiguration;
 import org.elasticsearch.cluster.ClusterStateTaskConfig;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.block.ClusterBlock;
@@ -67,6 +66,7 @@ import org.elasticsearch.discovery.zen2.Messages.PublishResponse;
 import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.threadpool.ThreadPool.Names;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponse.Empty;
@@ -135,18 +135,22 @@ public class Legislator extends AbstractComponent {
     private final ClusterBlock noMasterBlock; // TODO make dynamic
     private final LeaderCheckRequest leaderCheckRequest;
 
+    private final Object mutex = new Object();
+
     private Mode mode;
     private Optional<DiscoveryNode> lastKnownLeader;
     private Optional<Join> lastJoin;
     private Optional<SeekJoinsScheduler> seekJoinsScheduler;
     private Optional<ActiveLeaderFailureDetector> activeLeaderFailureDetector;
     private Optional<ActiveFollowerFailureDetector> activeFollowerFailureDetector;
+    private volatile LeaderCheckResponder leaderCheckResponder;
+    private volatile HeartbeatRequestResponder heartbeatRequestResponder;
     // TODO use nanoseconds throughout instead
 
     // Present if we are in the pre-voting phase, used to collect join offers.
     private Optional<OfferJoinCollector> currentOfferJoinCollector;
 
-    private Optional<ClusterState> lastCommittedState; // the state that was last committed, can be exposed to the cluster state applier
+    private volatile Optional<ClusterState> lastCommittedState; // the state that was last committed, exposed to the cluster state applier
 
     // similar to NodeJoinController.ElectionContext.joinRequestAccumulator, captures joins on election
     private final Map<DiscoveryNode, MembershipAction.JoinCallback> joinRequestAccumulator = new HashMap<>();
@@ -208,10 +212,20 @@ public class Legislator extends AbstractComponent {
 
             @Override
             public ClusterTasksResult<DiscoveryNode> execute(ClusterState currentState, List<DiscoveryNode> joiningNodes) throws Exception {
-                // ZenDiscovery assumes that when a node becomes a fresh leader, that the previous cluster state had
-                // master node id set to null. As we're not doing such thing on becoming candidate (yet), we fake this here.
-                if (currentState.term() != getCurrentTerm()) {
-                    currentState = ClusterState.builder(currentState).term(getCurrentTerm())
+                // This is called when preparing the next cluster state for publication. There is no guarantee that the term we see here is
+                // the term under which this state will eventually be published: the current term may be increased after this check due to
+                // some other activity. That the term is correct is, however, checked properly during publication, so it is sufficient to
+                // check it here on a best-effort basis. This is fine because a concurrent change indicates the existence of another leader
+                // in a higher term which will cause this node to stand down.
+
+                final long currentTerm;
+                synchronized (mutex) {
+                    currentTerm = consensusState.getCurrentTerm(); // TODO perhaps this can be a volatile read?
+                }
+                if (currentState.term() != currentTerm) {
+                    // ZenDiscovery assumes that when a node becomes a fresh leader, that the previous cluster state had master node id set
+                    // to null. As we're not doing such thing on becoming candidate (yet), we fake this here.
+                    currentState = ClusterState.builder(currentState).term(currentTerm)
                         .nodes(DiscoveryNodes.builder(currentState.nodes()).masterNodeId(null)).build();
                 }
                 return super.execute(currentState, joiningNodes);
@@ -223,7 +237,9 @@ public class Legislator extends AbstractComponent {
         // minimum_master_nodes check is disabled in the adapted ElectMasterService from above
         this.nodeRemovalExecutor = new NodeRemovalClusterStateTaskExecutor(allocationService,
             electMasterService,
-            s -> { throw new AssertionError("not implemented"); },
+            s -> {
+                throw new AssertionError("not implemented");
+            },
             logger);
 
         noMasterBlock = DiscoverySettings.NO_MASTER_BLOCK_SETTING.get(settings);
@@ -233,37 +249,48 @@ public class Legislator extends AbstractComponent {
     }
 
     public void start() {
-        // copied from ZenDiscovery#doStart()
-        ClusterState.Builder builder = clusterApplier.newClusterStateBuilder();
-        ClusterState initialState = builder
-            .blocks(ClusterBlocks.builder()
-                .addGlobalBlock(STATE_NOT_RECOVERED_BLOCK)
-                .addGlobalBlock(noMasterBlock))
-            .nodes(DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId()))
-            .build();
-        clusterApplier.setInitialState(initialState);
-        // copied from ZenDiscovery#doStart()
+        synchronized (mutex) {
+            // copied from ZenDiscovery#doStart()
+            ClusterState.Builder builder = clusterApplier.newClusterStateBuilder();
+            ClusterState initialState = builder
+                .blocks(ClusterBlocks.builder()
+                    .addGlobalBlock(STATE_NOT_RECOVERED_BLOCK)
+                    .addGlobalBlock(noMasterBlock))
+                .nodes(DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId()))
+                .build();
+            clusterApplier.setInitialState(initialState);
+            // copied from ZenDiscovery#doStart()
 
-        becomeCandidate("start");
+            // TODO perhaps the code above needs no synchronisation?
+
+            becomeCandidate("start");
+        }
     }
 
-    public Mode getMode() {
-        return mode;
+    // only for testing
+    Mode getMode() {
+        synchronized (mutex) {
+            return mode;
+        }
     }
 
     public DiscoveryNode getLocalNode() {
-        return localNode;
+        return localNode; // final and immutable so no lock needed
     }
 
-    public void handleFailure() {
-        if (mode == Mode.CANDIDATE) {
-            logger.debug("handleFailure: already a candidate");
-        } else {
-            becomeCandidate("handleFailure");
+    // only for testing
+    void handleFailure() {
+        synchronized (mutex) {
+            if (mode == Mode.CANDIDATE) {
+                logger.debug("handleFailure: already a candidate");
+            } else {
+                becomeCandidate("handleFailure");
+            }
         }
     }
 
     private void becomeCandidate(String method) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.debug("{}: becoming CANDIDATE (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
 
         if (mode != Mode.CANDIDATE) {
@@ -276,10 +303,14 @@ public class Legislator extends AbstractComponent {
             stopActiveLeaderFailureDetector();
             stopActiveFollowerFailureDetector();
             cancelActivePublication();
+
+            leaderCheckResponder = new LeaderCheckResponder();
+            heartbeatRequestResponder = new HeartbeatRequestResponder();
         }
     }
 
     private void becomeLeader(String method) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         assert mode != Mode.LEADER;
 
         logger.debug("{}: becoming LEADER (was {}, lastKnownLeader was [{}])", method, mode, lastKnownLeader);
@@ -292,9 +323,13 @@ public class Legislator extends AbstractComponent {
         stopSeekJoinsScheduler();
         stopActiveFollowerFailureDetector();
         lastKnownLeader = Optional.of(localNode);
+        leaderCheckResponder = new LeaderCheckResponder();
+        heartbeatRequestResponder = new HeartbeatRequestResponder();
     }
 
     private void becomeFollower(String method, DiscoveryNode leaderNode) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
+
         if (mode != Mode.FOLLOWER) {
             logger.debug("{}: becoming FOLLOWER of [{}] (was {}, lastKnownLeader was [{}])", method, leaderNode, mode, lastKnownLeader);
 
@@ -309,9 +344,12 @@ public class Legislator extends AbstractComponent {
         stopSeekJoinsScheduler();
         stopActiveLeaderFailureDetector();
         cancelActivePublication();
+        leaderCheckResponder = new LeaderCheckResponder();
+        heartbeatRequestResponder = new HeartbeatRequestResponder();
     }
 
     private void stopSeekJoinsScheduler() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (seekJoinsScheduler.isPresent()) {
             seekJoinsScheduler.get().stop();
             seekJoinsScheduler = Optional.empty();
@@ -319,6 +357,7 @@ public class Legislator extends AbstractComponent {
     }
 
     private void stopActiveLeaderFailureDetector() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (activeLeaderFailureDetector.isPresent()) {
             activeLeaderFailureDetector.get().stop();
             activeLeaderFailureDetector = Optional.empty();
@@ -326,6 +365,7 @@ public class Legislator extends AbstractComponent {
     }
 
     private void stopActiveFollowerFailureDetector() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (activeFollowerFailureDetector.isPresent()) {
             activeFollowerFailureDetector.get().stop();
             activeFollowerFailureDetector = Optional.empty();
@@ -333,6 +373,7 @@ public class Legislator extends AbstractComponent {
     }
 
     private void cancelActivePublication() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (currentPublication.isPresent()) {
             currentPublication.get().failActiveTargets();
             assert currentPublication.isPresent() == false;
@@ -340,12 +381,14 @@ public class Legislator extends AbstractComponent {
     }
 
     private void clearJoins() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         joinRequestAccumulator.values().forEach(
             joinCallback -> joinCallback.onFailure(new ConsensusMessageRejectedException("node stepped down as leader")));
         joinRequestAccumulator.clear();
     }
 
     private void startSeekingJoins() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         clearJoins(); // TODO: is this the right place?
 
         currentOfferJoinCollector = Optional.of(new OfferJoinCollector());
@@ -354,21 +397,28 @@ public class Legislator extends AbstractComponent {
     }
 
     private Join joinLeaderInTerm(StartJoinRequest startJoinRequest) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.debug("joinLeaderInTerm: from [{}] with term {}", startJoinRequest.getSourceNode(), startJoinRequest.getTerm());
         Join join = consensusState.handleStartJoin(startJoinRequest);
         lastJoin = Optional.of(join);
-        if (mode != Mode.CANDIDATE) {
+        if (mode == Mode.CANDIDATE) {
+            // refresh required because current term has changed
+            heartbeatRequestResponder = new HeartbeatRequestResponder();
+        } else {
+            // becomeCandidate refreshes responders
             becomeCandidate("joinLeaderInTerm");
         }
         return join;
     }
 
     public void handleStartJoin(StartJoinRequest startJoinRequest) {
-        final Join join = joinLeaderInTerm(startJoinRequest);
-        sendJoin(startJoinRequest.getSourceNode(), join);
+        synchronized (mutex) {
+            sendJoin(startJoinRequest.getSourceNode(), joinLeaderInTerm(startJoinRequest));
+        }
     }
 
     private Optional<Join> ensureTermAtLeast(DiscoveryNode sourceNode, long targetTerm) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (consensusState.getCurrentTerm() < targetTerm) {
             return Optional.of(joinLeaderInTerm(new StartJoinRequest(sourceNode, targetTerm)));
         }
@@ -379,11 +429,19 @@ public class Legislator extends AbstractComponent {
      * Publish a new cluster state. May throw ConsensusMessageRejectedException (NB, not FailedToCommitClusterStateException) if the
      * publication cannot even be started, or else notifies the given completionListener on completion.
      *
-     * @param clusterState The new cluster state to publish.
+     * @param clusterState       The new cluster state to publish.
      * @param completionListener Receives notification of completion of the publication, whether successful, failed, or timed out.
-     * @param ackListener Receives notification of success or failure for each individual node, but not if timed out.
+     * @param ackListener        Receives notification of success or failure for each individual node, but not if timed out.
      */
     public void handleClientValue(ClusterState clusterState, ActionListener<Void> completionListener, AckListener ackListener) {
+        synchronized (mutex) {
+            handleClientValueUnderLock(clusterState, completionListener, ackListener);
+        }
+    }
+
+    private void handleClientValueUnderLock(ClusterState clusterState, ActionListener<Void> completionListener, AckListener ackListener) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
+
         if (mode != Mode.LEADER) {
             throw new ConsensusMessageRejectedException("handleClientValue: not currently leading, so cannot handle client value.");
         }
@@ -409,48 +467,32 @@ public class Legislator extends AbstractComponent {
     }
 
     public LeaderCheckResponse handleLeaderCheckRequest(LeaderCheckRequest leaderCheckRequest) {
-        if (mode != Mode.LEADER) {
-            logger.debug("handleLeaderCheckRequest: currently {}, rejecting message from [{}]", mode, leaderCheckRequest.getSourceNode());
-            throw new ConsensusMessageRejectedException("handleLeaderCheckRequest: currently {}, rejecting message from [{}]",
-                mode, leaderCheckRequest.getSourceNode());
-        }
-
-        // TODO: use last published state instead of last accepted state? Where can we access that state?
-        if (consensusState.getLastAcceptedState().getNodes().nodeExists(leaderCheckRequest.getSourceNode()) == false) {
-            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as not publication target",
-                leaderCheckRequest.getSourceNode());
-            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
-        }
-
-        if (getFaultyNodes().contains(leaderCheckRequest.getSourceNode())) {
-            logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as it is faulty", leaderCheckRequest.getSourceNode());
-            throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
-        }
-
-        LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
-        logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", leaderCheckRequest.getSourceNode(), response);
-        return response;
+        return leaderCheckResponder.handleLeaderCheckRequest(leaderCheckRequest);
     }
 
-    public ClusterState getLastAcceptedState() {
-        return consensusState.getLastAcceptedState();
+    // only for testing
+    ClusterState getLastAcceptedState() {
+        synchronized (mutex) {
+            return consensusState.getLastAcceptedState();
+        }
     }
 
-    public long getCurrentTerm() {
-        return consensusState.getCurrentTerm();
+    // only for testing
+    long getCurrentTerm() {
+        synchronized (mutex) {
+            return consensusState.getCurrentTerm();
+        }
     }
 
     public Optional<ClusterState> getLastCommittedState() {
-        return lastCommittedState;
-    }
-
-    public boolean hasElectionQuorum(VotingConfiguration votingConfiguration) {
-        return consensusState.hasElectionQuorum(votingConfiguration);
+        return lastCommittedState; // volatile read, needs no mutex
     }
 
     public ClusterState getStateForMasterService() {
-        //TODO: set masterNodeId to null in cluster state when we're not leader
-        return getLastAcceptedState();
+        synchronized (mutex) {
+            //TODO: set masterNodeId to null in cluster state when we're not leader
+            return consensusState.getLastAcceptedState();
+        }
     }
 
     public enum PublicationTargetState {
@@ -462,13 +504,6 @@ public class Legislator extends AbstractComponent {
         APPLIED_COMMIT,
     }
 
-    private Set<DiscoveryNode> getFaultyNodes() {
-        return Collections.unmodifiableSet(activeLeaderFailureDetector.get().faultyNodes);
-    }
-
-    /**
-     * A single attempt to publish an update
-     */
     private class Publication {
 
         private final AtomicReference<ApplyCommit> applyCommitReference;
@@ -479,6 +514,7 @@ public class Legislator extends AbstractComponent {
         private boolean isCompleted;
 
         private Publication(PublishRequest publishRequest, ActionListener<Void> completionListener, AckListener ackListener) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             this.publishRequest = publishRequest;
             this.completionListener = completionListener;
             this.ackListener = ackListener;
@@ -490,14 +526,16 @@ public class Legislator extends AbstractComponent {
 
         @Override
         public String toString() {
+            // everything here is immutable so no synchronisation required
             return "Publication{term=" + publishRequest.getAcceptedState().term() +
                 ", version=" + publishRequest.getAcceptedState().version() + '}';
         }
 
         private void start() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             logger.trace("publishing {} to {}", publishRequest, publicationTargets);
 
-            Set<DiscoveryNode> localFaultyNodes = new HashSet<>(getFaultyNodes());
+            Set<DiscoveryNode> localFaultyNodes = new HashSet<>(activeLeaderFailureDetector.get().faultyNodes);
             for (final DiscoveryNode faultyNode : localFaultyNodes) {
                 onFaultyNode(faultyNode);
             }
@@ -506,6 +544,7 @@ public class Legislator extends AbstractComponent {
         }
 
         private void onCompletion() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert isCompleted == false;
             isCompleted = true;
             assert currentPublication.get() == this;
@@ -513,6 +552,7 @@ public class Legislator extends AbstractComponent {
         }
 
         private void onPossibleCompletion() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             if (isCompleted) {
                 assert currentPublication.isPresent() == false || currentPublication.get() != this;
                 return;
@@ -549,7 +589,9 @@ public class Legislator extends AbstractComponent {
             clusterApplier.onNewClusterState(this.toString(), () -> getLastCommittedState().get(), new ClusterApplyListener() {
                 @Override
                 public void onFailure(String source, Exception e) {
-                    becomeCandidate("clusterApplier#onNewClusterState");
+                    synchronized (mutex) {
+                        becomeCandidate("clusterApplier#onNewClusterState");
+                    }
                     ackListener.onNodeAck(localNode, e);
                     completionListener.onFailure(e);
                 }
@@ -564,6 +606,7 @@ public class Legislator extends AbstractComponent {
 
         // For assertions only: verify that this invariant holds
         private boolean publicationCompletedIffAllTargetsInactive() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             for (final PublicationTarget target : publicationTargets) {
                 if (target.state.isActive()) {
                     return isCompleted == false;
@@ -573,12 +616,14 @@ public class Legislator extends AbstractComponent {
         }
 
         private void onCommitted(final ApplyCommit applyCommit) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert applyCommitReference.get() == null;
             applyCommitReference.set(applyCommit);
             publicationTargets.stream().filter(PublicationTarget::isWaitingForQuorum).forEach(PublicationTarget::sendApplyCommit);
         }
 
         private void onPossibleCommitFailure() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             if (applyCommitReference.get() != null) {
                 onPossibleCompletion();
                 return;
@@ -609,22 +654,26 @@ public class Legislator extends AbstractComponent {
         }
 
         void failActiveTargets() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::setFailed);
             onPossibleCompletion();
         }
 
         public void onTimeout() {
-            publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::onTimeOut);
-            onPossibleCompletion();
+            synchronized (mutex) {
+                publicationTargets.stream().filter(PublicationTarget::isActive).forEach(PublicationTarget::onTimeOut);
+                onPossibleCompletion();
 
-            if (mode == Mode.LEADER && applyCommitReference.get() == null) {
-                logger.debug("Publication.onTimeout(): failed to commit version [{}] in term [{}]",
-                    publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
-                becomeCandidate("Publication.onTimeout()");
+                if (mode == Mode.LEADER && applyCommitReference.get() == null) {
+                    logger.debug("Publication.onTimeout(): failed to commit version [{}] in term [{}]",
+                        publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
+                    becomeCandidate("Publication.onTimeout()");
+                }
             }
         }
 
         void onFaultyNode(DiscoveryNode faultyNode) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             publicationTargets.forEach(t -> t.onFaultyNode(faultyNode));
             onPossibleCompletion();
         }
@@ -640,10 +689,12 @@ public class Legislator extends AbstractComponent {
 
             @Override
             public String toString() {
+                // everything here is immutable so no synchronisation required
                 return discoveryNode.getId();
             }
 
             public void sendPublishRequest() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (state.isFailed()) {
                     return;
                 }
@@ -654,6 +705,7 @@ public class Legislator extends AbstractComponent {
             }
 
             void handlePublishResponse(PublishResponse publishResponse) {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 assert state.isWaitingForQuorum() : state;
 
                 logger.trace("handlePublishResponse: handling [{}] from [{}])", publishResponse, discoveryNode);
@@ -667,6 +719,7 @@ public class Legislator extends AbstractComponent {
             }
 
             public void sendApplyCommit() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 state.setState(PublicationTargetState.SENT_APPLY_COMMIT);
 
                 ApplyCommit applyCommit = applyCommitReference.get();
@@ -677,20 +730,24 @@ public class Legislator extends AbstractComponent {
             }
 
             public boolean isWaitingForQuorum() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 return state.isWaitingForQuorum();
             }
 
             public boolean isActive() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 return state.isActive();
             }
 
             public void setFailed() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 assert isActive();
                 state.setState(PublicationTargetState.FAILED);
                 ackOnce(new ElasticsearchException("publication failed"));
             }
 
             public void onTimeOut() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 assert isActive();
                 state.setState(PublicationTargetState.FAILED);
                 if (applyCommitReference.get() == null) {
@@ -699,6 +756,7 @@ public class Legislator extends AbstractComponent {
             }
 
             public void onFaultyNode(DiscoveryNode faultyNode) {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (isActive() && discoveryNode.equals(faultyNode)) {
                     logger.debug("onFaultyNode: [{}] is faulty, failing target in publication of version [{}] in term [{}]", faultyNode,
                         publishRequest.getAcceptedState().version(), publishRequest.getAcceptedState().term());
@@ -708,6 +766,7 @@ public class Legislator extends AbstractComponent {
             }
 
             private void ackOnce(Exception e) {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (ackIsPending && localNode.equals(discoveryNode) == false) {
                     ackIsPending = false;
                     ackListener.onNodeAck(discoveryNode, e);
@@ -718,6 +777,7 @@ public class Legislator extends AbstractComponent {
                 private PublicationTargetState state = PublicationTargetState.NOT_STARTED;
 
                 public void setState(PublicationTargetState newState) {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     switch (newState) {
                         case NOT_STARTED:
                             assert false : state + " -> " + newState;
@@ -742,26 +802,31 @@ public class Legislator extends AbstractComponent {
                 }
 
                 public boolean isActive() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     return state != PublicationTargetState.FAILED
                         && state != PublicationTargetState.APPLIED_COMMIT;
                 }
 
                 public boolean isWaitingForQuorum() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     return state == PublicationTargetState.WAITING_FOR_QUORUM;
                 }
 
                 public boolean mayCommitInFuture() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     return (state == PublicationTargetState.NOT_STARTED
                         || state == PublicationTargetState.SENT_PUBLISH_REQUEST
                         || state == PublicationTargetState.WAITING_FOR_QUORUM);
                 }
 
                 public boolean isFailed() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     return state == PublicationTargetState.FAILED;
                 }
 
                 @Override
                 public String toString() {
+                    // TODO DANGER non-volatile, mutable variable requires synchronisation
                     return state.toString();
                 }
             }
@@ -774,6 +839,13 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleResponse(LegislatorPublishResponse response) {
+                    synchronized (mutex) {
+                        handleResponseUnderLock(response);
+                    }
+                }
+
+                private void handleResponseUnderLock(LegislatorPublishResponse response) {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     if (state.isFailed()) {
                         logger.debug("PublishResponseHandler.handleResponse: already failed, ignoring response from [{}]", discoveryNode);
                         assert publicationCompletedIffAllTargetsInactive();
@@ -807,6 +879,13 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
+                    synchronized (mutex) {
+                        handleExceptionUnderLock(exp);
+                    }
+                }
+
+                private void handleExceptionUnderLock(TransportException exp) {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                         logger.debug("PublishResponseHandler: [{}] failed: {}", discoveryNode, exp.getRootCause().getMessage());
                     } else {
@@ -820,7 +899,7 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public String executor() {
-                    return ThreadPool.Names.SAME;
+                    return Names.GENERIC;
                 }
             }
 
@@ -833,6 +912,13 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleResponse(TransportResponse.Empty response) {
+                    synchronized (mutex) {
+                        handleResponseUnderLock();
+                    }
+                }
+
+                private void handleResponseUnderLock() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     if (state.isFailed()) {
                         logger.debug("ApplyCommitResponseHandler.handleResponse: already failed, ignoring response from [{}]",
                             discoveryNode);
@@ -846,6 +932,13 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
+                    synchronized (mutex) {
+                        handleExceptionUnderLock(exp);
+                    }
+                }
+
+                private void handleExceptionUnderLock(TransportException exp) {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                         logger.debug("ApplyCommitResponseHandler: [{}] failed: {}", discoveryNode, exp.getRootCause().getMessage());
                     } else {
@@ -859,13 +952,20 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public String executor() {
-                    return ThreadPool.Names.SAME;
+                    return Names.GENERIC;
                 }
             }
         }
     }
 
     public void handleJoinRequest(Join join, MembershipAction.JoinCallback joinCallback) {
+        synchronized (mutex) {
+            handleJoinRequestUnderLock(join, joinCallback);
+        }
+    }
+
+    private void handleJoinRequestUnderLock(Join join, MembershipAction.JoinCallback joinCallback) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (mode == Mode.LEADER) {
             // submit as cluster state update task
             masterService.submitStateUpdateTask("zen-disco-node-join",
@@ -882,6 +982,7 @@ public class Legislator extends AbstractComponent {
 
     // copied from NodeJoinController.getPendingAsTasks
     private Map<DiscoveryNode, ClusterStateTaskListener> getPendingAsTasks() {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         Map<DiscoveryNode, ClusterStateTaskListener> tasks = new HashMap<>();
         joinRequestAccumulator.entrySet().stream().forEach(e -> tasks.put(e.getKey(),
             new NodeJoinController.JoinTaskListener(e.getValue(), logger)));
@@ -889,6 +990,7 @@ public class Legislator extends AbstractComponent {
     }
 
     private void handleJoin(Join join) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         Optional<Join> optionalJoin = ensureTermAtLeast(localNode, join.getTerm());
         if (optionalJoin.isPresent()) {
             handleJoin(optionalJoin.get()); // someone thinks we should be master, so let's try to become one
@@ -907,14 +1009,17 @@ public class Legislator extends AbstractComponent {
 
             final String source = "zen-disco-elected-as-master ([" + pendingAsTasks.size() + "] nodes joined)";
             // noop listener, the election finished listener determines result
-            pendingAsTasks.put(NodeJoinController.BECOME_MASTER_TASK, (source1, e) -> {});
+            pendingAsTasks.put(NodeJoinController.BECOME_MASTER_TASK, (source1, e) -> {
+            });
             // TODO: should we take any further action when FINISH_ELECTION_TASK fails?
-            pendingAsTasks.put(NodeJoinController.FINISH_ELECTION_TASK, (source1, e) -> {});
+            pendingAsTasks.put(NodeJoinController.FINISH_ELECTION_TASK, (source1, e) -> {
+            });
             masterService.submitStateUpdateTasks(source, pendingAsTasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
     }
 
     private void removeNode(final DiscoveryNode node, final String source, final String reason) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         masterService.submitStateUpdateTask(
             source + "(" + node + "), reason(" + reason + ")",
             new NodeRemovalClusterStateTaskExecutor.Task(node, reason),
@@ -924,6 +1029,13 @@ public class Legislator extends AbstractComponent {
     }
 
     public LegislatorPublishResponse handlePublishRequest(PublishRequest publishRequest) {
+        synchronized (mutex) {
+            return handlePublishRequestUnderLock(publishRequest);
+        }
+    }
+
+    private LegislatorPublishResponse handlePublishRequestUnderLock(PublishRequest publishRequest) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         DiscoveryNode sourceNode = publishRequest.getAcceptedState().nodes().getMasterNode();
         // adapt to local node
         ClusterState clusterState = ClusterState.builder(publishRequest.getAcceptedState()).nodes(
@@ -935,7 +1047,12 @@ public class Legislator extends AbstractComponent {
         logger.trace("handlePublishRequest: handling [{}] from [{}]", publishRequest, sourceNode);
 
         final PublishResponse publishResponse = consensusState.handlePublishRequest(publishRequest);
-        if (sourceNode.equals(localNode) == false) {
+        if (sourceNode.equals(localNode)) {
+            // responder refreshes required because lastAcceptedState has changed
+            leaderCheckResponder = new LeaderCheckResponder();
+            heartbeatRequestResponder = new HeartbeatRequestResponder();
+        } else {
+            // becomeFollower refreshes responders
             becomeFollower("handlePublishRequest", sourceNode);
         }
 
@@ -947,35 +1064,11 @@ public class Legislator extends AbstractComponent {
     }
 
     public HeartbeatResponse handleHeartbeatRequest(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
-        logger.trace("handleHeartbeatRequest: handling [{}] from [{}])", heartbeatRequest, sourceNode);
-        assert sourceNode.equals(localNode) == false;
-
-        if (heartbeatRequest.getTerm() < consensusState.getCurrentTerm()) {
-            logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] as current term is {}",
-                heartbeatRequest, sourceNode, consensusState.getCurrentTerm());
-            throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: required term <= {} but current term is {}",
-                heartbeatRequest.getTerm(), consensusState.getCurrentTerm());
-        }
-
-        ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm()).ifPresent(join -> {
-            logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}", join, heartbeatRequest.getTerm(), sourceNode);
-            sendJoin(sourceNode, join);
-        });
-
-        if (laggingUntilCommittedVersionExceeds > 0
-            && (lastCommittedState.isPresent() == false || lastCommittedState.get().version() <= laggingUntilCommittedVersionExceeds)) {
-            logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] due to lag at version [{}]",
-                heartbeatRequest, sourceNode, laggingUntilCommittedVersionExceeds);
-            throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: lagging at version [{}]",
-                laggingUntilCommittedVersionExceeds);
-        }
-
-        becomeFollower("handleHeartbeatRequest", sourceNode);
-
-        return new HeartbeatResponse(consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm());
+        return heartbeatRequestResponder.handleHeartbeatRequest(sourceNode, heartbeatRequest);
     }
 
     private void sendJoin(DiscoveryNode sourceNode, Join join) {
+        // No synchronisation required
         transport.sendJoin(sourceNode, join, new TransportResponseHandler<Empty>() {
             @Override
             public Empty read(StreamInput in) {
@@ -984,11 +1077,13 @@ public class Legislator extends AbstractComponent {
 
             @Override
             public void handleResponse(Empty response) {
+                // No synchronisation required
                 logger.debug("SendJoinResponseHandler: successfully joined {}", sourceNode);
             }
 
             @Override
             public void handleException(TransportException exp) {
+                // No synchronisation required
                 if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                     logger.debug("SendJoinResponseHandler: [{}] failed: {}", sourceNode, exp.getRootCause().getMessage());
                 } else {
@@ -998,12 +1093,19 @@ public class Legislator extends AbstractComponent {
 
             @Override
             public String executor() {
-                return ThreadPool.Names.SAME;
+                return Names.GENERIC;
             }
         });
     }
 
     public void handleApplyCommit(DiscoveryNode sourceNode, ApplyCommit applyCommit, ActionListener<Void> applyListener) {
+        synchronized (mutex) {
+            handleApplyCommitUnderLock(sourceNode, applyCommit, applyListener);
+        }
+    }
+
+    private void handleApplyCommitUnderLock(DiscoveryNode sourceNode, ApplyCommit applyCommit, ActionListener<Void> applyListener) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.trace("handleApplyCommit: applying {} from [{}]", applyCommit, sourceNode);
         try {
             consensusState.handleCommit(applyCommit);
@@ -1035,6 +1137,13 @@ public class Legislator extends AbstractComponent {
     }
 
     public OfferJoin handleSeekJoins(SeekJoins seekJoins) {
+        synchronized (mutex) {
+            return handleSeekJoinsUnderLock(seekJoins);
+        }
+    }
+
+    private OfferJoin handleSeekJoinsUnderLock(SeekJoins seekJoins) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         logger.debug("handleSeekJoins: received [{}] from [{}]", seekJoins, seekJoins.getSourceNode());
 
         boolean shouldOfferJoin = false;
@@ -1078,7 +1187,9 @@ public class Legislator extends AbstractComponent {
             // TODO: remove this once we have a discovery layer. If a node finds an active master node during discovery,
             // it will try to join that one, and not start seeking joins.
             if (mode == Mode.LEADER) {
-                activeLeaderFailureDetector.get().faultyNodes.remove(seekJoins.getSourceNode());
+                if (activeLeaderFailureDetector.get().faultyNodes.remove(seekJoins.getSourceNode())) {
+                    leaderCheckResponder = new LeaderCheckResponder();
+                }
                 masterService.submitStateUpdateTask("zen-disco-node-join",
                     seekJoins.getSourceNode(), ClusterStateTaskConfig.build(Priority.URGENT),
                     joinTaskExecutor, new NodeJoinController.JoinTaskListener(new MembershipAction.JoinCallback() {
@@ -1100,15 +1211,17 @@ public class Legislator extends AbstractComponent {
     }
 
     public class OfferJoinCollector {
-        NodeCollection joinsOffered = new NodeCollection();
+        final NodeCollection joinsOffered = new NodeCollection();
         long maxTermSeen = 0L;
 
         public void add(DiscoveryNode sender, long term) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             joinsOffered.add(sender);
             maxTermSeen = Math.max(maxTermSeen, term);
         }
 
         public void start(SeekJoins seekJoins) {
+            // No synchronisation required, assuming that `nodeSupplier` is independently threadsafe.
             nodeSupplier.get().forEach(n -> transport.sendSeekJoins(n, seekJoins, new TransportResponseHandler<Messages.OfferJoin>() {
                 @Override
                 public OfferJoin read(StreamInput in) throws IOException {
@@ -1117,11 +1230,14 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleResponse(OfferJoin response) {
-                    handleOfferJoin(n, OfferJoinCollector.this, response);
+                    synchronized (mutex) {
+                        handleOfferJoinUnderLock(n, OfferJoinCollector.this, response);
+                    }
                 }
 
                 @Override
                 public void handleException(TransportException exp) {
+                    // no synchronisation required
                     if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                         logger.debug("OfferJoinCollector: [{}] failed: {}", n, exp.getRootCause().getMessage());
                     } else {
@@ -1137,7 +1253,8 @@ public class Legislator extends AbstractComponent {
         }
     }
 
-    public void handleOfferJoin(DiscoveryNode sender, OfferJoinCollector offerJoinCollector, OfferJoin offerJoin) {
+    private void handleOfferJoinUnderLock(DiscoveryNode sender, OfferJoinCollector offerJoinCollector, OfferJoin offerJoin) {
+        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
         if (currentOfferJoinCollector.isPresent() == false || currentOfferJoinCollector.get() != offerJoinCollector) {
             logger.debug("handleOfferJoin: received OfferJoin message from [{}] but not collecting offers.", sender);
             throw new ConsensusMessageRejectedException("Received OfferJoin but not collecting offers.");
@@ -1165,27 +1282,33 @@ public class Legislator extends AbstractComponent {
     }
 
     public void handlePreJoinHandover(PrejoinHandoverRequest prejoinHandoverRequest) {
-        logger.debug("handlePreJoinHandover: received handover from [{}]", prejoinHandoverRequest.getSourceNode());
-        startSeekingJoins();
+        synchronized (mutex) {
+            logger.debug("handlePreJoinHandover: received handover from [{}]", prejoinHandoverRequest.getSourceNode());
+            startSeekingJoins();
+        }
     }
 
     public void abdicateTo(DiscoveryNode newLeader) {
-        if (mode != Mode.LEADER) {
-            logger.debug("abdicateTo: mode={} != LEADER, so cannot abdicate to [{}]", mode, newLeader);
-            throw new ConsensusMessageRejectedException("abdicateTo: not currently leading, so cannot abdicate.");
+        synchronized (mutex) {
+            if (mode != Mode.LEADER) {
+                logger.debug("abdicateTo: mode={} != LEADER, so cannot abdicate to [{}]", mode, newLeader);
+                throw new ConsensusMessageRejectedException("abdicateTo: not currently leading, so cannot abdicate.");
+            }
+            logger.debug("abdicateTo: abdicating to [{}]", newLeader);
+            transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.getCurrentTerm()));
         }
-        logger.debug("abdicateTo: abdicating to [{}]", newLeader);
-        transport.sendAbdication(newLeader, new AbdicationRequest(newLeader, consensusState.getCurrentTerm()));
     }
 
     public void handleAbdication(AbdicationRequest abdicationRequest) {
+        // No synchronisation required
         logger.debug("handleAbdication: accepting abdication from [{}] in term {}", abdicationRequest.getSourceNode(),
             abdicationRequest.getTerm());
         sendStartJoin(new StartJoinRequest(localNode, abdicationRequest.getTerm() + 1));
     }
 
-    private void sendStartJoin(StartJoinRequest startStartJoinRequest) {
-        nodeSupplier.get().forEach(n -> transport.sendStartJoin(n, startStartJoinRequest,
+    private void sendStartJoin(StartJoinRequest startJoinRequest) {
+        // No synchronisation required, assuming that `nodeSupplier` is independently threadsafe.
+        nodeSupplier.get().forEach(n -> transport.sendStartJoin(n, startJoinRequest,
             new TransportResponseHandler<TransportResponse.Empty>() {
                 @Override
                 public TransportResponse.Empty read(StreamInput in) {
@@ -1199,6 +1322,7 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public void handleException(TransportException exp) {
+                    // No synchronisation required
                     if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                         logger.debug("handleStartJoinResponse: [{}] failed: {}", n, exp.getRootCause().getMessage());
                     } else {
@@ -1208,37 +1332,41 @@ public class Legislator extends AbstractComponent {
 
                 @Override
                 public String executor() {
-                    return ThreadPool.Names.SAME;
+                    return Names.GENERIC;
                 }
             }));
     }
 
     public void handleDisconnectedNode(DiscoveryNode sender) {
-        logger.trace("handleDisconnectedNode: lost connection to leader [{}]", sender);
-        if (mode == Mode.FOLLOWER && lastKnownLeader.isPresent() && lastKnownLeader.get().equals(sender)) {
-            becomeCandidate("handleDisconnectedNode");
-        }
-        if (mode == Mode.LEADER) {
-            activeLeaderFailureDetector.get().addFaultyNode(sender);
-            removeNode(sender, "node_left", "handleDisconnectedNode");
+        synchronized (mutex) {
+            logger.trace("handleDisconnectedNode: lost connection to leader [{}]", sender);
+            if (mode == Mode.FOLLOWER && lastKnownLeader.isPresent() && lastKnownLeader.get().equals(sender)) {
+                becomeCandidate("handleDisconnectedNode");
+            }
+            if (mode == Mode.LEADER) {
+                activeLeaderFailureDetector.get().addFaultyNode(sender);
+                removeNode(sender, "node_left", "handleDisconnectedNode");
+            }
         }
     }
 
     public void invariant() {
-        if (mode == Mode.LEADER) {
-            assert consensusState.electionWon();
-            assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
-        } else if (mode == Mode.FOLLOWER) {
-            assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
-            assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
-        } else {
-            assert mode == Mode.CANDIDATE;
-        }
+        synchronized (mutex) {
+            if (mode == Mode.LEADER) {
+                assert consensusState.electionWon();
+                assert lastKnownLeader.isPresent() && lastKnownLeader.get().equals(localNode);
+            } else if (mode == Mode.FOLLOWER) {
+                assert consensusState.electionWon() == false : localNode + " is FOLLOWER so electionWon() should be false";
+                assert lastKnownLeader.isPresent() && (lastKnownLeader.get().equals(localNode) == false);
+            } else {
+                assert mode == Mode.CANDIDATE;
+            }
 
-        assert (seekJoinsScheduler.isPresent()) == (mode == Mode.CANDIDATE);
-        assert (activeFollowerFailureDetector.isPresent()) == (mode == Mode.FOLLOWER);
-        assert (activeLeaderFailureDetector.isPresent()) == (mode == Mode.LEADER);
-        assert (currentPublication.isPresent() == false) || (mode == Mode.LEADER);
+            assert (seekJoinsScheduler.isPresent()) == (mode == Mode.CANDIDATE);
+            assert (activeFollowerFailureDetector.isPresent()) == (mode == Mode.FOLLOWER);
+            assert (activeLeaderFailureDetector.isPresent()) == (mode == Mode.LEADER);
+            assert (currentPublication.isPresent() == false) || (mode == Mode.LEADER);
+        }
     }
 
     public enum Mode {
@@ -1280,10 +1408,12 @@ public class Legislator extends AbstractComponent {
         private boolean running = true;
 
         SeekJoinsScheduler() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             scheduleNextWakeUp();
         }
 
         void stop() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert running;
             running = false;
         }
@@ -1295,11 +1425,13 @@ public class Legislator extends AbstractComponent {
         }
 
         private long randomLongBetween(long lowerBound, long upperBound) {
+            // No extra synchronisation required
             assert 0 < upperBound - lowerBound;
             return randomNonNegativeLong() % (upperBound - lowerBound) + lowerBound;
         }
 
         private void scheduleNextWakeUp() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert running;
             assert mode == Mode.CANDIDATE;
             currentDelayMillis = Math.min(maxDelay.getMillis(), currentDelayMillis + minDelay.getMillis());
@@ -1308,14 +1440,16 @@ public class Legislator extends AbstractComponent {
         }
 
         private void handleWakeUp() {
-            logger.debug("SeekJoinsScheduler.handleWakeUp: " +
-                    "waking up as {} at [{}] with running={}, version={}, term={}, lastAcceptedTerm={}",
-                mode, currentTimeSupplier.getAsLong(), running,
-                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+            synchronized (mutex) {
+                logger.debug("SeekJoinsScheduler.handleWakeUp: " +
+                        "waking up as {} at [{}] with running={}, version={}, term={}, lastAcceptedTerm={}",
+                    mode, currentTimeSupplier.getAsLong(), running,
+                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
 
-            if (running) {
-                scheduleNextWakeUp();
-                startSeekingJoins();
+                if (running) {
+                    scheduleNextWakeUp();
+                    startSeekingJoins();
+                }
             }
         }
     }
@@ -1338,32 +1472,38 @@ public class Legislator extends AbstractComponent {
             }
 
             private boolean running() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 return this.equals(nodesFD.get(followerNode));
             }
 
             public void start() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 assert running();
                 logger.trace("ActiveLeaderFailureDetector.start: starting failure detection against {}", followerNode);
                 scheduleNextWakeUp();
             }
 
             private void scheduleNextWakeUp() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 futureExecutor.schedule(heartbeatDelay, "ActiveLeaderFailureDetector#handleWakeUp", this::handleWakeUp);
             }
 
             private void handleWakeUp() {
-                logger.trace("ActiveLeaderFailureDetector.handleWakeUp: " +
-                        "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
-                    mode, currentTimeSupplier.getAsLong(), running(),
-                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+                synchronized (mutex) {
+                    logger.trace("ActiveLeaderFailureDetector.handleWakeUp: " +
+                            "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
+                        mode, currentTimeSupplier.getAsLong(), running(),
+                        consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
 
-                if (running()) {
-                    assert mode == Mode.LEADER;
-                    new FollowerCheck().start();
+                    if (running()) {
+                        assert mode == Mode.LEADER;
+                        new FollowerCheck().start();
+                    }
                 }
             }
 
             private void onCheckFailure(DiscoveryNode node) {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (running()) {
                     failureCountSinceLastSuccess++;
                     if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
@@ -1378,6 +1518,7 @@ public class Legislator extends AbstractComponent {
             }
 
             private void onCheckSuccess() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (running()) {
                     logger.trace("ActiveLeaderFailureDetector.onCheckSuccess: successful response from {}", followerNode);
                     failureCountSinceLastSuccess = 0;
@@ -1390,6 +1531,7 @@ public class Legislator extends AbstractComponent {
                 private boolean inFlight = false;
 
                 void start() {
+                    assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                     logger.trace("FollowerCheck: sending follower check to [{}]", followerNode);
                     assert inFlight == false;
                     inFlight = true;
@@ -1407,44 +1549,54 @@ public class Legislator extends AbstractComponent {
 
                         @Override
                         public void handleResponse(HeartbeatResponse heartbeatResponse) {
-                            logger.trace("FollowerCheck.handleResponse: received {} from [{}]", heartbeatResponse, followerNode);
-                            inFlight = false;
-                            onCheckSuccess();
+                            synchronized (mutex) {
+                                logger.trace("FollowerCheck.handleResponse: received {} from [{}]", heartbeatResponse, followerNode);
+                                inFlight = false;
+                                onCheckSuccess();
+                            }
                         }
 
                         @Override
                         public void handleException(TransportException exp) {
-                            if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
-                                logger.debug("FollowerCheck.handleException: {}", exp.getRootCause().getMessage());
-                            } else {
-                                logger.debug(() -> new ParameterizedMessage(
-                                    "FollowerCheck.handleException: received exception from [{}]", followerNode), exp);
+                            synchronized (mutex) {
+                                if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
+                                    logger.debug("FollowerCheck.handleException: {}", exp.getRootCause().getMessage());
+                                } else {
+                                    logger.debug(() -> new ParameterizedMessage(
+                                        "FollowerCheck.handleException: received exception from [{}]", followerNode), exp);
+                                }
+                                inFlight = false;
+                                onCheckFailure(followerNode);
                             }
-                            inFlight = false;
-                            onCheckFailure(followerNode);
                         }
 
                         @Override
                         public String executor() {
-                            return ThreadPool.Names.SAME;
+                            return Names.GENERIC;
                         }
                     });
                 }
 
                 private void onTimeout() {
-                    if (inFlight) {
-                        logger.debug("FollowerCheck.onTimeout: no response received from [{}]", followerNode);
-                        inFlight = false;
-                        onCheckFailure(followerNode);
+                    synchronized (mutex) {
+                        if (inFlight) {
+                            logger.debug("FollowerCheck.onTimeout: no response received from [{}]", followerNode);
+                            inFlight = false;
+                            onCheckFailure(followerNode);
+                        }
                     }
                 }
             }
         }
 
-        public void updateNodesAndPing(ClusterState clusterState) {
+        private void updateNodesAndPing(ClusterState clusterState) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
+
             // remove any nodes we don't need, this will cause their FD to stop
             nodesFD.keySet().removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode));
-            faultyNodes.removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode));
+            if (faultyNodes.removeIf(monitoredNode -> !clusterState.nodes().nodeExists(monitoredNode))) {
+                leaderCheckResponder = new LeaderCheckResponder();
+            }
 
             // add any missing nodes
             for (DiscoveryNode node : clusterState.nodes()) {
@@ -1462,8 +1614,11 @@ public class Legislator extends AbstractComponent {
         }
 
         public void addFaultyNode(DiscoveryNode node) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             logger.trace("ActiveLeaderFailureDetector.addFaultyNode: adding {}", node);
-            faultyNodes.add(node);
+            if (faultyNodes.add(node)) {
+                leaderCheckResponder = new LeaderCheckResponder();
+            }
             nodesFD.remove(node);
             currentPublication.ifPresent(p -> p.onFaultyNode(node));
         }
@@ -1479,33 +1634,39 @@ public class Legislator extends AbstractComponent {
         private int failureCountSinceLastSuccess = 0;
 
         public void start() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert running == false;
             running = true;
             scheduleNextWakeUp();
         }
 
         private void scheduleNextWakeUp() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             futureExecutor.schedule(heartbeatDelay, "ActiveFollowerFailureDetector#handleWakeUp", this::handleWakeUp);
         }
 
         void stop() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             assert running;
             running = false;
         }
 
         private void handleWakeUp() {
-            logger.trace("ActiveFollowerFailureDetector.handleWakeUp: " +
-                    "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
-                mode, currentTimeSupplier.getAsLong(), running,
-                consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
+            synchronized (mutex) {
+                logger.trace("ActiveFollowerFailureDetector.handleWakeUp: " +
+                        "waking up as {} at [{}] with running={}, lastAcceptedVersion={}, term={}, lastAcceptedTerm={}",
+                    mode, currentTimeSupplier.getAsLong(), running,
+                    consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm(), consensusState.getLastAcceptedTerm());
 
-            if (running) {
-                assert mode == Mode.FOLLOWER;
-                new LeaderCheck(lastKnownLeader.get()).start();
+                if (running) {
+                    assert mode == Mode.FOLLOWER;
+                    new LeaderCheck(lastKnownLeader.get()).start();
+                }
             }
         }
 
         private void onCheckFailure(@Nullable Throwable cause) {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             if (running) {
                 failureCountSinceLastSuccess++;
                 if (cause instanceof MasterFaultDetection.NodeDoesNotExistOnMasterException) {
@@ -1522,6 +1683,7 @@ public class Legislator extends AbstractComponent {
         }
 
         private void onCheckSuccess() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
             if (running) {
                 failureCountSinceLastSuccess = 0;
                 scheduleNextWakeUp();
@@ -1538,6 +1700,7 @@ public class Legislator extends AbstractComponent {
             }
 
             void start() {
+                assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 logger.trace("LeaderCheck: sending leader check to [{}]", leader);
                 assert inFlight == false;
                 inFlight = true;
@@ -1552,6 +1715,13 @@ public class Legislator extends AbstractComponent {
 
                     @Override
                     public void handleResponse(LeaderCheckResponse leaderCheckResponse) {
+                        synchronized (mutex) {
+                            handleResponseUnderLock(leaderCheckResponse);
+                        }
+                    }
+
+                    private void handleResponseUnderLock(LeaderCheckResponse leaderCheckResponse) {
+                        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                         logger.trace("LeaderCheck.handleResponse: received {} from [{}]", leaderCheckResponse, leader);
                         inFlight = false;
                         onCheckSuccess();
@@ -1564,9 +1734,13 @@ public class Legislator extends AbstractComponent {
                             futureExecutor.schedule(publishTimeout, "LeaderCheck#lagDetection", () -> {
                                 long localVersion2 = getLastCommittedState().map(ClusterState::getVersion).orElse(-1L);
                                 if (leaderVersion > localVersion2 && running) {
-                                    logger.debug("LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
-                                        localVersion2, leaderVersion, publishTimeout);
-                                    laggingUntilCommittedVersionExceeds = Math.max(1, localVersion2);
+                                    synchronized (mutex) {
+                                        logger.debug(
+                                            "LeaderCheck.handleResponse: lag detected: local version {} < leader version {} after {}",
+                                            localVersion2, leaderVersion, publishTimeout);
+                                        laggingUntilCommittedVersionExceeds = Math.max(1, localVersion2);
+                                        heartbeatRequestResponder = new HeartbeatRequestResponder();
+                                    }
                                 }
                             });
                         }
@@ -1574,6 +1748,13 @@ public class Legislator extends AbstractComponent {
 
                     @Override
                     public void handleException(TransportException exp) {
+                        synchronized (mutex) {
+                            handleExceptionUnderLock(exp);
+                        }
+                    }
+
+                    private void handleExceptionUnderLock(TransportException exp) {
+                        assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                         if (exp.getRootCause() instanceof ConsensusMessageRejectedException) {
                             logger.debug("LeaderCheck.handleException: {}", exp.getRootCause().getMessage());
                         } else {
@@ -1586,17 +1767,127 @@ public class Legislator extends AbstractComponent {
 
                     @Override
                     public String executor() {
-                        return ThreadPool.Names.SAME;
+                        return Names.GENERIC;
                     }
                 });
             }
 
             private void onTimeout() {
-                if (inFlight) {
-                    logger.debug("LeaderCheck.onTimeout: no response received from [{}]", leader);
-                    inFlight = false;
-                    onCheckFailure(null);
+                synchronized (mutex) {
+                    if (inFlight) {
+                        logger.debug("LeaderCheck.onTimeout: no response received from [{}]", leader);
+                        inFlight = false;
+                        onCheckFailure(null);
+                    }
                 }
+            }
+        }
+    }
+
+    private class LeaderCheckResponder {
+        private final Mode mode;
+        private final DiscoveryNodes lastAcceptedNodes;
+        private final Set<DiscoveryNode> faultyNodes;
+
+        LeaderCheckResponder() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
+            mode = Legislator.this.mode;
+            lastAcceptedNodes = consensusState.getLastAcceptedState().getNodes();
+            faultyNodes = Collections.unmodifiableSet(
+                activeLeaderFailureDetector.map(alfd -> new HashSet<>(alfd.faultyNodes)).orElse(new HashSet<>()));
+        }
+
+        private LeaderCheckResponse handleLeaderCheckRequest(LeaderCheckRequest leaderCheckRequest) {
+
+            DiscoveryNode sender = leaderCheckRequest.getSourceNode();
+
+            if (mode != Mode.LEADER) {
+                logger.debug("handleLeaderCheckRequest: currently {}, rejecting message from [{}]", mode, sender);
+                throw new ConsensusMessageRejectedException("handleLeaderCheckRequest: currently {}, rejecting message from [{}]",
+                    mode, sender);
+            }
+
+            // TODO: use last published state instead of last accepted state? Where can we access that state?
+            if (lastAcceptedNodes.nodeExists(sender) == false) {
+                logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as not publication target", sender);
+                throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
+            }
+
+            if (faultyNodes.contains(sender)) {
+                logger.debug("handleLeaderCheckRequest: rejecting message from [{}] as it is faulty", sender);
+                throw new MasterFaultDetection.NodeDoesNotExistOnMasterException();
+            }
+
+            LeaderCheckResponse response = new LeaderCheckResponse(consensusState.getLastPublishedVersion());
+            logger.trace("handleLeaderCheckRequest: responding to [{}] with {}", sender, response);
+            return response;
+        }
+    }
+
+    private class HeartbeatRequestResponder {
+        private final Mode mode;
+        private final Optional<DiscoveryNode> lastKnownLeader;
+        private final long currentTerm;
+        private final long laggingUntilCommittedVersionExceeds;
+        private final long lastAcceptedVersion;
+
+        HeartbeatRequestResponder() {
+            assert Thread.holdsLock(mutex) : "Legislator mutex not held";
+            mode = Legislator.this.mode;
+            lastKnownLeader = Legislator.this.lastKnownLeader;
+            currentTerm = consensusState.getCurrentTerm();
+            laggingUntilCommittedVersionExceeds = Legislator.this.laggingUntilCommittedVersionExceeds;
+            lastAcceptedVersion = consensusState.getLastAcceptedVersion();
+        }
+
+        HeartbeatResponse handleHeartbeatRequest(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
+            logger.trace("handleHeartbeatRequest: handling [{}] from [{}])", heartbeatRequest, sourceNode);
+            assert sourceNode.equals(localNode) == false; // localNode is final & immutable so this is ok
+
+            if (currentTerm < heartbeatRequest.getTerm()
+                || mode != Mode.FOLLOWER
+                || Optional.of(sourceNode).equals(lastKnownLeader) == false) {
+                return handleHeartbeatRequestUpdatingState(sourceNode, heartbeatRequest);
+            }
+
+            if (heartbeatRequest.getTerm() < currentTerm) {
+                logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] as current term is {}",
+                    heartbeatRequest, sourceNode, currentTerm);
+                throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: required term <= {} but current term is {}",
+                    heartbeatRequest.getTerm(), currentTerm);
+            }
+
+            Optional<ClusterState> lastCommittedState = Legislator.this.lastCommittedState; // volatile read of lastCommittedState is ok
+
+            if (laggingUntilCommittedVersionExceeds > 0
+                && (lastCommittedState.isPresent() == false || lastCommittedState.get().version() <= laggingUntilCommittedVersionExceeds)) {
+                logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] due to lag at version [{}]",
+                    heartbeatRequest, sourceNode, laggingUntilCommittedVersionExceeds);
+                throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: lagging at version [{}]",
+                    laggingUntilCommittedVersionExceeds);
+            }
+
+            return new HeartbeatResponse(lastAcceptedVersion, currentTerm);
+        }
+
+        private HeartbeatResponse handleHeartbeatRequestUpdatingState(DiscoveryNode sourceNode, HeartbeatRequest heartbeatRequest) {
+            synchronized (mutex) {
+                ensureTermAtLeast(sourceNode, heartbeatRequest.getTerm()).ifPresent(join -> {
+                    logger.debug("handleHeartbeatRequest: sending join [{}] for term [{}] to {}",
+                        join, heartbeatRequest.getTerm(), sourceNode);
+                    sendJoin(sourceNode, join);
+                });
+
+                if (consensusState.getCurrentTerm() != heartbeatRequest.getTerm()) {
+                    logger.debug("handleHeartbeatRequest: rejecting [{}] from [{}] as current term is {}",
+                        heartbeatRequest, sourceNode, currentTerm);
+                    throw new ConsensusMessageRejectedException("HeartbeatRequest rejected: requested term is {} but current term is {}",
+                        heartbeatRequest.getTerm(), currentTerm);
+                }
+
+                becomeFollower("handleHeartbeatRequest", sourceNode);
+
+                return new HeartbeatResponse(consensusState.getLastAcceptedVersion(), consensusState.getCurrentTerm());
             }
         }
     }
