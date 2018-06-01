@@ -1301,6 +1301,11 @@ public class LegislatorTests extends ESTestCase {
                 public DiscoveryNode getLocalNode() {
                     return localNode;
                 }
+
+                @Override
+                public void connectToNode(DiscoveryNode node) {
+                    // ignore
+                }
             }
 
             private class TaskWithExecutionTime implements Runnable {

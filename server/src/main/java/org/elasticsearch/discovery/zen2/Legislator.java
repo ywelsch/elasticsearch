@@ -69,6 +69,7 @@ import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.threadpool.ThreadPool.Names;
+import org.elasticsearch.transport.ConnectTransportException;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponse.Empty;
@@ -1235,19 +1236,22 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 if (activeLeaderFailureDetector.get().faultyNodes.remove(seekJoins.getSourceNode())) {
                     leaderCheckResponder = new LeaderCheckResponder();
                 }
-                masterService.submitStateUpdateTask("zen-disco-node-join",
-                    seekJoins.getSourceNode(), ClusterStateTaskConfig.build(Priority.URGENT),
-                    joinTaskExecutor, new NodeJoinController.JoinTaskListener(new MembershipAction.JoinCallback() {
-                        @Override
-                        public void onSuccess() {
-                            logger.trace("handleSeekJoins: initiated join of {} successful", seekJoins.getSourceNode());
-                        }
+                futureExecutor.schedule(TimeValue.ZERO, "join node", () -> {
+                    transport.connectToNode(seekJoins.getSourceNode());
+                    masterService.submitStateUpdateTask("zen-disco-node-join",
+                        seekJoins.getSourceNode(), ClusterStateTaskConfig.build(Priority.URGENT),
+                        joinTaskExecutor, new NodeJoinController.JoinTaskListener(new MembershipAction.JoinCallback() {
+                            @Override
+                            public void onSuccess() {
+                                logger.trace("handleSeekJoins: initiated join of {} successful", seekJoins.getSourceNode());
+                            }
 
-                        @Override
-                        public void onFailure(Exception e) {
-                            logger.trace("handleSeekJoins: initiated join of {} failed: {}", seekJoins.getSourceNode(), e.getMessage());
-                        }
-                    }, logger));
+                            @Override
+                            public void onFailure(Exception e) {
+                                logger.trace("handleSeekJoins: initiated join of {} failed: {}", seekJoins.getSourceNode(), e.getMessage());
+                            }
+                        }, logger));
+                });
             }
             logger.debug("handleSeekJoins: not offering join: lastAcceptedVersion={}, term={}, mode={}, lastKnownLeader={}",
                 consensusState.get().getLastAcceptedVersion(), consensusState.get().getCurrentTerm(), mode, lastKnownLeader);
@@ -1444,6 +1448,8 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                                     TransportResponseHandler<LeaderCheckResponse> responseHandler);
 
         DiscoveryNode getLocalNode();
+
+        void connectToNode(DiscoveryNode node);
     }
 
     public interface FutureExecutor {
@@ -1552,11 +1558,14 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 }
             }
 
-            private void onCheckFailure(DiscoveryNode node) {
+            private void onCheckFailure(DiscoveryNode node, TransportException exp) {
                 assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (running()) {
                     failureCountSinceLastSuccess++;
-                    if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
+                    if (exp instanceof ConnectTransportException || (exp != null && exp.getCause() instanceof ConnectTransportException)) {
+                        addFaultyNode(node);
+                        removeNode(node, "node_disconnect", "ActiveLeaderFailureDetector.onCheckFailure");
+                    } else if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
                         logger.debug("ActiveLeaderFailureDetector.onCheckFailure: {} consecutive failures to check [{}]",
                             failureCountSinceLastSuccess, node);
                         addFaultyNode(node);
@@ -1616,7 +1625,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                                         "FollowerCheck.handleException: received exception from [{}]", followerNode), exp);
                                 }
                                 inFlight = false;
-                                onCheckFailure(followerNode);
+                                onCheckFailure(followerNode, exp);
                             }
                         }
 
@@ -1632,7 +1641,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                         if (inFlight) {
                             logger.debug("FollowerCheck.onTimeout: no response received from [{}]", followerNode);
                             inFlight = false;
-                            onCheckFailure(followerNode);
+                            onCheckFailure(followerNode, null);
                         }
                     }
                 }

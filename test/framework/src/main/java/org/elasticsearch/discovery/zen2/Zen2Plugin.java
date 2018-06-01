@@ -47,6 +47,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -94,6 +96,9 @@ public class Zen2Plugin extends Plugin implements DiscoveryPlugin {
                     return new ConsensusState.BasePersistedState(0L, initialState);
                 };
 
+                AtomicReference<List<DiscoveryNode>> lastConnectedNodes = new AtomicReference<>(Collections.emptyList());
+                AtomicBoolean connectingInProgress = new AtomicBoolean();
+
                 final Legislator legislator = new Legislator(
                     settings,
                     persistedStateSupplier,
@@ -103,21 +108,31 @@ public class Zen2Plugin extends Plugin implements DiscoveryPlugin {
                     System::nanoTime,
                     futureExecutor,
                     () -> {
-                        List<DiscoveryNode> discoveryNodes = hostsProvider.buildDynamicNodes();
-                        discoveryNodes.forEach(node -> {
-                            try {
-                                transportService.connectToNode(node);
-                            } catch (Exception e) {
-                                // ignore
-                            }
-                        });
-                        return discoveryNodes;
+                        if (connectingInProgress.compareAndSet(false, true)) {
+                            threadPool.generic().execute(() -> {
+                                List<DiscoveryNode> connectedNodes = hostsProvider.buildDynamicNodes().stream()
+                                    .filter(node -> {
+                                        try {
+                                            transportService.connectToNode(node);
+                                            return true;
+                                        } catch (Exception e) {
+                                            // ignore
+                                            return false;
+                                        }
+                                    }).collect(Collectors.toList());
+                                lastConnectedNodes.set(connectedNodes);
+                                connectingInProgress.set(false);
+                            });
+
+                        }
+
+                        return lastConnectedNodes.get();
                     }
                     , // TODO: what should this be?
                     clusterApplier,
                     new Random()
                     );
-                LegislatorTransport.registerTransportActions(transportService, legislator);
+                LegislatorTransport.registerTransport(transportService, legislator);
                 return legislator;
             });
     }

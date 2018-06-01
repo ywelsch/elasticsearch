@@ -26,6 +26,7 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
+import org.elasticsearch.transport.TransportConnectionListener;
 import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseHandler;
@@ -51,7 +52,7 @@ public class LegislatorTransport implements Legislator.Transport {
         this.transportService = transportService;
     }
 
-    public static void registerTransportActions(TransportService transportService, Legislator legislator) {
+    public static void registerTransport(TransportService transportService, Legislator legislator) {
 
         transportService.registerRequestHandler(PUBLISH_ACTION_NAME, ThreadPool.Names.GENERIC, false, false,
             in -> new Messages.PublishRequest(in, transportService.getLocalNode()),
@@ -135,6 +136,13 @@ public class LegislatorTransport implements Legislator.Transport {
                 legislator.handleAbdication(request);
                 channel.sendResponse(TransportResponse.Empty.INSTANCE);
             });
+
+        transportService.addConnectionListener(new TransportConnectionListener() {
+            @Override
+            public void onNodeDisconnected(DiscoveryNode node) {
+                legislator.handleDisconnectedNode(node);
+            }
+        });
     }
 
     @Override
@@ -198,6 +206,11 @@ public class LegislatorTransport implements Legislator.Transport {
     @Override
     public DiscoveryNode getLocalNode() {
         return transportService.getLocalNode();
+    }
+
+    @Override
+    public void connectToNode(DiscoveryNode node) {
+        transportService.connectToNode(node);
     }
 
 }

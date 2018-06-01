@@ -24,6 +24,7 @@ import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.ExecutionException;
@@ -48,7 +49,7 @@ public class Zen2IT extends ESIntegTestCase {
         return false;
     }
 
-    public void testCluster() throws ExecutionException, InterruptedException {
+    public void testCluster() throws Exception {
         String[] indexNames = { "test1", "test2" };
         for (String indexName : indexNames) {
             assertAcked(client()
@@ -65,6 +66,14 @@ public class Zen2IT extends ESIntegTestCase {
             assertHitCount(searchResponse, 1L);
             assertSearchHits(searchResponse, indexName + "1");
         }
+
+        internalCluster().startNode();
+
+        internalCluster().stopCurrentMasterNode();
+
+        ensureClusterSizeConsistency();
+
+        createIndex("test3");
 
         logger.info("yay");
     }
