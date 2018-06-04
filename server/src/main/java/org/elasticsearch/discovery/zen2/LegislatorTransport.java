@@ -22,12 +22,10 @@ package org.elasticsearch.discovery.zen2;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.discovery.zen.MembershipAction;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.EmptyTransportResponseHandler;
 import org.elasticsearch.transport.TransportConnectionListener;
-import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponseHandler;
 import org.elasticsearch.transport.TransportService;
@@ -154,9 +152,7 @@ public class LegislatorTransport implements Legislator.Transport {
     @Override
     public void sendHeartbeatRequest(DiscoveryNode destination, Messages.HeartbeatRequest heartbeatRequest,
                                      TransportResponseHandler<Messages.HeartbeatResponse> responseHandler) {
-        final TransportRequestOptions options = TransportRequestOptions.builder().withType(TransportRequestOptions.Type.PING)
-            .withTimeout(TimeValue.timeValueSeconds(30)).build();
-        transportService.sendRequest(destination, HEARTBEAT_ACTION_NAME, heartbeatRequest, options, responseHandler);
+        transportService.sendRequest(destination, HEARTBEAT_ACTION_NAME, heartbeatRequest, responseHandler);
     }
 
     @Override
@@ -198,9 +194,7 @@ public class LegislatorTransport implements Legislator.Transport {
     @Override
     public void sendLeaderCheckRequest(DiscoveryNode destination, Messages.LeaderCheckRequest leaderCheckRequest,
                                        TransportResponseHandler<Messages.LeaderCheckResponse> responseHandler) {
-        final TransportRequestOptions options = TransportRequestOptions.builder().withType(TransportRequestOptions.Type.PING)
-            .withTimeout(TimeValue.timeValueSeconds(30)).build();
-        transportService.sendRequest(destination, LEADERCHECK_ACTION_NAME, leaderCheckRequest, options, responseHandler);
+        transportService.sendRequest(destination, LEADERCHECK_ACTION_NAME, leaderCheckRequest, responseHandler);
     }
 
     @Override

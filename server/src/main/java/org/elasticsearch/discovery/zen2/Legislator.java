@@ -276,7 +276,6 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
 
     @Override
     public void startInitialJoin() {
-        // TODO: do we need to do something here?
         synchronized (mutex) {
             becomeCandidate("startInitialJoin");
         }
