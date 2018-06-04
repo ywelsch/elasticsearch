@@ -69,7 +69,6 @@ import org.elasticsearch.discovery.zen2.Messages.SeekJoins;
 import org.elasticsearch.discovery.zen2.Messages.StartJoinRequest;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.threadpool.ThreadPool.Names;
-import org.elasticsearch.transport.ConnectTransportException;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportResponse.Empty;
@@ -1562,10 +1561,7 @@ public class Legislator extends AbstractLifecycleComponent implements Discovery 
                 assert Thread.holdsLock(mutex) : "Legislator mutex not held";
                 if (running()) {
                     failureCountSinceLastSuccess++;
-                    if (exp instanceof ConnectTransportException || (exp != null && exp.getCause() instanceof ConnectTransportException)) {
-                        addFaultyNode(node);
-                        removeNode(node, "node_disconnect", "ActiveLeaderFailureDetector.onCheckFailure");
-                    } else if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
+                    if (failureCountSinceLastSuccess >= leaderCheckRetryCount) {
                         logger.debug("ActiveLeaderFailureDetector.onCheckFailure: {} consecutive failures to check [{}]",
                             failureCountSinceLastSuccess, node);
                         addFaultyNode(node);
