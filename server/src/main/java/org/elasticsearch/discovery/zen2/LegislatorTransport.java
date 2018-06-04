@@ -76,7 +76,7 @@ public class LegislatorTransport implements Legislator.Transport {
                         channel.sendResponse(e);
                     } catch (Exception inner) {
                         inner.addSuppressed(e);
-                        Loggers.getLogger(Legislator.class).warn("failed to send back failure on join request", inner);
+                        Loggers.getLogger(Legislator.class).warn("failed to send back failure on apply commit request", inner);
                     }
                 }
             }));
