@@ -92,6 +92,7 @@ import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
+import static org.elasticsearch.action.support.ContextPreservingActionListener.wrapPreservingContext;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_AUTO_EXPAND_REPLICAS;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_CREATION_DATE;
 import static org.elasticsearch.cluster.metadata.IndexMetaData.SETTING_INDEX_UUID;
@@ -114,6 +115,7 @@ public class MetaDataCreateIndexService extends AbstractComponent {
     private final AliasValidator aliasValidator;
     private final Environment env;
     private final IndexScopedSettings indexScopedSettings;
+    private final ThreadPool threadPool;
     private final ActiveShardsObserver activeShardsObserver;
     private final NamedXContentRegistry xContentRegistry;
 
@@ -130,6 +132,7 @@ public class MetaDataCreateIndexService extends AbstractComponent {
         this.aliasValidator = aliasValidator;
         this.env = env;
         this.indexScopedSettings = indexScopedSettings;
+        this.threadPool = threadPool;
         this.activeShardsObserver = new ActiveShardsObserver(settings, clusterService, threadPool);
         this.xContentRegistry = xContentRegistry;
     }
@@ -229,7 +232,7 @@ public class MetaDataCreateIndexService extends AbstractComponent {
                         logger,
                         allocationService,
                         request,
-                        listener,
+                        wrapPreservingContext(listener, threadPool.getThreadContext()),
                         indicesService,
                         aliasValidator,
                         xContentRegistry,
