@@ -1070,19 +1070,17 @@ public final class InternalTestCluster extends TestCluster {
         final Client client = client(viaNode);
         try {
             if (awaitBusy(() -> {
-                DiscoveryNodes discoveryNodes = client.admin().cluster().prepareState().setLocal(true).get().getState().nodes();
-                if (discoveryNodes.getMasterNodeId() == null) {
-                    return false;
-                }
-                if (discoveryNodes.getSize() != expectedNodes.size()) {
+                final ClusterState masterClusterState = client.admin().cluster().prepareState().get().getState();
+                if (masterClusterState.nodes().getSize() != expectedNodes.size()) {
                     return false;
                 }
                 for (DiscoveryNode expectedNode : expectedNodes) {
-                    if (discoveryNodes.nodeExists(expectedNode) == false) {
+                    if (masterClusterState.nodes().nodeExists(expectedNode) == false) {
                         return false;
                     }
                 }
-                return true;
+                final ClusterState nodeLocalClusterState = client.admin().cluster().prepareState().setLocal(true).get().getState();
+                return nodeLocalClusterState.version() >= masterClusterState.version();
             }, timeout.millis(), TimeUnit.MILLISECONDS) == false) {
                 throw new IllegalStateException("cluster failed to form with expected nodes " + expectedNodes + " and actual nodes " +
                     client.admin().cluster().prepareState().get().getState().nodes());
