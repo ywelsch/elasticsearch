@@ -1052,12 +1052,16 @@ public final class InternalTestCluster extends TestCluster {
 
     /** ensure a cluster is formed with all published nodes. */
     public synchronized void validateClusterFormed() {
-        String name = randomFrom(random, getNodeNames());
-        validateClusterFormed(name);
+        validateClusterFormed(randomFrom(random, getNodeNames()));
     }
 
     /** ensure a cluster is formed with all published nodes, but do so by using the client of the specified node */
     public synchronized void validateClusterFormed(String viaNode) {
+        validateClusterFormed(viaNode, TimeValue.timeValueSeconds(30));
+    }
+
+    /** ensure a cluster is formed with all published nodes, but do so by using the client of the specified node and the given timeout */
+    public synchronized void validateClusterFormed(String viaNode, TimeValue timeout) {
         Set<DiscoveryNode> expectedNodes = new HashSet<>();
         for (NodeAndClient nodeAndClient : nodes.values()) {
             expectedNodes.add(getInstanceFromNode(ClusterService.class, nodeAndClient.node()).localNode());
@@ -1066,7 +1070,10 @@ public final class InternalTestCluster extends TestCluster {
         final Client client = client(viaNode);
         try {
             if (awaitBusy(() -> {
-                DiscoveryNodes discoveryNodes = client.admin().cluster().prepareState().get().getState().nodes();
+                DiscoveryNodes discoveryNodes = client.admin().cluster().prepareState().setLocal(true).get().getState().nodes();
+                if (discoveryNodes.getMasterNodeId() == null) {
+                    return false;
+                }
                 if (discoveryNodes.getSize() != expectedNodes.size()) {
                     return false;
                 }
@@ -1076,7 +1083,7 @@ public final class InternalTestCluster extends TestCluster {
                     }
                 }
                 return true;
-            }, 30, TimeUnit.SECONDS) == false) {
+            }, timeout.millis(), TimeUnit.MILLISECONDS) == false) {
                 throw new IllegalStateException("cluster failed to form with expected nodes " + expectedNodes + " and actual nodes " +
                     client.admin().cluster().prepareState().get().getState().nodes());
             }

@@ -294,7 +294,7 @@ public class MasterDisruptionIT extends AbstractDisruptionTestCase {
         // restore GC
         masterNodeDisruption.stopDisrupting();
         final TimeValue waitTime = new TimeValue(DISRUPTION_HEALING_OVERHEAD.millis() + masterNodeDisruption.expectedTimeToHeal().millis());
-        ensureStableCluster(3, waitTime, false, oldNonMasterNodes.get(0));
+        ensureStableCluster(3, waitTime, oldNonMasterNodes.get(0));
 
         // make sure all nodes agree on master
         String newMaster = internalCluster().getMasterName();
@@ -338,8 +338,8 @@ public class MasterDisruptionIT extends AbstractDisruptionTestCase {
         networkDisruption.stopDisrupting();
 
         for (String node : nodes) {
-            ensureStableCluster(3, new TimeValue(DISRUPTION_HEALING_OVERHEAD.millis() + networkDisruption.expectedTimeToHeal().millis()),
-                    true, node);
+            internalCluster().validateClusterFormed(node,
+                new TimeValue(DISRUPTION_HEALING_OVERHEAD.millis() + networkDisruption.expectedTimeToHeal().millis()));
         }
 
         logger.info("issue a reroute");
