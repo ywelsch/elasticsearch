@@ -166,13 +166,6 @@ public class SnapshotShardsService extends AbstractLifecycleComponent implements
                 || (previousSnapshots != null && previousSnapshots.equals(currentSnapshots) == false)) {
                 processIndexShardSnapshots(event);
             }
-
-            String previousMasterNodeId = event.previousState().nodes().getMasterNodeId();
-            String currentMasterNodeId = event.state().nodes().getMasterNodeId();
-            if (currentMasterNodeId != null && currentMasterNodeId.equals(previousMasterNodeId) == false) {
-                syncShardStatsOnNewMaster(event);
-            }
-
         } catch (Exception e) {
             logger.warn("Failed to update snapshot state ", e);
         }
@@ -363,6 +356,47 @@ public class SnapshotShardsService extends AbstractLifecycleComponent implements
         }
     }
 
+    private void cleanRemovedEntries(ClusterState clusterState) {
+        SnapshotsInProgress snapshotsInProgress = clusterState.custom(SnapshotsInProgress.TYPE);
+
+        Map<Snapshot, SnapshotShards> survivors = new HashMap<>();
+
+        // First, remove snapshots that are no longer there
+        for (Map.Entry<Snapshot, SnapshotShards> entry : shardSnapshots.entrySet()) {
+            final Snapshot snapshot = entry.getKey();
+            if (snapshotsInProgress != null && snapshotsInProgress.snapshot(snapshot) != null) {
+
+                SnapshotsInProgress.Entry clusterStateSnapshotEntry = snapshotsInProgress.snapshot(snapshot);
+                Map<ShardId, IndexShardSnapshotStatus> localShards = entry.getValue().shards;
+                for (Map.Entry<ShardId, IndexShardSnapshotStatus> localStatus : localShards.entrySet()) {
+                    ShardSnapshotStatus clusterStateStatus = clusterStateSnapshotEntry.shards().get(localStatus.getKey());
+                    if (clusterStateStatus == null) {
+                        localStatus.getValue().abortIfNotCompleted("snapshot has been removed in cluster state, aborting");
+                        // also remove?
+                    } else if (clusterStateStatus.state().completed()) {
+                        localStatus.getValue().abortIfNotCompleted("has been completed by master");
+                        // also remove?
+                    } else {
+                        // TODO
+                    }
+                }
+
+                survivors.put(entry.getKey(), entry.getValue());
+            } else {
+                // abort any running snapshots of shards for the removed entry;
+                // this could happen if for some reason the cluster state update for aborting
+                // running shards is missed, then the snapshot is removed is a subsequent cluster
+                // state update, which is being processed here
+                for (IndexShardSnapshotStatus snapshotStatus : entry.getValue().shards.values()) {
+                    snapshotStatus.abortIfNotCompleted("snapshot has been removed in cluster state, aborting");
+                    // also remove?
+                }
+            }
+        }
+
+        shardSnapshots = survivors;
+    }
+
     /**
      * Creates shard snapshot
      *
@@ -399,47 +433,6 @@ public class SnapshotShardsService extends AbstractLifecycleComponent implements
             throw e;
         } catch (Exception e) {
             throw new IndexShardSnapshotFailedException(shardId, "Failed to snapshot", e);
-        }
-    }
-
-    /**
-     * Checks if any shards were processed that the new master doesn't know about
-     */
-    private void syncShardStatsOnNewMaster(ClusterChangedEvent event) {
-        SnapshotsInProgress snapshotsInProgress = event.state().custom(SnapshotsInProgress.TYPE);
-        if (snapshotsInProgress == null) {
-            return;
-        }
-
-        final String localNodeId = event.state().nodes().getLocalNodeId();
-        for (SnapshotsInProgress.Entry snapshot : snapshotsInProgress.entries()) {
-            if (snapshot.state() == State.STARTED || snapshot.state() == State.ABORTED) {
-                Map<ShardId, IndexShardSnapshotStatus> localShards = currentSnapshotShards(snapshot.snapshot());
-                if (localShards != null) {
-                    ImmutableOpenMap<ShardId, ShardSnapshotStatus> masterShards = snapshot.shards();
-                    for(Map.Entry<ShardId, IndexShardSnapshotStatus> localShard : localShards.entrySet()) {
-                        ShardId shardId = localShard.getKey();
-                        ShardSnapshotStatus masterShard = masterShards.get(shardId);
-                        if (masterShard != null && masterShard.state().completed() == false) {
-                            final IndexShardSnapshotStatus.Copy indexShardSnapshotStatus = localShard.getValue().asCopy();
-                            final Stage stage = indexShardSnapshotStatus.getStage();
-                            // Master knows about the shard and thinks it has not completed
-                            if (stage == Stage.DONE) {
-                                // but we think the shard is done - we need to make new master know that the shard is done
-                                logger.debug("[{}] new master thinks the shard [{}] is not completed but the shard is done locally, " +
-                                             "updating status on the master", snapshot.snapshot(), shardId);
-                                notifySuccessfulSnapshotShard(snapshot.snapshot(), shardId, localNodeId);
-
-                            } else if (stage == Stage.FAILURE) {
-                                // but we think the shard failed - we need to make new master know that the shard failed
-                                logger.debug("[{}] new master thinks the shard [{}] is not completed but the shard failed locally, " +
-                                             "updating status on master", snapshot.snapshot(), shardId);
-                                notifyFailedSnapshotShard(snapshot.snapshot(), shardId, localNodeId, indexShardSnapshotStatus.getFailure());
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
