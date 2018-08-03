@@ -63,8 +63,8 @@ public class SnapshotInProgressAllocationDecider extends AllocationDecider {
     }
 
     private Decision canMove(ShardRouting shardRouting, RoutingAllocation allocation) {
-        if (shardRouting.primary()) {
-            // Only primary shards are snapshotted
+        if (shardRouting.primary() && shardRouting.active()) {
+            // Only active primary shards are snapshotted
 
             SnapshotsInProgress snapshotsInProgress = allocation.custom(SnapshotsInProgress.TYPE);
             if (snapshotsInProgress == null || snapshotsInProgress.entries().isEmpty()) {

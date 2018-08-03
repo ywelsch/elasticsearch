@@ -70,7 +70,8 @@ public class SnapshotsInProgressSerializationTests extends AbstractDiffableWireS
                 shardState.failed() ? randomAlphaOfLength(10) : null));
         }
         ImmutableOpenMap<ShardId, SnapshotsInProgress.ShardSnapshotStatus> shards = builder.build();
-        return new Entry(snapshot, includeGlobalState, partial, state, indices, startTime, repositoryStateId, shards);
+        return new Entry(snapshot, includeGlobalState, partial, state, indices, startTime, repositoryStateId, shards,
+            randomBoolean() ? null : randomAlphaOfLength(10));
     }
 
     @Override
@@ -98,7 +99,7 @@ public class SnapshotsInProgressSerializationTests extends AbstractDiffableWireS
             // modify some elements
             for (int i = 0; i < entries.size(); i++) {
                 if (randomBoolean()) {
-                    entries.set(i, new Entry(entries.get(i), randomFrom(State.values()), entries.get(i).shards()));
+                    entries.set(i, new Entry(entries.get(i), randomFrom(State.values()), entries.get(i).shards(), null));
                 }
             }
         }

@@ -2586,7 +2586,8 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
                                                    Collections.singletonList(indexId),
                                                    System.currentTimeMillis(),
                                                    repositoryData.getGenId(),
-                                                   shards.build()));
+                                                   shards.build(),
+                                                   null));
                 return ClusterState.builder(currentState).putCustom(SnapshotsInProgress.TYPE, new SnapshotsInProgress(Collections.unmodifiableList(entries))).build();
             }
 

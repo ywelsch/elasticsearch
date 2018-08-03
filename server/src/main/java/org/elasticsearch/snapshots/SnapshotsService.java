@@ -21,6 +21,7 @@ package org.elasticsearch.snapshots;
 
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
+import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.util.CollectionUtil;
 import org.elasticsearch.ExceptionsHelper;
@@ -29,6 +30,8 @@ import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateApplier;
+import org.elasticsearch.cluster.ClusterStateTaskExecutor;
+import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.RestoreInProgress;
 import org.elasticsearch.cluster.SnapshotDeletionsInProgress;
@@ -40,11 +43,12 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.cluster.metadata.RepositoriesMetaData;
 import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.RoutingChangesObserver;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.ShardRouting;
+import org.elasticsearch.cluster.routing.UnassignedInfo;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Priority;
@@ -113,6 +117,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
     private final CopyOnWriteArrayList<SnapshotCompletionListener> snapshotCompletionListeners = new CopyOnWriteArrayList<>();
 
+    private final CleanSnapshotStateTaskExecutor cleanSnapshotStateTaskExecutor;
+
     @Inject
     public SnapshotsService(Settings settings, ClusterService clusterService, IndexNameExpressionResolver indexNameExpressionResolver, RepositoriesService repositoriesService, ThreadPool threadPool) {
         super(settings);
@@ -120,6 +126,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         this.indexNameExpressionResolver = indexNameExpressionResolver;
         this.repositoriesService = repositoriesService;
         this.threadPool = threadPool;
+        this.cleanSnapshotStateTaskExecutor = new CleanSnapshotStateTaskExecutor(logger);
 
         if (DiscoveryNode.isMasterNode(settings)) {
             // addLowPriorityApplier to make sure that Repository will be created before snapshot
@@ -259,6 +266,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                                                                 snapshotIndices,
                                                                 System.currentTimeMillis(),
                                                                 repositoryData.getGenId(),
+                                                                null,
                                                                 null);
                     snapshots = new SnapshotsInProgress(newSnapshot);
                 } else {
@@ -364,12 +372,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
             snapshotCreated = true;
 
             logger.info("snapshot [{}] started", snapshot.snapshot());
-            if (snapshot.indices().isEmpty()) {
-                // No indices in this snapshot - we are done
-                userCreateSnapshotListener.onResponse();
-                endSnapshot(snapshot);
-                return;
-            }
+
             clusterService.submitStateUpdateTask("update_snapshot [" + snapshot.snapshot() + "]", new ClusterStateUpdateTask() {
 
                 SnapshotsInProgress.Entry endSnapshot;
@@ -387,14 +390,21 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
                         if (entry.state() != State.ABORTED) {
                             // Replace the snapshot that was just intialized
-                            ImmutableOpenMap<ShardId, SnapshotsInProgress.ShardSnapshotStatus> shards = shards(currentState, entry.indices());
+                            ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards = shards(currentState, entry.indices());
                             if (!partial) {
                                 Tuple<Set<String>, Set<String>> indicesWithMissingShards = indicesWithMissingShards(shards, currentState.metaData());
                                 Set<String> missing = indicesWithMissingShards.v1();
                                 Set<String> closed = indicesWithMissingShards.v2();
                                 if (missing.isEmpty() == false || closed.isEmpty() == false) {
-                                    endSnapshot = new SnapshotsInProgress.Entry(entry, State.FAILED, shards);
-                                    entries.add(endSnapshot);
+                                    ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> failedShards = ImmutableOpenMap.builder();
+                                    for (ObjectObjectCursor<ShardId, ShardSnapshotStatus> e : shards) {
+                                        if (e.value.state().completed()) {
+                                            failedShards.put(e.key, e.value);
+                                        } else {
+                                            String reason = e.value.reason() == null ? "snapshot failed" : e.value.reason();
+                                            failedShards.put(e.key, new ShardSnapshotStatus(e.value.nodeId(), State.FAILED, reason));
+                                        }
+                                    }
 
                                     final StringBuilder failureMessage = new StringBuilder();
                                     if (missing.isEmpty() == false) {
@@ -409,14 +419,19 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                                         failureMessage.append(closed);
                                     }
                                     failure = failureMessage.toString();
+
+                                    endSnapshot = new SnapshotsInProgress.Entry(entry, State.FAILED, failedShards.build(), failure);
+                                    entries.add(endSnapshot);
+
                                     continue;
                                 }
                             }
-                            SnapshotsInProgress.Entry updatedSnapshot = new SnapshotsInProgress.Entry(entry, State.STARTED, shards);
-                            entries.add(updatedSnapshot);
+                            SnapshotsInProgress.Entry updatedSnapshot = new SnapshotsInProgress.Entry(entry, State.STARTED, shards, null);
                             if (completed(shards.values())) {
+                                updatedSnapshot = new SnapshotsInProgress.Entry(entry, State.SUCCESS, shards, null);
                                 endSnapshot = updatedSnapshot;
                             }
+                            entries.add(updatedSnapshot);
                         } else {
                             assert entry.state() == State.ABORTED : "expecting snapshot to be aborted during initialization";
                             failure = "snapshot was aborted during initialization";
@@ -645,14 +660,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
     public void applyClusterState(ClusterChangedEvent event) {
         try {
             if (event.localNodeMaster()) {
-                // We don't remove old master when master flips anymore. So, we need to check for change in master
-                if (event.nodesRemoved() || event.previousState().nodes().isLocalNodeElectedMaster() == false) {
-                    processSnapshotsOnRemovedNodes(event);
-                }
-                if (event.routingTableChanged()) {
-                    processStartedShards(event);
-                }
-                removeFinishedSnapshotFromClusterState(event);
+                processSnapshotsOnMasterFailover(event);
+                endFinishedSnapshotState(event);
                 finalizeSnapshotDeletionFromPreviousMaster(event);
             }
         } catch (Exception e) {
@@ -682,39 +691,199 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         }
     }
 
-    /**
-     * Removes a finished snapshot from the cluster state.  This can happen if the previous
-     * master node processed a cluster state update that marked the snapshot as finished,
-     * but the previous master node died before removing the snapshot in progress from the
-     * cluster state.  It is then the responsibility of the new master node to end the
-     * snapshot and remove it from the cluster state.
-     */
-    private void removeFinishedSnapshotFromClusterState(ClusterChangedEvent event) {
-        if (event.localNodeMaster() && !event.previousState().nodes().isLocalNodeElectedMaster()) {
-            SnapshotsInProgress snapshotsInProgress = event.state().custom(SnapshotsInProgress.TYPE);
-            if (snapshotsInProgress != null && !snapshotsInProgress.entries().isEmpty()) {
-                for (SnapshotsInProgress.Entry entry : snapshotsInProgress.entries()) {
-                    if (entry.state().completed()) {
-                        endSnapshot(entry);
-                    }
-                }
-            }
+    public static class SnapshotsInProgressUpdater implements RoutingChangesObserver {
+        private final Set<ShardId> shardChanges = new HashSet<>();
+
+        private void onChanged(ShardId shardId) {
+            shardChanges.add(shardId);
+        }
+
+        public SnapshotsInProgress applyChanges(SnapshotsInProgress oldSnapshot, RoutingTable newRoutingTable) {
+            return adjustFromRoutingTable(shardChanges, oldSnapshot, newRoutingTable);
+        }
+
+        @Override
+        public void shardInitialized(ShardRouting unassignedShard, ShardRouting initializedShard) {
+            onChanged(unassignedShard.shardId());
+        }
+
+        @Override
+        public void shardStarted(ShardRouting initializingShard, ShardRouting startedShard) {
+            onChanged(initializingShard.shardId());
+        }
+
+        @Override
+        public void relocationStarted(ShardRouting startedShard, ShardRouting targetRelocatingShard) {
+            onChanged(startedShard.shardId());
+        }
+
+        @Override
+        public void unassignedInfoUpdated(ShardRouting unassignedShard, UnassignedInfo newUnassignedInfo) {
+            onChanged(unassignedShard.shardId());
+        }
+
+        @Override
+        public void shardFailed(ShardRouting failedShard, UnassignedInfo unassignedInfo) {
+            onChanged(failedShard.shardId());
+        }
+
+        @Override
+        public void relocationCompleted(ShardRouting removedRelocationSource) {
+            onChanged(removedRelocationSource.shardId());
+        }
+
+        @Override
+        public void relocationSourceRemoved(ShardRouting removedReplicaRelocationSource) {
+            onChanged(removedReplicaRelocationSource.shardId());
+        }
+
+        @Override
+        public void startedPrimaryReinitialized(ShardRouting startedPrimaryShard, ShardRouting initializedShard) {
+            onChanged(startedPrimaryShard.shardId());
+        }
+
+        @Override
+        public void replicaPromoted(ShardRouting replicaShard) {
+            onChanged(replicaShard.shardId());
+        }
+
+        @Override
+        public void initializedReplicaReinitialized(ShardRouting oldReplica, ShardRouting reinitializedReplica) {
+            onChanged(oldReplica.shardId());
         }
     }
 
-    /**
-     * Cleans up shard snapshots that were running on removed nodes
-     *
-     * @param event cluster changed event
-     */
-    private void processSnapshotsOnRemovedNodes(ClusterChangedEvent event) {
-        if (removedNodesCleanupNeeded(event)) {
+    static ShardSnapshotStatus updateShardSnapshotStatus(ShardSnapshotStatus currentStatus, @Nullable ShardRouting newPrimaryRouting) {
+        assert currentStatus != null;
+        if (currentStatus.state().completed()) {
+            return currentStatus;
+        }
+        assert currentStatus.state() == State.WAITING || currentStatus.state() == State.INIT || currentStatus.state() == State.ABORTED :
+            currentStatus.state();
+        if (newPrimaryRouting == null) {
+            return new ShardSnapshotStatus(null, State.MISSING, "missing shard");
+        } else if (newPrimaryRouting.active() == false) {
+            if (newPrimaryRouting.initializing() && currentStatus.state() == State.WAITING) {
+                return currentStatus;
+            } else {
+                assert newPrimaryRouting.unassignedInfo() != null;
+                return new ShardSnapshotStatus(newPrimaryRouting.currentNodeId(), State.FAILED,
+                    newPrimaryRouting.unassignedInfo().getReason().toString());
+            }
+        }
+        assert newPrimaryRouting.active();
+        if (newPrimaryRouting.started()) {
+            if (currentStatus.state() == State.WAITING) {
+                // move to INIT
+                return new ShardSnapshotStatus(newPrimaryRouting.currentNodeId());
+            } else if (currentStatus.state() == State.INIT) {
+                assert currentStatus.nodeId() != null;
+                if (currentStatus.nodeId().equals(newPrimaryRouting.currentNodeId())) {
+                    return currentStatus;
+                } else {
+                    // TODO: failover to this new node
+                    return new ShardSnapshotStatus(currentStatus.nodeId(), State.FAILED, "shard failed");
+                }
+            } else if (currentStatus.state() == State.ABORTED) {
+                if (currentStatus.nodeId().equals(newPrimaryRouting.currentNodeId())) {
+                    return currentStatus;
+                } else {
+                    return new ShardSnapshotStatus(currentStatus.nodeId(), State.FAILED, "shard failed");
+                }
+            } else {
+                assert false;
+                return currentStatus;
+            }
+        }
+        assert newPrimaryRouting.relocating();
+        if (currentStatus.state() == State.WAITING) {
+            return currentStatus;
+        } else if (currentStatus.state() == State.INIT) {
+            assert false : "SnapshotInProgressAllocationDecider should not let this happen";
+            return new ShardSnapshotStatus(currentStatus.nodeId(), State.FAILED, "shard failed");
+        } else if (currentStatus.state() == State.ABORTED) {
+            assert false : "SnapshotInProgressAllocationDecider should not let this happen";
+            return new ShardSnapshotStatus(currentStatus.nodeId(), State.FAILED, "shard failed");
+        } else {
+            assert false;
+            return currentStatus;
+        }
+    }
+
+    public static SnapshotsInProgress adjustFromRoutingTable(Set<ShardId> shardIds, SnapshotsInProgress oldSnapshot,
+                                                             RoutingTable newRoutingTable) {
+        if (oldSnapshot != null && shardIds.isEmpty() == false) {
+            final List<SnapshotsInProgress.Entry> entries = new ArrayList<>();
+            for (SnapshotsInProgress.Entry entry : oldSnapshot.entries()) {
+                entries.add(adjustFromRoutingTable(shardIds, newRoutingTable, entry));
+            }
+            return new SnapshotsInProgress(entries.toArray(new SnapshotsInProgress.Entry[entries.size()]));
+        } else {
+            return oldSnapshot;
+        }
+    }
+
+    public static SnapshotsInProgress.Entry adjustFromRoutingTable(RoutingTable newRoutingTable, SnapshotsInProgress.Entry entry) {
+        Set<ShardId> shardIds = new HashSet<>();
+        entry.shards().keysIt().forEachRemaining(shardIds::add);
+        return adjustFromRoutingTable(shardIds, newRoutingTable, entry);
+    }
+
+    public static SnapshotsInProgress.Entry adjustFromRoutingTable(Set<ShardId> shardIds, RoutingTable newRoutingTable,
+                                                                    SnapshotsInProgress.Entry entry) {
+        ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shardsBuilder = ImmutableOpenMap.builder(entry.shards());
+        boolean changed = false;
+        for (ShardId shardId : shardIds) {
+            ShardSnapshotStatus currentStatus = shardsBuilder.get(shardId);
+            if (currentStatus != null) {
+                IndexShardRoutingTable shardRoutingTable = newRoutingTable.shardRoutingTableOrNull(shardId);
+                ShardRouting primaryShardRouting = shardRoutingTable == null ? null : shardRoutingTable.primaryShard();
+                ShardSnapshotStatus newStatus = updateShardSnapshotStatus(currentStatus, primaryShardRouting);
+                if (newStatus != currentStatus) {
+                    changed = true;
+                    shardsBuilder.put(shardId, newStatus);
+                }
+            }
+        }
+        if (changed) {
+            ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards = shardsBuilder.build();
+            State newState = overallState(entry.state(), shards);
+            return new SnapshotsInProgress.Entry(entry, newState, shards, entry.getFailureMessage());
+        } else {
+            return entry;
+        }
+    }
+
+    public static State overallState(State nonCompletedState, ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards) {
+        for (ObjectCursor<ShardSnapshotStatus> status : shards.values()) {
+            if (!status.value.state().completed()) {
+                return nonCompletedState;
+            }
+        }
+        return State.SUCCESS;
+    }
+
+    // TODO: add cluster state listener that moves completed snapshots off the cluster state, persisting the crap in the repo.
+    // obviously this needs coordination (or batching) so that we don't have two at once.
+
+
+    private void processSnapshotsOnMasterFailover(ClusterChangedEvent event) {
+        if (event.localNodeMaster() == false) {
+            return;
+        }
+        if (event.previousState().nodes().isLocalNodeElectedMaster()) {
+            return;
+        }
+        SnapshotsInProgress snapshotsInProgress = event.state().custom(SnapshotsInProgress.TYPE);
+        if (snapshotsInProgress == null) {
+            return;
+        }
+
+        if (snapshotsInProgress.entries().stream().anyMatch(e -> e.state() == State.INIT)) {
             // Check if we just became the master
-            final boolean newMaster = !event.previousState().nodes().isLocalNodeElectedMaster();
             clusterService.submitStateUpdateTask("update snapshot state after node removal", new ClusterStateUpdateTask() {
                 @Override
-                public ClusterState execute(ClusterState currentState) throws Exception {
-                    DiscoveryNodes nodes = currentState.nodes();
+                public ClusterState execute(ClusterState currentState) {
                     SnapshotsInProgress snapshots = currentState.custom(SnapshotsInProgress.TYPE);
                     if (snapshots == null) {
                         return currentState;
@@ -722,38 +891,12 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                     boolean changed = false;
                     ArrayList<SnapshotsInProgress.Entry> entries = new ArrayList<>();
                     for (final SnapshotsInProgress.Entry snapshot : snapshots.entries()) {
-                        SnapshotsInProgress.Entry updatedSnapshot = snapshot;
-                        boolean snapshotChanged = false;
-                        if (snapshot.state() == State.STARTED || snapshot.state() == State.ABORTED) {
-                            ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shards = ImmutableOpenMap.builder();
-                            for (ObjectObjectCursor<ShardId, ShardSnapshotStatus> shardEntry : snapshot.shards()) {
-                                ShardSnapshotStatus shardStatus = shardEntry.value;
-                                if (!shardStatus.state().completed() && shardStatus.nodeId() != null) {
-                                    if (nodes.nodeExists(shardStatus.nodeId())) {
-                                        shards.put(shardEntry.key, shardEntry.value);
-                                    } else {
-                                        // TODO: Restart snapshot on another node?
-                                        snapshotChanged = true;
-                                        logger.warn("failing snapshot of shard [{}] on closed node [{}]", shardEntry.key, shardStatus.nodeId());
-                                        shards.put(shardEntry.key, new ShardSnapshotStatus(shardStatus.nodeId(), State.FAILED, "node shutdown"));
-                                    }
-                                }
-                            }
-                            if (snapshotChanged) {
-                                changed = true;
-                                ImmutableOpenMap<ShardId, ShardSnapshotStatus> shardsMap = shards.build();
-                                if (!snapshot.state().completed() && completed(shardsMap.values())) {
-                                    updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, State.SUCCESS, shardsMap);
-                                    endSnapshot(updatedSnapshot);
-                                } else {
-                                    updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, snapshot.state(), shardsMap);
-                                }
-                            }
-                            entries.add(updatedSnapshot);
-                        } else if (snapshot.state() == State.INIT && newMaster) {
+                        if (snapshot.state() == State.INIT) {
                             changed = true;
+                            assert snapshot.shards().isEmpty();
                             // Mark the snapshot as aborted as it failed to start from the previous master
-                            updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, State.ABORTED, snapshot.shards());
+                            SnapshotsInProgress.Entry updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, State.ABORTED,
+                                snapshot.shards(), null); // TODO: pick better failure message
                             entries.add(updatedSnapshot);
 
                             // Clean up the snapshot that failed to start from the old master
@@ -785,132 +928,157 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         }
     }
 
-    private void processStartedShards(ClusterChangedEvent event) {
-        if (waitingShardsStartedOrUnassigned(event)) {
-            clusterService.submitStateUpdateTask("update snapshot state after shards started", new ClusterStateUpdateTask() {
-                @Override
-                public ClusterState execute(ClusterState currentState) throws Exception {
-                    RoutingTable routingTable = currentState.routingTable();
-                    SnapshotsInProgress snapshots = currentState.custom(SnapshotsInProgress.TYPE);
-                    if (snapshots != null) {
-                        boolean changed = false;
-                        ArrayList<SnapshotsInProgress.Entry> entries = new ArrayList<>();
-                        for (final SnapshotsInProgress.Entry snapshot : snapshots.entries()) {
-                            SnapshotsInProgress.Entry updatedSnapshot = snapshot;
-                            if (snapshot.state() == State.STARTED) {
-                                ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards = processWaitingShards(snapshot.shards(), routingTable);
-                                if (shards != null) {
-                                    changed = true;
-                                    if (!snapshot.state().completed() && completed(shards.values())) {
-                                        updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, State.SUCCESS, shards);
-                                        endSnapshot(updatedSnapshot);
-                                    } else {
-                                        updatedSnapshot = new SnapshotsInProgress.Entry(snapshot, shards);
-                                    }
-                                }
-                                entries.add(updatedSnapshot);
-                            }
-                        }
-                        if (changed) {
-                            snapshots = new SnapshotsInProgress(entries.toArray(new SnapshotsInProgress.Entry[entries.size()]));
-                            return ClusterState.builder(currentState).putCustom(SnapshotsInProgress.TYPE, snapshots).build();
-                        }
-                    }
-                    return currentState;
-                }
+    // supersedes removeFinishedSnapshotFromClusterState(event)
+    /**
+     * Removes a finished snapshot from the cluster state. This can happen if a snapshot
+     * completes as well as when there is the exceptional situation where the previous
+     * master node processed a cluster state update that marked the snapshot as finished,
+     * but the previous master node died before removing the snapshot in progress from the
+     * cluster state.  It is then the responsibility of the new master node to end the
+     * snapshot and remove it from the cluster state.
+     */
+    private void endFinishedSnapshotState(ClusterChangedEvent event) {
+        ClusterState state = event.state();
 
-                @Override
-                public void onFailure(String source, Exception e) {
-                    logger.warn(() -> new ParameterizedMessage("failed to update snapshot state after shards started from [{}] ", source), e);
+        SnapshotsInProgress snapshotsInProgress = state.custom(SnapshotsInProgress.TYPE);
+        if (snapshotsInProgress != null) {
+            for (SnapshotsInProgress.Entry entry : snapshotsInProgress.entries()) {
+                if (entry.state().completed()) {
+                    assert completed(entry.shards().values()) : "state says completed but snapshot entries are not";
+                    // TODO: check if there is already an end snapshot task in progress
+                    endSnapshot(entry);
+
+//                    clusterService.submitStateUpdateTask(
+//                        "clean up snapshot restore state",
+//                        new CleanSnapshotStateTaskExecutor.Task(entry.snapshot()),
+//                        ClusterStateTaskConfig.build(Priority.URGENT),
+//                        cleanSnapshotStateTaskExecutor,
+//                        cleanSnapshotStateTaskExecutor);
                 }
-            });
+            }
         }
     }
 
-    private ImmutableOpenMap<ShardId, ShardSnapshotStatus> processWaitingShards(
-            ImmutableOpenMap<ShardId, ShardSnapshotStatus> snapshotShards, RoutingTable routingTable) {
-        boolean snapshotChanged = false;
-        ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shards = ImmutableOpenMap.builder();
-        for (ObjectObjectCursor<ShardId, ShardSnapshotStatus> shardEntry : snapshotShards) {
-            ShardSnapshotStatus shardStatus = shardEntry.value;
-            ShardId shardId = shardEntry.key;
-            if (shardStatus.state() == State.WAITING) {
-                IndexRoutingTable indexShardRoutingTable = routingTable.index(shardId.getIndex());
-                if (indexShardRoutingTable != null) {
-                    IndexShardRoutingTable shardRouting = indexShardRoutingTable.shard(shardId.id());
-                    if (shardRouting != null && shardRouting.primaryShard() != null) {
-                        if (shardRouting.primaryShard().started()) {
-                            // Shard that we were waiting for has started on a node, let's process it
-                            snapshotChanged = true;
-                            logger.trace("starting shard that we were waiting for [{}] on node [{}]", shardId, shardStatus.nodeId());
-                            shards.put(shardId, new ShardSnapshotStatus(shardRouting.primaryShard().currentNodeId()));
-                            continue;
-                        } else if (shardRouting.primaryShard().initializing() || shardRouting.primaryShard().relocating()) {
-                            // Shard that we were waiting for hasn't started yet or still relocating - will continue to wait
-                            shards.put(shardId, shardStatus);
-                            continue;
-                        }
-                    }
-                }
-                // Shard that we were waiting for went into unassigned state or disappeared - giving up
-                snapshotChanged = true;
-                logger.warn("failing snapshot of shard [{}] on unassigned shard [{}]", shardId, shardStatus.nodeId());
-                shards.put(shardId, new ShardSnapshotStatus(shardStatus.nodeId(), State.FAILED, "shard is unassigned"));
-            } else {
-                shards.put(shardId, shardStatus);
+    static class CompleteSnapshotStateTaskExecutor implements ClusterStateTaskExecutor<CompleteSnapshotStateTaskExecutor.Task>,
+        ClusterStateTaskListener {
+
+        static class Task {
+            final Snapshot snapshot;
+
+            Task(Snapshot snapshot) {
+                this.snapshot = snapshot;
+            }
+
+            @Override
+            public String toString() {
+                return "clean restore state for restoring snapshot " + snapshot;
             }
         }
-        if (snapshotChanged) {
-            return shards.build();
-        } else {
-            return null;
+
+        private final Logger logger;
+
+        CompleteSnapshotStateTaskExecutor(Logger logger) {
+            this.logger = logger;
         }
+
+        @Override
+        public ClusterTasksResult<Task> execute(final ClusterState currentState, final List<Task> tasks) throws Exception {
+            final ClusterTasksResult.Builder<Task> resultBuilder = ClusterTasksResult.<Task>builder().successes(tasks);
+            Set<Snapshot> completedSnapshots = tasks.stream().map(e -> e.snapshot).collect(Collectors.toSet());
+            final List<SnapshotsInProgress.Entry> entries = new ArrayList<>();
+            final SnapshotsInProgress snapshotInProgress = currentState.custom(SnapshotsInProgress.TYPE);
+            boolean changed = false;
+            if (snapshotInProgress != null) {
+                for (SnapshotsInProgress.Entry entry : snapshotInProgress.entries()) {
+                    if (completedSnapshots.contains(entry.snapshot()) == false) {
+                        entries.add(entry);
+                    } else {
+                        changed = true;
+                    }
+                }
+            }
+            if (changed == false) {
+                return resultBuilder.build(currentState);
+            }
+            SnapshotsInProgress updatedSnapshotInProgress = new SnapshotsInProgress(entries.toArray(
+                new SnapshotsInProgress.Entry[entries.size()]));
+            ImmutableOpenMap.Builder<String, ClusterState.Custom> builder = ImmutableOpenMap.builder(currentState.getCustoms());
+            builder.put(SnapshotsInProgress.TYPE, updatedSnapshotInProgress);
+            ImmutableOpenMap<String, ClusterState.Custom> customs = builder.build();
+            return resultBuilder.build(ClusterState.builder(currentState).customs(customs).build());
+        }
+
+        @Override
+        public void onFailure(final String source, final Exception e) {
+            logger.error(() -> new ParameterizedMessage("unexpected failure during [{}]", source), e);
+        }
+
+        @Override
+        public void onNoLongerMaster(String source) {
+            logger.debug("no longer master while processing restore state update [{}]", source);
+        }
+
     }
 
-    private boolean waitingShardsStartedOrUnassigned(ClusterChangedEvent event) {
-        SnapshotsInProgress curr = event.state().custom(SnapshotsInProgress.TYPE);
-        if (curr != null) {
-            for (SnapshotsInProgress.Entry entry : curr.entries()) {
-                if (entry.state() == State.STARTED && !entry.waitingIndices().isEmpty()) {
-                    for (ObjectCursor<String> index : entry.waitingIndices().keys()) {
-                        if (event.indexRoutingTableChanged(index.value)) {
-                            IndexRoutingTable indexShardRoutingTable = event.state().getRoutingTable().index(index.value);
-                            for (ShardId shardId : entry.waitingIndices().get(index.value)) {
-                                ShardRouting shardRouting = indexShardRoutingTable.shard(shardId.id()).primaryShard();
-                                if (shardRouting != null && (shardRouting.started() || shardRouting.unassigned())) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return false;
-    }
+    static class CleanSnapshotStateTaskExecutor implements ClusterStateTaskExecutor<CleanSnapshotStateTaskExecutor.Task>,
+        ClusterStateTaskListener {
 
-    private boolean removedNodesCleanupNeeded(ClusterChangedEvent event) {
-        SnapshotsInProgress snapshotsInProgress = event.state().custom(SnapshotsInProgress.TYPE);
-        if (snapshotsInProgress == null) {
-            return false;
-        }
-        // Check if we just became the master
-        boolean newMaster = !event.previousState().nodes().isLocalNodeElectedMaster();
-        for (SnapshotsInProgress.Entry snapshot : snapshotsInProgress.entries()) {
-            if (newMaster && (snapshot.state() == State.SUCCESS || snapshot.state() == State.INIT)) {
-                // We just replaced old master and snapshots in intermediate states needs to be cleaned
-                return true;
+        static class Task {
+            final Snapshot snapshot;
+
+            Task(Snapshot snapshot) {
+                this.snapshot = snapshot;
             }
-            for (DiscoveryNode node : event.nodesDelta().removedNodes()) {
-                for (ObjectCursor<ShardSnapshotStatus> shardStatus : snapshot.shards().values()) {
-                    if (!shardStatus.value.state().completed() && node.getId().equals(shardStatus.value.nodeId())) {
-                        // At least one shard was running on the removed node - we need to fail it
-                        return true;
+
+            @Override
+            public String toString() {
+                return "clean restore state for restoring snapshot " + snapshot;
+            }
+        }
+
+        private final Logger logger;
+
+        CleanSnapshotStateTaskExecutor(Logger logger) {
+            this.logger = logger;
+        }
+
+        @Override
+        public ClusterTasksResult<Task> execute(final ClusterState currentState, final List<Task> tasks) throws Exception {
+            final ClusterTasksResult.Builder<Task> resultBuilder = ClusterTasksResult.<Task>builder().successes(tasks);
+            Set<Snapshot> completedSnapshots = tasks.stream().map(e -> e.snapshot).collect(Collectors.toSet());
+            final List<SnapshotsInProgress.Entry> entries = new ArrayList<>();
+            final SnapshotsInProgress snapshotInProgress = currentState.custom(SnapshotsInProgress.TYPE);
+            boolean changed = false;
+            if (snapshotInProgress != null) {
+                for (SnapshotsInProgress.Entry entry : snapshotInProgress.entries()) {
+                    if (completedSnapshots.contains(entry.snapshot()) == false) {
+                        entries.add(entry);
+                    } else {
+                        changed = true;
                     }
                 }
             }
+            if (changed == false) {
+                return resultBuilder.build(currentState);
+            }
+            SnapshotsInProgress updatedSnapshotInProgress = new SnapshotsInProgress(entries.toArray(
+                new SnapshotsInProgress.Entry[entries.size()]));
+            ImmutableOpenMap.Builder<String, ClusterState.Custom> builder = ImmutableOpenMap.builder(currentState.getCustoms());
+            builder.put(SnapshotsInProgress.TYPE, updatedSnapshotInProgress);
+            ImmutableOpenMap<String, ClusterState.Custom> customs = builder.build();
+            return resultBuilder.build(ClusterState.builder(currentState).customs(customs).build());
         }
-        return false;
+
+        @Override
+        public void onFailure(final String source, final Exception e) {
+            logger.error(() -> new ParameterizedMessage("unexpected failure during [{}]", source), e);
+        }
+
+        @Override
+        public void onNoLongerMaster(String source) {
+            logger.debug("no longer master while processing restore state update [{}]", source);
+        }
+
     }
 
     /**
@@ -945,6 +1113,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         endSnapshot(entry, null);
     }
 
+    private final Set<Snapshot> endingSnapshots = new HashSet<>();
 
     /**
      * Finalizes the shard in repository and then removes it from cluster state
@@ -955,11 +1124,17 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
      * @param failure failure reason or null if snapshot was successful
      */
     private void endSnapshot(final SnapshotsInProgress.Entry entry, final String failure) {
+        synchronized (endingSnapshots) {
+            if (endingSnapshots.add(entry.snapshot()) == false) {
+                return;
+            }
+        }
         threadPool.executor(ThreadPool.Names.SNAPSHOT).execute(() -> {
             final Snapshot snapshot = entry.snapshot();
             try {
                 final Repository repository = repositoriesService.repository(snapshot.getRepository());
-                logger.trace("[{}] finalizing snapshot in repository, state: [{}], failure[{}]", snapshot, entry.state(), failure);
+                logger.trace("[{}] finalizing snapshot in repository, state: [{}], failure[{}]", snapshot, entry.state(),
+                    entry.getFailureMessage());
                 ArrayList<SnapshotShardFailure> shardFailures = new ArrayList<>();
                 for (ObjectObjectCursor<ShardId, ShardSnapshotStatus> shardStatus : entry.shards()) {
                     ShardId shardId = shardStatus.key;
@@ -972,7 +1147,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                     snapshot.getSnapshotId(),
                     entry.indices(),
                     entry.startTime(),
-                    failure,
+                    entry.getFailureMessage(),
                     entry.shards().size(),
                     Collections.unmodifiableList(shardFailures),
                     entry.getRepositoryStateId(),
@@ -1030,6 +1205,9 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
             @Override
             public void onFailure(String source, Exception e) {
                 logger.warn(() -> new ParameterizedMessage("[{}] failed to remove snapshot metadata", snapshot), e);
+                synchronized (endingSnapshots) {
+                    endingSnapshots.remove(snapshot);
+                }
                 if (listener != null) {
                     listener.onFailure(e);
                 }
@@ -1037,6 +1215,9 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
             @Override
             public void onNoLongerMaster(String source) {
+                synchronized (endingSnapshots) {
+                    endingSnapshots.remove(snapshot);
+                }
                 if (listener != null) {
                     listener.onNoLongerMaster(source);
                 }
@@ -1044,6 +1225,9 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
             @Override
             public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
+                synchronized (endingSnapshots) {
+                    endingSnapshots.remove(snapshot);
+                }
                 for (SnapshotCompletionListener listener : snapshotCompletionListeners) {
                     try {
                         if (snapshotInfo != null) {
@@ -1193,7 +1377,8 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                             endSnapshot(snapshotEntry);
                         }
                     }
-                    SnapshotsInProgress.Entry newSnapshot = new SnapshotsInProgress.Entry(snapshotEntry, State.ABORTED, shards);
+                    // TODO: pick better failure message
+                    SnapshotsInProgress.Entry newSnapshot = new SnapshotsInProgress.Entry(snapshotEntry, State.ABORTED, shards, null);
                     snapshots = new SnapshotsInProgress(newSnapshot);
                     clusterStateBuilder.putCustom(SnapshotsInProgress.TYPE, snapshots);
                 }
@@ -1384,7 +1569,6 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
                         if (primary == null || !primary.assignedToNode()) {
                             builder.put(shardId, new SnapshotsInProgress.ShardSnapshotStatus(null, State.MISSING, "primary shard is not allocated"));
                         } else if (primary.relocating() || primary.initializing()) {
-                            // The WAITING state was introduced in V1.2.0 - don't use it if there are nodes with older version in the cluster
                             builder.put(shardId, new SnapshotsInProgress.ShardSnapshotStatus(primary.currentNodeId(), State.WAITING));
                         } else if (!primary.started()) {
                             builder.put(shardId, new SnapshotsInProgress.ShardSnapshotStatus(primary.currentNodeId(), State.MISSING, "primary shard hasn't been started yet"));
