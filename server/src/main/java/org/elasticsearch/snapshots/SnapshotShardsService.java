@@ -567,22 +567,31 @@ public class SnapshotShardsService extends AbstractLifecycleComponent implements
                 int changedCount = 0;
                 final List<SnapshotsInProgress.Entry> entries = new ArrayList<>();
                 for (SnapshotsInProgress.Entry entry : snapshots.entries()) {
-                    ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shards = ImmutableOpenMap.builder();
-                    boolean updated = false;
+                    if (entry.state().completed()) {
+                        continue;
+                    }
+                    ImmutableOpenMap.Builder<ShardId, ShardSnapshotStatus> shards = null;
 
                     for (UpdateIndexShardSnapshotStatusRequest updateSnapshotState : tasks) {
                         if (entry.snapshot().equals(updateSnapshotState.snapshot())) {
-                            logger.trace("[{}] Updating shard [{}] with status [{}]", updateSnapshotState.snapshot(), updateSnapshotState.shardId(), updateSnapshotState.status().state());
-                            if (updated == false) {
-                                shards.putAll(entry.shards());
-                                updated = true;
+                            final ShardSnapshotStatus currentEntry = entry.shards().get(updateSnapshotState.shardId());
+                            if (currentEntry != null) {
+                                if (currentEntry.state().completed() == false) {
+                                    logger.trace("[{}] Updating shard [{}] with status [{}]", updateSnapshotState.snapshot(), updateSnapshotState.shardId(), updateSnapshotState.status().state());
+                                    if (shards == null) {
+                                        shards = ImmutableOpenMap.builder(entry.shards());
+                                    }
+                                    shards.put(updateSnapshotState.shardId(), updateSnapshotState.status());
+                                    changedCount++;
+                                }
+                            } else {
+                                // entry should not just have vanished
+                                assert false;
                             }
-                            shards.put(updateSnapshotState.shardId(), updateSnapshotState.status());
-                            changedCount++;
                         }
                     }
 
-                    if (updated) {
+                    if (shards != null) {
                         if (completed(shards.values()) == false) {
                             entries.add(new SnapshotsInProgress.Entry(entry, shards.build()));
                         } else {
@@ -591,8 +600,6 @@ public class SnapshotShardsService extends AbstractLifecycleComponent implements
                             SnapshotsInProgress.Entry updatedEntry = new SnapshotsInProgress.Entry(entry, State.SUCCESS, shards.build(),
                                 null);
                             entries.add(updatedEntry);
-                            // Finalize snapshot in the repository
-                            snapshotsService.endSnapshot(updatedEntry);
                         }
                     } else {
                         entries.add(entry);

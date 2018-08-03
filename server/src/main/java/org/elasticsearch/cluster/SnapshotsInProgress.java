@@ -102,7 +102,7 @@ public class SnapshotsInProgress extends AbstractNamedDiffable<Custom> implement
                      long startTime, long repositoryStateId, ImmutableOpenMap<ShardId, ShardSnapshotStatus> shards,
                      @Nullable String failureMessage) {
             assert state != State.MISSING && state != State.WAITING : state;
-            //assert (state == State.INIT) == (shards == null);
+            assert state != State.INIT || (shards == null || shards.isEmpty());
             this.state = state;
             this.snapshot = snapshot;
             this.includeGlobalState = includeGlobalState;

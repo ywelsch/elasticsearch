@@ -2536,6 +2536,7 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
         restoreFut.get();
     }
 
+    @AwaitsFix(bugUrl = "This test does something that violates the cluster state consistency constraints for snapshots")
     public void testDeleteOrphanSnapshot() throws Exception {
         Client client = client();
 
@@ -3425,10 +3426,10 @@ public class SharedClusterSnapshotRestoreIT extends AbstractSnapshotIntegTestCas
             // Delete the snapshot while it is being initialized
             ActionFuture<AcknowledgedResponse> delete = client.admin().cluster().prepareDeleteSnapshot("repository", "snap").execute();
 
-            // The deletion must set the snapshot in the ABORTED state
+            // The deletion must set the snapshot in the FAILED state
             assertBusy(() -> {
                 SnapshotsStatusResponse status = client.admin().cluster().prepareSnapshotStatus("repository").setSnapshots("snap").get();
-                assertThat(status.getSnapshots().iterator().next().getState(), equalTo(State.ABORTED));
+                assertThat(status.getSnapshots().iterator().next().getState(), equalTo(State.FAILED));
             });
 
             // Now unblock the repository
