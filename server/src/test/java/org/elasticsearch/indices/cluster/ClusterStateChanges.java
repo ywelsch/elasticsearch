@@ -19,11 +19,20 @@
 
 package org.elasticsearch.indices.cluster;
 
+import org.apache.lucene.util.LuceneTestCase;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryRequest;
+import org.elasticsearch.action.admin.cluster.repositories.delete.TransportDeleteRepositoryAction;
+import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryRequest;
+import org.elasticsearch.action.admin.cluster.repositories.put.TransportPutRepositoryAction;
 import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteRequest;
 import org.elasticsearch.action.admin.cluster.reroute.TransportClusterRerouteAction;
+import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.create.TransportCreateSnapshotAction;
+import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotRequest;
+import org.elasticsearch.action.admin.cluster.snapshots.delete.TransportDeleteSnapshotAction;
 import org.elasticsearch.action.admin.indices.close.CloseIndexRequest;
 import org.elasticsearch.action.admin.indices.close.TransportCloseIndexAction;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
@@ -45,6 +54,7 @@ import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
 import org.elasticsearch.cluster.EmptyClusterInfoService;
+import org.elasticsearch.cluster.SnapshotsInProgress;
 import org.elasticsearch.cluster.action.shard.ShardStateAction;
 import org.elasticsearch.cluster.action.shard.ShardStateAction.StartedShardEntry;
 import org.elasticsearch.cluster.action.shard.ShardStateAction.FailedShardEntry;
@@ -81,6 +91,10 @@ import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.shard.IndexEventListener;
 import org.elasticsearch.indices.IndicesService;
+import org.elasticsearch.repositories.RepositoriesService;
+import org.elasticsearch.repositories.Repository;
+import org.elasticsearch.repositories.fs.FsRepository;
+import org.elasticsearch.snapshots.SnapshotsService;
 import org.elasticsearch.test.gateway.TestGatewayAllocator;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.Transport;
@@ -90,8 +104,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static com.carrotsearch.randomizedtesting.RandomizedTest.getRandom;
@@ -123,8 +139,15 @@ public class ClusterStateChanges extends AbstractComponent {
     private final ZenDiscovery.NodeRemovalClusterStateTaskExecutor nodeRemovalExecutor;
     private final NodeJoinController.JoinTaskExecutor joinTaskExecutor;
 
+    private final SnapshotsService snapshotsService;
+    private final TransportPutRepositoryAction transportPutRepositoryAction;
+    private final TransportDeleteRepositoryAction transportDeleteRepositoryAction;
+    private final TransportCreateSnapshotAction transportCreateSnapshotAction;
+    private final TransportDeleteSnapshotAction transportDeleteSnapshotAction;
+
     public ClusterStateChanges(NamedXContentRegistry xContentRegistry, ThreadPool threadPool) {
-        super(Settings.builder().put(PATH_HOME_SETTING.getKey(), "dummy").build());
+        super(Settings.builder().put(PATH_HOME_SETTING.getKey(), "dummy")
+            .put(Environment.PATH_REPO_SETTING.getKey(), LuceneTestCase.createTempDir("repos")).build());
 
         ClusterSettings clusterSettings = new ClusterSettings(settings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
         allocationService = new AllocationService(settings, new AllocationDeciders(settings,
@@ -202,6 +225,30 @@ public class ClusterStateChanges extends AbstractComponent {
         nodeRemovalExecutor = new ZenDiscovery.NodeRemovalClusterStateTaskExecutor(allocationService, electMasterService,
             s -> { throw new AssertionError("rejoin not implemented"); }, logger);
         joinTaskExecutor = new NodeJoinController.JoinTaskExecutor(allocationService, electMasterService, logger);
+
+        Map<String, Repository.Factory> factories = new HashMap<>();
+        factories.put(FsRepository.TYPE, (metadata) -> new FsRepository(metadata, environment, xContentRegistry) {
+            @Override
+            protected void assertSnapshotOrGenericThread() {
+                // we don't execute on the correct thread here
+            }
+        });
+        RepositoriesService repositoriesService = new RepositoriesService(settings, clusterService, transportService, factories,
+            threadPool);
+        transportPutRepositoryAction = new TransportPutRepositoryAction(settings, transportService, clusterService, repositoriesService,
+            threadPool, actionFilters, indexNameExpressionResolver);
+        transportDeleteRepositoryAction = new TransportDeleteRepositoryAction(settings, transportService, clusterService,
+            repositoriesService, threadPool, actionFilters, indexNameExpressionResolver);
+
+        snapshotsService = new SnapshotsService(settings, clusterService, indexNameExpressionResolver, repositoriesService, threadPool);
+        transportCreateSnapshotAction = new TransportCreateSnapshotAction(settings, transportService, clusterService, threadPool,
+            snapshotsService, actionFilters, indexNameExpressionResolver);
+        transportDeleteSnapshotAction = new TransportDeleteSnapshotAction(settings, transportService, clusterService, threadPool,
+            snapshotsService, actionFilters, indexNameExpressionResolver);
+    }
+
+    public Settings getSettings() {
+        return settings;
     }
 
     public ClusterState createIndex(ClusterState state, CreateIndexRequest request) {
@@ -261,6 +308,37 @@ public class ClusterStateChanges extends AbstractComponent {
         return runTasks(shardStartedClusterStateTaskExecutor, clusterState, entries);
     }
 
+    public ClusterState putRepository(ClusterState state, PutRepositoryRequest request) {
+        return execute(transportPutRepositoryAction, request, state);
+    }
+
+    public ClusterState deleteRepository(ClusterState state, DeleteRepositoryRequest request) {
+        return execute(transportDeleteRepositoryAction, request, state);
+    }
+
+    public ClusterState createSnapshot(ClusterState state, CreateSnapshotRequest request) {
+        return execute(transportCreateSnapshotAction, request, state);
+    }
+
+    public ClusterState deleteSnapshot(ClusterState state, DeleteSnapshotRequest request) {
+        return execute(transportDeleteSnapshotAction, request, state);
+    }
+
+    public ClusterState beginSnapshot(ClusterState state, SnapshotsInProgress.Entry snapshot, boolean partial) {
+        return executeClusterStateUpdateTask(state, () ->
+            snapshotsService.beginSnapshot(state, snapshot, partial, new SnapshotsService.CreateSnapshotListener() {
+            @Override
+            public void onResponse() {
+
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+
+            }
+        }));
+    }
+
     private <T> ClusterState runTasks(ClusterStateTaskExecutor<T> executor, ClusterState clusterState, List<T> entries) {
         try {
             ClusterTasksResult<T> result = executor.execute(clusterState, entries);
@@ -287,6 +365,7 @@ public class ClusterStateChanges extends AbstractComponent {
     }
 
     private ClusterState executeClusterStateUpdateTask(ClusterState state, Runnable runnable) {
+        when(clusterService.state()).thenReturn(state);
         ClusterState[] result = new ClusterState[1];
         doAnswer(invocationOnMock -> {
             ClusterStateUpdateTask task = (ClusterStateUpdateTask)invocationOnMock.getArguments()[1];
