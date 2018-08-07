@@ -145,6 +145,13 @@ class BulkPrimaryExecutionContext {
     }
 
     /**
+     * returns true if the current request is in INITIAL state
+     */
+    public boolean isInitial() {
+        return currentItemState == ItemProcessingState.INITIAL;
+    }
+
+    /**
      * returns true if {@link #advance()} has moved the current item beyond the
      * end of the {@link BulkShardRequest#items()} array.
      */
@@ -294,6 +301,7 @@ class BulkPrimaryExecutionContext {
         }
         getCurrentItem().setPrimaryResponse(translatedResponse);
         currentItemState = ItemProcessingState.COMPLETED;
+        advance();
     }
 
     /** builds the bulk shard response to return to the user */
