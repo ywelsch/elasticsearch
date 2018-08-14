@@ -20,6 +20,7 @@
 package org.elasticsearch.cluster.coordination;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.coordination.CoordinationState.VoteCollection;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.component.AbstractComponent;
@@ -32,10 +33,11 @@ import org.elasticsearch.transport.TransportService;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongConsumer;
 
 import static org.elasticsearch.common.util.concurrent.ConcurrentCollections.newConcurrentSet;
 
-public abstract class PreVoteCollector extends AbstractComponent {
+public class PreVoteCollector extends AbstractComponent {
 
     public static final String REQUEST_PRE_VOTE_ACTION_NAME = "internal:cluster/request_pre_vote";
 
@@ -43,33 +45,35 @@ public abstract class PreVoteCollector extends AbstractComponent {
 
     private final Set<DiscoveryNode> preVotesReceived = newConcurrentSet();
     private final AtomicBoolean electionStarted = new AtomicBoolean();
+    private final AtomicBoolean stopped = new AtomicBoolean();
     private final AtomicLong maxTermSeen;
     private final PreVoteResponse localPreVoteResponse;
     private final PreVoteRequest preVoteRequest;
+    private final ClusterState clusterState;
     private final TransportService transportService;
+    private final LongConsumer startElection;
 
-    PreVoteCollector(Settings settings, long electionId, PreVoteResponse localPreVoteResponse, TransportService transportService) {
+    public PreVoteCollector(Settings settings, long electionId, PreVoteResponse localPreVoteResponse, TransportService transportService,
+                     ClusterState clusterState, LongConsumer startElection) {
         super(settings);
         this.electionId = electionId;
         this.localPreVoteResponse = localPreVoteResponse;
         this.transportService = transportService;
+        this.clusterState = clusterState;
+        this.startElection = startElection;
         final long currentTerm = localPreVoteResponse.getCurrentTerm();
         preVoteRequest = new PreVoteRequest(transportService.getLocalNode(), currentTerm);
         maxTermSeen = new AtomicLong(currentTerm);
     }
 
-    protected abstract Iterable<DiscoveryNode> getBroadcastNodes();
+    public void stop() {
+        stopped.set(true);
+    }
 
-    protected abstract boolean isElectionQuorum(VoteCollection voteCollection);
-
-    protected abstract void startElection(long maxTermSeen);
-
-    protected abstract long getCurrentId();
-
-    public void start() {
+    public void start(Iterable<DiscoveryNode> broadCastNodes) {
         logger.debug("{} starting", this);
 
-        getBroadcastNodes().forEach(n -> transportService.sendRequest(n, REQUEST_PRE_VOTE_ACTION_NAME, preVoteRequest,
+        broadCastNodes.forEach(n -> transportService.sendRequest(n, REQUEST_PRE_VOTE_ACTION_NAME, preVoteRequest,
             new TransportResponseHandler<PreVoteResponse>() {
                 @Override
                 public void handleResponse(PreVoteResponse response) {
@@ -98,9 +102,8 @@ public abstract class PreVoteCollector extends AbstractComponent {
     }
 
     private void handlePreVoteResponse(PreVoteResponse response, DiscoveryNode sender) {
-        final long currentId = getCurrentId();
-        if (currentId != electionId) {
-            logger.debug("{} ignoring {} from {} as current id is now {}", this, response, sender, currentId);
+        if (stopped.get()) {
+            logger.debug("{} ignoring {} from {} as current prevote collector is stopped", this, response, sender);
             return;
         }
 
@@ -117,7 +120,7 @@ public abstract class PreVoteCollector extends AbstractComponent {
         final VoteCollection voteCollection = new VoteCollection();
         preVotesReceived.forEach(voteCollection::addVote);
 
-        if (isElectionQuorum(voteCollection) == false) {
+        if (CoordinationState.isElectionQuorum(voteCollection, clusterState) == false) {
             logger.debug("{} added {} from {}, no quorum yet", this, response, sender);
             return;
         }
@@ -128,7 +131,7 @@ public abstract class PreVoteCollector extends AbstractComponent {
         }
 
         logger.debug("{} added {} from {}, starting election in term > {}", this, response, sender, currentMaxTermSeen);
-        startElection(currentMaxTermSeen);
+        startElection.accept(currentMaxTermSeen);
     }
 
     @Override

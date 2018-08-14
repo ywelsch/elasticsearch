@@ -98,8 +98,12 @@ public class CoordinationState extends AbstractComponent {
         return electionWon;
     }
 
+    public static boolean isElectionQuorum(VoteCollection votes, ClusterState clusterState) {
+        return votes.isQuorum(clusterState.getLastCommittedConfiguration()) && votes.isQuorum(clusterState.getLastAcceptedConfiguration());
+    }
+
     public boolean isElectionQuorum(VoteCollection votes) {
-        return votes.isQuorum(getLastCommittedConfiguration()) && votes.isQuorum(getLastAcceptedConfiguration());
+        return isElectionQuorum(votes, getLastAcceptedState());
     }
 
     public boolean isPublishQuorum(VoteCollection votes) {
