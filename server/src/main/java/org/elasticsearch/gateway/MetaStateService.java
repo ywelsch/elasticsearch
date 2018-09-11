@@ -132,7 +132,7 @@ public class MetaStateService extends AbstractComponent {
     /**
      * State format for {@link IndexMetaData} to write to and load from disk
      */
-    public final MetaDataStateFormat<IndexMetaData> INDEX_METADATA_FORMAT = new MetaDataStateFormat<IndexMetaData>(INDEX_STATE_FILE_PREFIX) {
+    final MetaDataStateFormat<IndexMetaData> INDEX_METADATA_FORMAT = new MetaDataStateFormat<IndexMetaData>(INDEX_STATE_FILE_PREFIX) {
 
         @Override
         public void toXContent(XContentBuilder builder, IndexMetaData state) throws IOException {
@@ -230,7 +230,7 @@ public class MetaStateService extends AbstractComponent {
     /**
      * State format for {@link MetaData} to write to and load from disk
      */
-    public final MetaDataStateFormat<MetaData> METADATA_FORMAT = new MetaDataStateFormat<MetaData>(GLOBAL_STATE_FILE_PREFIX) {
+    final MetaDataStateFormat<MetaData> METADATA_FORMAT = new MetaDataStateFormat<MetaData>(GLOBAL_STATE_FILE_PREFIX) {
 
         @Override
         public void toXContent(XContentBuilder builder, MetaData state) throws IOException {
@@ -323,7 +323,7 @@ public class MetaStateService extends AbstractComponent {
 
     private static final ToXContent.Params METASTATE_FORMAT_PARAMS = new ToXContent.MapParams(Collections.singletonMap("binary", "true"));
 
-    public final MetaDataStateFormat<MetaState> METASTATE_FORMAT = new MetaDataStateFormat<MetaState>(META_STATE_FILE_PREFIX) {
+    final MetaDataStateFormat<MetaState> METASTATE_FORMAT = new MetaDataStateFormat<MetaState>(META_STATE_FILE_PREFIX) {
 
         @Override
         public void toXContent(XContentBuilder builder, MetaState state) throws IOException {
