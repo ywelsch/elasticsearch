@@ -36,6 +36,7 @@ import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.gateway.MetaStateService;
+import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -45,6 +46,7 @@ import org.elasticsearch.test.InternalTestCluster;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -361,7 +363,12 @@ public class CreateIndexIT extends ESIntegTestCase {
                                     .settings(Settings.builder().put(metaData.getSettings()).put("index.foo", true))
                                     .build();
                     // so evil
-                    metaStateService.writeIndex("broken metadata", brokenMetaData);
+                    long indexGen = metaStateService.writeIndex("broken metadata", brokenMetaData);
+                    MetaStateService.MetaState metaState = metaStateService.loadMetaState();
+                    Map<Index, Long> indices = new HashMap<>(metaState.getIndices());
+                    indices.put(brokenMetaData.getIndex(), indexGen);
+                    metaStateService.writeMetaState("broken metadata",
+                        new MetaStateService.MetaState(metaState.getGlobalStateGeneration(), indices));
                 }
                 return Settings.EMPTY;
             }

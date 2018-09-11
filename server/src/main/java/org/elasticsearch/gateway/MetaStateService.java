@@ -248,13 +248,13 @@ public class MetaStateService extends AbstractComponent {
         }
     };
 
-    static class MetaState implements ToXContentFragment {
+    public static class MetaState implements ToXContentFragment {
 
         private final long globalStateGeneration;
 
         private final Map<Index, Long> indices;
 
-        MetaState(long globalStateGeneration, Map<Index, Long> indices) {
+        public MetaState(long globalStateGeneration, Map<Index, Long> indices) {
             this.globalStateGeneration = globalStateGeneration;
             this.indices = indices;
         }
@@ -341,11 +341,11 @@ public class MetaStateService extends AbstractComponent {
         }
     };
 
-    MetaState loadMetaState() throws IOException {
+    public MetaState loadMetaState() throws IOException {
         return METASTATE_FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.nodeDataPaths()).v1();
     }
 
-    long writeMetaState(String reason, MetaState metaState) throws IOException {
+    public long writeMetaState(String reason, MetaState metaState) throws IOException {
         logger.trace("[_meta] writing state, reason [{}]",  reason);
         try {
             final long generation = METASTATE_FORMAT.write(metaState, nodeEnv.nodeDataPaths());
