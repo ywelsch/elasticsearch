@@ -319,7 +319,7 @@ public class MetaDataStateFormatTests extends ESTestCase {
     }
 
     private static MetaDataStateFormat<MetaData> metaDataFormat() {
-        return new MetaDataStateFormat<MetaData>(MetaData.GLOBAL_STATE_FILE_PREFIX) {
+        return new MetaDataStateFormat<MetaData>(MetaStateService.GLOBAL_STATE_FILE_PREFIX) {
             @Override
             public void toXContent(XContentBuilder builder, MetaData state) throws IOException {
                 MetaData.Builder.toXContent(state, builder, ToXContent.EMPTY_PARAMS);

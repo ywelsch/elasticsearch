@@ -70,17 +70,20 @@ public class TransportNodesListGatewayStartedShards extends
     private final NodeEnvironment nodeEnv;
     private final IndicesService indicesService;
     private final NamedXContentRegistry namedXContentRegistry;
+    private final MetaStateService metaStateService;
 
     @Inject
     public TransportNodesListGatewayStartedShards(Settings settings, ThreadPool threadPool, ClusterService clusterService,
                                                   TransportService transportService, ActionFilters actionFilters,
                                                   NodeEnvironment env, IndicesService indicesService,
-                                                  NamedXContentRegistry namedXContentRegistry) {
+                                                  NamedXContentRegistry namedXContentRegistry,
+                                                  MetaStateService metaStateService) {
         super(settings, ACTION_NAME, threadPool, clusterService, transportService, actionFilters,
             Request::new, NodeRequest::new, ThreadPool.Names.FETCH_SHARD_STARTED, NodeGatewayStartedShards.class);
         this.nodeEnv = env;
         this.indicesService = indicesService;
         this.namedXContentRegistry = namedXContentRegistry;
+        this.metaStateService = metaStateService;
     }
 
     @Override
@@ -123,8 +126,7 @@ public class TransportNodesListGatewayStartedShards extends
                     // we may send this requests while processing the cluster state that recovered the index
                     // sometimes the request comes in before the local node processed that cluster state
                     // in such cases we can load it from disk
-                    metaData = IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                        nodeEnv.indexPaths(shardId.getIndex())).v1();
+                    metaData = metaStateService.loadIndexState(shardId.getIndex()).v1();
                 }
                 if (metaData == null) {
                     ElasticsearchException e = new ElasticsearchException("failed to find local IndexMetaData");

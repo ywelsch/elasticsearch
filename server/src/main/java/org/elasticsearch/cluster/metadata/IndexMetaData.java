@@ -251,7 +251,6 @@ public class IndexMetaData implements Diffable<IndexMetaData>, ToXContentFragmen
     static final String KEY_ROLLOVER_INFOS = "rollover_info";
     public static final String KEY_PRIMARY_TERMS = "primary_terms";
 
-    public static final String INDEX_STATE_FILE_PREFIX = "state-";
     private final int routingNumShards;
     private final int routingFactor;
     private final int routingPartitionSize;
@@ -1332,26 +1331,6 @@ public class IndexMetaData implements Diffable<IndexMetaData>, ToXContentFragmen
         }
         return builder.build();
     }
-
-    private static final ToXContent.Params FORMAT_PARAMS = new MapParams(Collections.singletonMap("binary", "true"));
-
-    /**
-     * State format for {@link IndexMetaData} to write to and load from disk
-     */
-    public static final MetaDataStateFormat<IndexMetaData> FORMAT = new MetaDataStateFormat<IndexMetaData>(INDEX_STATE_FILE_PREFIX) {
-
-        @Override
-        public void toXContent(XContentBuilder builder, IndexMetaData state) throws IOException {
-            Builder.toXContent(state, builder, FORMAT_PARAMS);
-        }
-
-        @Override
-        public IndexMetaData fromXContent(XContentParser parser) throws IOException {
-            assert parser.getXContentRegistry() != NamedXContentRegistry.EMPTY
-                    : "loading index metadata requires a working named xcontent registry";
-            return Builder.fromXContent(parser);
-        }
-    };
 
     /**
      * Returns the number of shards that should be used for routing. This basically defines the hash space we use in

@@ -36,6 +36,7 @@ import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.env.NodeEnvironment;
+import org.elasticsearch.gateway.MetaStateService;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -361,7 +362,7 @@ public class CreateIndexIT extends ESIntegTestCase {
                                     .settings(Settings.builder().put(metaData.getSettings()).put("index.foo", true))
                                     .build();
                     // so evil
-                    IndexMetaData.FORMAT.write(brokenMetaData, nodeEnvironment.indexPaths(brokenMetaData.getIndex()));
+                    MetaStateService.INDEX_METADATA_FORMAT.write(brokenMetaData, nodeEnvironment.indexPaths(brokenMetaData.getIndex()));
                 }
                 return Settings.EMPTY;
             }

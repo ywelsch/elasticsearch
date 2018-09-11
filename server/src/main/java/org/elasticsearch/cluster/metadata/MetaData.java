@@ -147,8 +147,6 @@ public class MetaData implements Iterable<IndexMetaData>, Diffable<MetaData>, To
 
     public static final String CONTEXT_MODE_GATEWAY = XContentContext.GATEWAY.toString();
 
-    public static final String GLOBAL_STATE_FILE_PREFIX = "global-";
-
     private static final NamedDiffableValueSerializer<Custom> CUSTOM_VALUE_SERIALIZER = new NamedDiffableValueSerializer<>(Custom.class);
 
     private final String clusterUUID;
@@ -1279,28 +1277,4 @@ public class MetaData implements Iterable<IndexMetaData>, Diffable<MetaData>, To
             return builder.build();
         }
     }
-
-    private static final ToXContent.Params FORMAT_PARAMS;
-    static {
-        Map<String, String> params = new HashMap<>(2);
-        params.put("binary", "true");
-        params.put(MetaData.CONTEXT_MODE_PARAM, MetaData.CONTEXT_MODE_GATEWAY);
-        FORMAT_PARAMS = new MapParams(params);
-    }
-
-    /**
-     * State format for {@link MetaData} to write to and load from disk
-     */
-    public static final MetaDataStateFormat<MetaData> FORMAT = new MetaDataStateFormat<MetaData>(GLOBAL_STATE_FILE_PREFIX) {
-
-        @Override
-        public void toXContent(XContentBuilder builder, MetaData state) throws IOException {
-            Builder.toXContent(state, builder, FORMAT_PARAMS);
-        }
-
-        @Override
-        public MetaData fromXContent(XContentParser parser) throws IOException {
-            return Builder.fromXContent(parser);
-        }
-    };
 }
