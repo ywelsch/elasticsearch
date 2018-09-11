@@ -125,7 +125,8 @@ public class MetaStateService extends AbstractComponent {
         return INDEX_METADATA_FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.indexPaths(index));
     }
 
-    private static final ToXContent.Params INDEX_METADATA_FORMAT_PARAMS = new ToXContent.MapParams(Collections.singletonMap("binary", "true"));
+    private static final ToXContent.Params INDEX_METADATA_FORMAT_PARAMS = new ToXContent.MapParams(
+        Collections.singletonMap("binary", "true"));
     public static final String INDEX_STATE_FILE_PREFIX = "state-";
 
     /**
@@ -253,7 +254,7 @@ public class MetaStateService extends AbstractComponent {
 
         private final Map<Index, Long> indices;
 
-        public MetaState(long globalStateGeneration, Map<Index, Long> indices) {
+        MetaState(long globalStateGeneration, Map<Index, Long> indices) {
             this.globalStateGeneration = globalStateGeneration;
             this.indices = indices;
         }
