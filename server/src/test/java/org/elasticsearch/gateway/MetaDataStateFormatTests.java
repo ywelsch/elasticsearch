@@ -59,6 +59,8 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.stream.StreamSupport;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -134,6 +136,31 @@ public class MetaDataStateFormatTests extends ESTestCase {
             assertThat(read, equalTo(state2));
 
         }
+    }
+
+    public void testReadWriteStateWithExceptions() throws IOException {
+        Path[] dirs = new Path[randomIntBetween(1, 5)];
+        for (int i = 0; i < dirs.length; i++) {
+            dirs[i] = createTempDir();
+        }
+        final long id = addDummyFiles("foo-", dirs);
+        Format format = new Format("foo-", (path, dir) -> {
+            MockDirectoryWrapper wrapper = newMockFSDirectory(path);
+            if (path.startsWith(dirs[0]) == false) {
+                wrapper.setFailOnOpenInput(randomBoolean());
+                wrapper.setAllowRandomFileNotFoundException(randomBoolean());
+                wrapper.setRandomIOExceptionRate(randomDouble());
+                wrapper.setRandomIOExceptionRateOnOpen(randomDouble());
+            }
+            return wrapper;
+        });
+        DummyState state = new DummyState(randomRealisticUnicodeOfCodepointLengthBetween(1, 1000), randomInt(), randomLong(), randomDouble(), randomBoolean());
+        try {
+            format.write(state, dirs);
+        } catch (Exception e) {
+            // ignore
+        }
+        assertEquals(state, format.loadLatestState(logger, NamedXContentRegistry.EMPTY, dirs).v1());
     }
 
     public void testVersionMismatch() throws IOException {
@@ -329,8 +356,19 @@ public class MetaDataStateFormatTests extends ESTestCase {
 
     private class Format extends MetaDataStateFormat<DummyState> {
 
+        private final BiFunction<Path, Directory, Directory> directoryWrapper;
+
         Format(String prefix) {
+            this(prefix, (path, dir) -> {
+                MockDirectoryWrapper mock = new MockDirectoryWrapper(random(), dir);
+                closeAfterSuite(mock);
+                return mock;
+            });
+        }
+
+        Format(String prefix, BiFunction<Path, Directory, Directory> directoryWrapper) {
             super(prefix);
+            this.directoryWrapper = directoryWrapper;
         }
 
         @Override
@@ -345,9 +383,7 @@ public class MetaDataStateFormatTests extends ESTestCase {
 
         @Override
         protected Directory newDirectory(Path dir) throws IOException {
-            MockDirectoryWrapper  mock = new MockDirectoryWrapper(random(), super.newDirectory(dir));
-            closeAfterSuite(mock);
-            return mock;
+            return directoryWrapper.apply(dir, super.newDirectory(dir));
         }
     }
 

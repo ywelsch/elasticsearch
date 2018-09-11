@@ -27,7 +27,7 @@ import org.apache.lucene.index.IndexFormatTooOldException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.OutputStreamIndexOutput;
+import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.SimpleFSDirectory;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.collect.Tuple;
@@ -49,9 +49,9 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -71,7 +71,6 @@ public abstract class MetaDataStateFormat<T> {
     private static final String STATE_FILE_CODEC = "state";
     private static final int MIN_COMPATIBLE_STATE_FILE_VERSION = 1;
     private static final int STATE_FILE_VERSION = 1;
-    private static final int BUFFER_SIZE = 4096;
     private final String prefix;
     private final Pattern stateFilePattern;
 
@@ -83,7 +82,6 @@ public abstract class MetaDataStateFormat<T> {
     protected MetaDataStateFormat(String prefix) {
         this.prefix = prefix;
         this.stateFilePattern = Pattern.compile(Pattern.quote(prefix) + "(\\d+)(" + MetaDataStateFormat.STATE_FILE_EXTENSION + ")?");
-
     }
 
     /**
@@ -108,56 +106,68 @@ public abstract class MetaDataStateFormat<T> {
         assert maxStateId >= 0 : "maxStateId must be positive but was: [" + maxStateId + "]";
         final String fileName = prefix + maxStateId + STATE_FILE_EXTENSION;
         Path stateLocation = locations[0].resolve(STATE_DIR_NAME);
-        Files.createDirectories(stateLocation);
-        final Path tmpStatePath = stateLocation.resolve(fileName + ".tmp");
+        final String tmpFileName = fileName + ".tmp";
         final Path finalStatePath = stateLocation.resolve(fileName);
-        try {
-            final String resourceDesc = "MetaDataStateFormat.write(path=\"" + tmpStatePath + "\")";
-            try (OutputStreamIndexOutput out =
-                     new OutputStreamIndexOutput(resourceDesc, fileName, Files.newOutputStream(tmpStatePath), BUFFER_SIZE)) {
-                CodecUtil.writeHeader(out, STATE_FILE_CODEC, STATE_FILE_VERSION);
-                out.writeInt(FORMAT.index());
-                try (XContentBuilder builder = newXContentBuilder(FORMAT, new IndexOutputOutputStream(out) {
-                    @Override
-                    public void close() throws IOException {
-                        // this is important since some of the XContentBuilders write bytes on close.
-                        // in order to write the footer we need to prevent closing the actual index input.
-                    } })) {
+        final Path tmpStatePath = stateLocation.resolve(tmpFileName);
+        try (Directory stateDir = newDirectory(stateLocation)) {
+            try {
+                try (IndexOutput out = stateDir.createOutput(tmpFileName, IOContext.DEFAULT)) {
+                    CodecUtil.writeHeader(out, STATE_FILE_CODEC, STATE_FILE_VERSION);
+                    out.writeInt(FORMAT.index());
+                    try (XContentBuilder builder = newXContentBuilder(FORMAT, new IndexOutputOutputStream(out) {
+                        @Override
+                        public void close() {
+                            // this is important since some of the XContentBuilders write bytes on close.
+                            // in order to write the footer we need to prevent closing the actual index input.
+                        }
+                    })) {
 
-                    builder.startObject();
-                    {
-                        toXContent(builder, state);
+                        builder.startObject();
+                        {
+                            toXContent(builder, state);
+                        }
+                        builder.endObject();
                     }
-                    builder.endObject();
+                    CodecUtil.writeFooter(out);
                 }
-                CodecUtil.writeFooter(out);
+                stateDir.sync(Collections.singleton(tmpFileName)); // fsync the state file
+                stateDir.rename(tmpFileName, fileName);
+                stateDir.syncMetaData();
+                logger.trace("written state to {}", finalStatePath);
+            } finally {
+                try {
+                    stateDir.deleteFile(tmpFileName);
+                    logger.trace("cleaned up {}", tmpStatePath);
+                } catch (FileNotFoundException | NoSuchFileException e) {
+                    // ignore
+                }
             }
-            IOUtils.fsync(tmpStatePath, false); // fsync the state file
-            Files.move(tmpStatePath, finalStatePath, StandardCopyOption.ATOMIC_MOVE);
-            IOUtils.fsync(stateLocation, true);
-            logger.trace("written state to {}", finalStatePath);
+
             for (int i = 1; i < locations.length; i++) {
                 stateLocation = locations[i].resolve(STATE_DIR_NAME);
-                Files.createDirectories(stateLocation);
                 Path tmpPath = stateLocation.resolve(fileName + ".tmp");
                 Path finalPath = stateLocation.resolve(fileName);
-                try {
-                    Files.copy(finalStatePath, tmpPath);
-                    IOUtils.fsync(tmpPath, false); // fsync the state file
-                    // we are on the same FileSystem / Partition here we can do an atomic move
-                    Files.move(tmpPath, finalPath, StandardCopyOption.ATOMIC_MOVE);
-                    IOUtils.fsync(stateLocation, true);
-                    logger.trace("copied state to {}", finalPath);
-                } finally {
-                    Files.deleteIfExists(tmpPath);
-                    logger.trace("cleaned up {}", tmpPath);
+                try (Directory extraStateDir = newDirectory(stateLocation)) {
+                    try {
+                        extraStateDir.copyFrom(stateDir, fileName, tmpFileName, IOContext.DEFAULT);
+                        extraStateDir.sync(Collections.singleton(tmpFileName)); // fsync the state file
+                        // we are on the same FileSystem / Partition here we can do an atomic move
+                        extraStateDir.rename(tmpFileName, fileName);
+                        extraStateDir.syncMetaData();
+                        logger.trace("copied state to {}", finalPath);
+                    } finally {
+                        try {
+                            extraStateDir.deleteFile(tmpFileName);
+                            logger.trace("cleaned up {}", tmpPath);
+                        } catch (FileNotFoundException | NoSuchFileException e) {
+                            // ignore
+                        }
+                        logger.trace("cleaned up {}", tmpPath);
+                    }
                 }
             }
-        } finally {
-            Files.deleteIfExists(tmpStatePath);
-            logger.trace("cleaned up {}", tmpStatePath);
         }
-        cleanupOldFiles(prefix, fileName, locations);
+        cleanupOldFiles(fileName, locations);
         return maxStateId;
     }
 
@@ -211,20 +221,16 @@ public abstract class MetaDataStateFormat<T> {
         return new SimpleFSDirectory(dir);
     }
 
-    private void cleanupOldFiles(final String prefix, final String currentStateFile, Path[] locations) throws IOException {
-        final DirectoryStream.Filter<Path> filter = entry -> {
-            final String entryFileName = entry.getFileName().toString();
-            return Files.isRegularFile(entry)
-                    && entryFileName.startsWith(prefix) // only state files
-                    && currentStateFile.equals(entryFileName) == false; // keep the current state file around
-        };
-        // now clean up the old files
+    private void cleanupOldFiles(final String currentStateFile, Path[] locations) throws IOException {
         for (Path dataLocation : locations) {
             logger.trace("cleanupOldFiles: cleaning up {}", dataLocation);
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dataLocation.resolve(STATE_DIR_NAME), filter)) {
-                for (Path stateFile : stream) {
-                    Files.deleteIfExists(stateFile);
-                    logger.trace("cleanupOldFiles: cleaned up {}", stateFile);
+            Path stateLocation = dataLocation.resolve(STATE_DIR_NAME);
+            try (Directory dir = newDirectory(stateLocation)) {
+                for (String file : dir.listAll()) {
+                    if (file.startsWith(prefix) && currentStateFile.equals(file) == false) {
+                        dir.deleteFile(file);
+                        logger.trace("cleanupOldFiles: cleaned up {}", stateLocation.resolve(file));
+                    }
                 }
             }
         }
