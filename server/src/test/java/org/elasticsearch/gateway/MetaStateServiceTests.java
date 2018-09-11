@@ -26,6 +26,9 @@ import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.test.ESTestCase;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.nullValue;
 
@@ -61,7 +64,21 @@ public class MetaStateServiceTests extends ESTestCase {
                     .persistentSettings(Settings.builder().put("test1", "value1").build())
                     .build();
             metaStateService.writeGlobalState("test_write", metaData);
-            assertThat(metaStateService.loadGlobalState().persistentSettings(), equalTo(metaData.persistentSettings()));
+            assertThat(metaStateService.loadGlobalState().v1().persistentSettings(), equalTo(metaData.persistentSettings()));
+        }
+    }
+
+    public void testWriteLoadMeta() throws Exception {
+        try (NodeEnvironment env = newNodeEnvironment()) {
+            MetaStateService metaStateService = new MetaStateService(Settings.EMPTY, env, xContentRegistry());
+
+            final Map<Index,Long> indices = new HashMap<>();
+            for (int i = 0; i < randomIntBetween(0, 10); i++) {
+                indices.put(new Index(randomAlphaOfLength(10), randomAlphaOfLength(10)), randomLong());
+            }
+            final MetaStateService.MetaState metaState = new MetaStateService.MetaState(randomLong(), indices);
+            metaStateService.writeMetaState("test_write", metaState);
+            assertThat(metaState, equalTo(metaStateService.loadMetaState()));
         }
     }
 
@@ -76,8 +93,8 @@ public class MetaStateServiceTests extends ESTestCase {
             MetaData metaDataWithIndex = MetaData.builder(metaData).put(index, true).build();
 
             metaStateService.writeGlobalState("test_write", metaDataWithIndex);
-            assertThat(metaStateService.loadGlobalState().persistentSettings(), equalTo(metaData.persistentSettings()));
-            assertThat(metaStateService.loadGlobalState().hasIndex("test1"), equalTo(false));
+            assertThat(metaStateService.loadGlobalState().v1().persistentSettings(), equalTo(metaData.persistentSettings()));
+            assertThat(metaStateService.loadGlobalState().v1().hasIndex("test1"), equalTo(false));
         }
     }
 

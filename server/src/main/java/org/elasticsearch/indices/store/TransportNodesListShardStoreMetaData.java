@@ -132,7 +132,7 @@ public class TransportNodesListShardStoreMetaData extends TransportNodesAction<T
                 // sometimes the request comes in before the local node processed that cluster state
                 // in such cases we can load it from disk
                 metaData = IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                    nodeEnv.indexPaths(shardId.getIndex()));
+                    nodeEnv.indexPaths(shardId.getIndex())).v1();
             }
             if (metaData == null) {
                 logger.trace("{} node doesn't have meta data for the requests index, responding with empty", shardId);

@@ -22,17 +22,27 @@ package org.elasticsearch.gateway;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.Nullable;
+import org.elasticsearch.common.ParseField;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.xcontent.ConstructingObjectParser;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContentFragment;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 /**
  * Handles writing and loading both {@link MetaData} and {@link IndexMetaData}
@@ -53,7 +63,7 @@ public class MetaStateService extends AbstractComponent {
      * meta state.
      */
     MetaData loadFullState() throws IOException {
-        MetaData globalMetaData = loadGlobalState();
+        MetaData globalMetaData = loadGlobalState().v1();
         MetaData.Builder metaDataBuilder;
         if (globalMetaData != null) {
             metaDataBuilder = MetaData.builder(globalMetaData);
@@ -62,7 +72,7 @@ public class MetaStateService extends AbstractComponent {
         }
         for (String indexFolderName : nodeEnv.availableIndexFolders()) {
             IndexMetaData indexMetaData = IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                nodeEnv.resolveIndexFolder(indexFolderName));
+                nodeEnv.resolveIndexFolder(indexFolderName)).v1();
             if (indexMetaData != null) {
                 metaDataBuilder.put(indexMetaData, false);
             } else {
@@ -72,11 +82,39 @@ public class MetaStateService extends AbstractComponent {
         return metaDataBuilder.build();
     }
 
+    MetaData loadAtomicFullState() throws IOException {
+        final MetaState metaState = loadMetaState();
+        if (metaState == null) {
+            return MetaData.builder().build();
+        }
+        MetaData.Builder metaDataBuilder;
+        MetaData globalMetaData = MetaData.FORMAT.loadGeneration(logger, namedXContentRegistry, metaState.getGlobalStateGeneration(),
+            nodeEnv.nodeDataPaths());
+        if (globalMetaData != null) {
+            metaDataBuilder = MetaData.builder(globalMetaData);
+        } else {
+            // TODO: throw exception?
+            metaDataBuilder = MetaData.builder();
+        }
+
+        for (Map.Entry<Index, Long> entry : metaState.getIndices().entrySet()) {
+            final String indexFolderName = entry.getKey().getUUID();
+            final IndexMetaData indexMetaData = IndexMetaData.FORMAT.loadGeneration(logger, namedXContentRegistry, entry.getValue(),
+                nodeEnv.resolveIndexFolder(indexFolderName));
+            if (indexMetaData != null) {
+                metaDataBuilder.put(indexMetaData, false);
+            } else {
+                // TODO: throw exception?
+                logger.debug("[{}] failed to find metadata for existing index location", indexFolderName);
+            }
+        }
+        return metaDataBuilder.build();
+    }
+
     /**
      * Loads the index state for the provided index name, returning null if doesn't exists.
      */
-    @Nullable
-    public IndexMetaData loadIndexState(Index index) throws IOException {
+    public Tuple<IndexMetaData, Long> loadIndexState(Index index) throws IOException {
         return IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.indexPaths(index));
     }
 
@@ -90,7 +128,7 @@ public class MetaStateService extends AbstractComponent {
                 continue;
             }
             IndexMetaData indexMetaData = IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                nodeEnv.resolveIndexFolder(indexFolderName));
+                nodeEnv.resolveIndexFolder(indexFolderName)).v1();
             if (indexMetaData != null) {
                 final String indexPathId = indexMetaData.getIndex().getUUID();
                 if (indexFolderName.equals(indexPathId)) {
@@ -108,7 +146,7 @@ public class MetaStateService extends AbstractComponent {
     /**
      * Loads the global state, *without* index state, see {@link #loadFullState()} for that.
      */
-    MetaData loadGlobalState() throws IOException {
+    Tuple<MetaData, Long> loadGlobalState() throws IOException {
         return MetaData.FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.nodeDataPaths());
     }
 
@@ -117,13 +155,14 @@ public class MetaStateService extends AbstractComponent {
      *
      * This method is public for testing purposes.
      */
-    public void writeIndex(String reason, IndexMetaData indexMetaData) throws IOException {
+    public long writeIndex(String reason, IndexMetaData indexMetaData) throws IOException {
         final Index index = indexMetaData.getIndex();
         logger.trace("[{}] writing state, reason [{}]", index, reason);
         try {
-            IndexMetaData.FORMAT.write(indexMetaData,
+            final long generation = IndexMetaData.FORMAT.write(indexMetaData,
                 nodeEnv.indexPaths(indexMetaData.getIndex()));
-            logger.trace("[{}] state written", index);
+            logger.trace("[{}] state written (generation: {})", index, generation);
+            return generation;
         } catch (Exception ex) {
             logger.warn(() -> new ParameterizedMessage("[{}]: failed to write index state", index), ex);
             throw new IOException("failed to write state for [" + index + "]", ex);
@@ -133,13 +172,118 @@ public class MetaStateService extends AbstractComponent {
     /**
      * Writes the global state, *without* the indices states.
      */
-    void writeGlobalState(String reason, MetaData metaData) throws IOException {
+    long writeGlobalState(String reason, MetaData metaData) throws IOException {
         logger.trace("[_global] writing state, reason [{}]",  reason);
         try {
-            MetaData.FORMAT.write(metaData, nodeEnv.nodeDataPaths());
-            logger.trace("[_global] state written");
+            final long generation = MetaData.FORMAT.write(metaData, nodeEnv.nodeDataPaths());
+            logger.trace("[_global] state written (generation: {})", generation);
+            return generation;
         } catch (Exception ex) {
             logger.warn("[_global]: failed to write global state", ex);
+            throw new IOException("failed to write global state", ex);
+        }
+    }
+
+    static class MetaState implements ToXContentFragment {
+
+        public static final String META_STATE_FILE_PREFIX = "meta-";
+
+        private final long globalStateGeneration;
+
+        private final Map<Index, Long> indices;
+
+        public MetaState(long globalStateGeneration, Map<Index, Long> indices) {
+            this.globalStateGeneration = globalStateGeneration;
+            this.indices = indices;
+        }
+
+        public long getGlobalStateGeneration() {
+            return globalStateGeneration;
+        }
+
+        public Map<Index, Long> getIndices() {
+            return indices;
+        }
+
+        private static final ParseField INDICES_PARSE_FIELD = new ParseField("indices");
+        private static final ParseField INDEX_PARSE_FIELD = new ParseField("index");
+        private static final ParseField GENERATION_PARSE_FIELD = new ParseField("generation");
+
+        @Override
+        public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+            builder.field(GENERATION_PARSE_FIELD.getPreferredName(), globalStateGeneration);
+
+            builder.startArray(INDICES_PARSE_FIELD.getPreferredName());
+            for (Map.Entry<Index, Long> entry : indices.entrySet()) {
+                builder.startObject();
+                builder.field(INDEX_PARSE_FIELD.getPreferredName(), entry.getKey());
+                builder.field(GENERATION_PARSE_FIELD.getPreferredName(), entry.getValue());
+                builder.endObject();
+            }
+            builder.endArray();
+            return builder;
+        }
+
+        private static final ConstructingObjectParser<MetaState, Void> PARSER = new ConstructingObjectParser<>("state",
+            a -> new MetaState((Long) a[0], ((List<Tuple<Index, Long>>) a[1]).stream().collect(Collectors.toMap(Tuple::v1, Tuple::v2))));
+
+        static {
+            final ConstructingObjectParser<Tuple<Index, Long>, Void> INDEX_ENTRY_PARSER = new ConstructingObjectParser<>("index",
+                a -> new Tuple(((Index.Builder) a[0]).build(), (Long) a[1]));
+
+            INDEX_ENTRY_PARSER.declareObject(ConstructingObjectParser.constructorArg(), Index.INDEX_PARSER, INDEX_PARSE_FIELD);
+            INDEX_ENTRY_PARSER.declareLong(ConstructingObjectParser.constructorArg(), GENERATION_PARSE_FIELD);
+
+            PARSER.declareLong(ConstructingObjectParser.constructorArg(), GENERATION_PARSE_FIELD);
+            PARSER.declareObjectArray(ConstructingObjectParser.constructorArg(), INDEX_ENTRY_PARSER, INDICES_PARSE_FIELD);
+        }
+
+        public static MetaState fromXContent(XContentParser parser) throws IOException {
+            return PARSER.parse(parser, null);
+        }
+
+        private static final ToXContent.Params FORMAT_PARAMS = new MapParams(Collections.singletonMap("binary", "true"));
+
+        public static final MetaDataStateFormat<MetaState> FORMAT = new MetaDataStateFormat<MetaState>(META_STATE_FILE_PREFIX) {
+
+            @Override
+            public void toXContent(XContentBuilder builder, MetaState state) throws IOException {
+                state.toXContent(builder, FORMAT_PARAMS);
+            }
+
+            @Override
+            public MetaState fromXContent(XContentParser parser) throws IOException {
+                return MetaState.fromXContent(parser);
+            }
+        };
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            MetaState metaState = (MetaState) o;
+            return globalStateGeneration == metaState.globalStateGeneration &&
+                Objects.equals(indices, metaState.indices);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(globalStateGeneration, indices);
+        }
+    }
+
+    MetaState loadMetaState() throws IOException {
+        return MetaState.FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.nodeDataPaths()).v1();
+    }
+
+    long writeMetaState(String reason, MetaState metaState) throws IOException {
+        logger.trace("[_meta] writing state, reason [{}]",  reason);
+        try {
+            final long generation = MetaState.FORMAT.write(metaState, nodeEnv.nodeDataPaths());
+            logger.trace("[_meta] state written (generation: {})", generation);
+            return generation;
+        } catch (Exception ex) {
+            logger.warn("[_meta]: failed to write global state", ex);
             throw new IOException("failed to write global state", ex);
         }
     }

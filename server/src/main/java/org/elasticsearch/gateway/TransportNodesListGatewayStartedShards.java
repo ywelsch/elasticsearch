@@ -116,7 +116,7 @@ public class TransportNodesListGatewayStartedShards extends
             final ShardId shardId = request.getShardId();
             logger.trace("{} loading local shard state info", shardId);
             ShardStateMetaData shardStateMetaData = ShardStateMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                nodeEnv.availableShardPaths(request.shardId));
+                nodeEnv.availableShardPaths(request.shardId)).v1();
             if (shardStateMetaData != null) {
                 IndexMetaData metaData = clusterService.state().metaData().index(shardId.getIndex());
                 if (metaData == null) {
@@ -124,7 +124,7 @@ public class TransportNodesListGatewayStartedShards extends
                     // sometimes the request comes in before the local node processed that cluster state
                     // in such cases we can load it from disk
                     metaData = IndexMetaData.FORMAT.loadLatestState(logger, namedXContentRegistry,
-                        nodeEnv.indexPaths(shardId.getIndex()));
+                        nodeEnv.indexPaths(shardId.getIndex())).v1();
                 }
                 if (metaData == null) {
                     ElasticsearchException e = new ElasticsearchException("failed to find local IndexMetaData");

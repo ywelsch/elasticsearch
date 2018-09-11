@@ -190,7 +190,7 @@ import static org.hamcrest.Matchers.sameInstance;
 public class IndexShardTests extends IndexShardTestCase {
 
     public static ShardStateMetaData load(Logger logger, Path... shardPaths) throws IOException {
-        return ShardStateMetaData.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, shardPaths);
+        return ShardStateMetaData.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, shardPaths).v1();
     }
 
     public static void write(ShardStateMetaData shardStateMetaData,

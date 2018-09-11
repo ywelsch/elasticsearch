@@ -32,10 +32,12 @@ import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.env.NodeEnvironment;
+import org.elasticsearch.gateway.MetaStateService.MetaState;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.plugins.MetaDataUpgrader;
 
@@ -54,8 +56,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
-import static java.util.Collections.emptySet;
-import static java.util.Collections.unmodifiableSet;
+import static java.util.Collections.unmodifiableMap;
 
 public class GatewayMetaState extends AbstractComponent implements ClusterStateApplier {
 
@@ -65,7 +66,9 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
     @Nullable
     private volatile MetaData previousMetaData;
 
-    private volatile Set<Index> previouslyWrittenIndices = emptySet();
+    private volatile long previousGlobalStateGeneration = -1L;
+
+    private volatile Map<Index, Long> previouslyWrittenIndices = new HashMap<>();
 
     public GatewayMetaState(Settings settings, NodeEnvironment nodeEnv, MetaStateService metaStateService,
                             MetaDataIndexUpgradeService metaDataIndexUpgradeService, MetaDataUpgrader metaDataUpgrader) throws IOException {
@@ -83,23 +86,28 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
         if (DiscoveryNode.isMasterNode(settings) || DiscoveryNode.isDataNode(settings)) {
             try {
                 ensureNoPre019State();
-                final MetaData metaData = metaStateService.loadFullState();
+                final MetaData metaData = metaStateService.loadAtomicFullState();
                 final MetaData upgradedMetaData = upgradeMetaData(metaData, metaDataIndexUpgradeService, metaDataUpgrader);
                 // We finished global state validation and successfully checked all indices for backward compatibility
                 // and found no non-upgradable indices, which means the upgrade can continue.
                 // Now it's safe to overwrite global and index metadata.
                 if (metaData != upgradedMetaData) {
+                    long globalStateGeneration;
+                    Map<Index, Long> indices = new HashMap<>();
                     if (MetaData.isGlobalStateEquals(metaData, upgradedMetaData) == false) {
-                        metaStateService.writeGlobalState("upgrade", upgradedMetaData);
+                        globalStateGeneration = metaStateService.writeGlobalState("upgrade", upgradedMetaData);
+                    } else {
+                        globalStateGeneration = metaStateService.loadGlobalState().v2();
                     }
                     for (IndexMetaData indexMetaData : upgradedMetaData) {
                         if (metaData.hasIndexMetaData(indexMetaData) == false) {
-                            metaStateService.writeIndex("upgrade", indexMetaData);
+                            indices.put(indexMetaData.getIndex(), metaStateService.writeIndex("upgrade", indexMetaData));
                         }
                     }
+                    metaStateService.writeMetaState("upgrade", new MetaState(globalStateGeneration, indices));
                 }
                 long startNS = System.nanoTime();
-                metaStateService.loadFullState();
+                metaStateService.loadAtomicFullState();
                 logger.debug("took {} to load state", TimeValue.timeValueMillis(TimeValue.nsecToMSec(System.nanoTime() - startNS)));
             } catch (Exception e) {
                 logger.error("failed to read local state, exiting...", e);
@@ -109,7 +117,7 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
     }
 
     public MetaData loadMetaState() throws IOException {
-        return metaStateService.loadFullState();
+        return metaStateService.loadAtomicFullState();
     }
 
     @Override
@@ -119,13 +127,15 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
         if (state.blocks().disableStatePersistence()) {
             // reset the current metadata, we need to start fresh...
             this.previousMetaData = null;
-            previouslyWrittenIndices = emptySet();
+            previouslyWrittenIndices = new HashMap<>();
             return;
         }
 
+        long globalStateGeneration = previousGlobalStateGeneration;
+
         MetaData newMetaData = state.metaData();
         // we don't check if metaData changed, since we might be called several times and we need to check dangling...
-        Set<Index> relevantIndices = Collections.emptySet();
+        Map<Index, Long> newIndices = Collections.emptyMap();
         boolean success = true;
         // write the state if this node is a master eligible node or if it is a data node and has shards allocated on it
         if (state.nodes().getLocalNode().isMasterNode() || state.nodes().getLocalNode().isDataNode()) {
@@ -138,39 +148,57 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
                     // persistence was disabled or the node was restarted), see getRelevantIndicesOnDataOnlyNode().
                     // we therefore have to check here if we have shards on disk and add their indices to the previouslyWrittenIndices list
                     if (isDataOnlyNode(state)) {
-                        Set<Index> newPreviouslyWrittenIndices = new HashSet<>(previouslyWrittenIndices.size());
+                        Map<Index, Long> newPreviouslyWrittenIndices = new HashMap<>(previouslyWrittenIndices);
                         for (IndexMetaData indexMetaData : newMetaData) {
-                            IndexMetaData indexMetaDataOnDisk = null;
                             if (indexMetaData.getState().equals(IndexMetaData.State.CLOSE)) {
-                                indexMetaDataOnDisk = metaStateService.loadIndexState(indexMetaData.getIndex());
-                            }
-                            if (indexMetaDataOnDisk != null) {
-                                newPreviouslyWrittenIndices.add(indexMetaDataOnDisk.getIndex());
+                                Tuple<IndexMetaData, Long> indexMetaDataOnDisk = metaStateService.loadIndexState(indexMetaData.getIndex());
+                                if (indexMetaDataOnDisk.v1() != null) {
+                                    newPreviouslyWrittenIndices.put(indexMetaDataOnDisk.v1().getIndex(), indexMetaDataOnDisk.v2());
+                                }
                             }
                         }
-                        newPreviouslyWrittenIndices.addAll(previouslyWrittenIndices);
-                        previouslyWrittenIndices = unmodifiableSet(newPreviouslyWrittenIndices);
+                        previouslyWrittenIndices = newPreviouslyWrittenIndices;
                     }
                 } catch (Exception e) {
                     success = false;
                 }
             }
+
             // check if the global state changed?
             if (previousMetaData == null || !MetaData.isGlobalStateEquals(previousMetaData, newMetaData)) {
                 try {
-                    metaStateService.writeGlobalState("changed", newMetaData);
+                    globalStateGeneration = metaStateService.writeGlobalState("changed", newMetaData);
                 } catch (Exception e) {
                     success = false;
                 }
             }
 
+            newIndices = new HashMap<>(previouslyWrittenIndices);
+            Set<Index> relevantIndices = getRelevantIndices(event.state(), event.previousState(), previouslyWrittenIndices.keySet());
+            newIndices.keySet().retainAll(relevantIndices);
 
-            relevantIndices = getRelevantIndices(event.state(), event.previousState(), previouslyWrittenIndices);
-            final Iterable<IndexMetaWriteInfo> writeInfo = resolveStatesToBeWritten(previouslyWrittenIndices, relevantIndices, previousMetaData, event.state().metaData());
+            final Iterable<IndexMetaWriteInfo> writeInfo = resolveStatesToBeWritten(previouslyWrittenIndices, relevantIndices,
+                previousMetaData, event.state().metaData());
             // check and write changes in indices
             for (IndexMetaWriteInfo indexMetaWrite : writeInfo) {
                 try {
-                    metaStateService.writeIndex(indexMetaWrite.reason, indexMetaWrite.newMetaData);
+                    final long generation;
+                    if (indexMetaWrite.shouldWrite()) {
+                        generation = metaStateService.writeIndex(indexMetaWrite.reason, indexMetaWrite.newMetaData);
+                    } else {
+                        generation = indexMetaWrite.previousGeneration();
+                    }
+                    newIndices.put(indexMetaWrite.newMetaData.getIndex(), generation);
+                } catch (Exception e) {
+                    success = false;
+                }
+            }
+
+            if (success) {
+                try {
+                    // write list of indices with their generations
+                    final MetaState metaState = new MetaState(globalStateGeneration, newIndices);
+                    metaStateService.writeMetaState("changed", metaState);
                 } catch (Exception e) {
                     success = false;
                 }
@@ -178,8 +206,9 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
         }
 
         if (success) {
+            previousGlobalStateGeneration = globalStateGeneration;
             previousMetaData = newMetaData;
-            previouslyWrittenIndices = unmodifiableSet(relevantIndices);
+            previouslyWrittenIndices = unmodifiableMap(newIndices);
         }
     }
 
@@ -307,20 +336,18 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
      * @param newMetaData                 The new metadata
      * @return iterable over all indices states that should be written to disk
      */
-    public static Iterable<GatewayMetaState.IndexMetaWriteInfo> resolveStatesToBeWritten(Set<Index> previouslyWrittenIndices, Set<Index> potentiallyUnwrittenIndices, MetaData previousMetaData, MetaData newMetaData) {
+    public static Iterable<GatewayMetaState.IndexMetaWriteInfo> resolveStatesToBeWritten(Map<Index, Long> previouslyWrittenIndices, Set<Index> potentiallyUnwrittenIndices, MetaData previousMetaData, MetaData newMetaData) {
         List<GatewayMetaState.IndexMetaWriteInfo> indicesToWrite = new ArrayList<>();
         for (Index index : potentiallyUnwrittenIndices) {
             IndexMetaData newIndexMetaData = newMetaData.getIndexSafe(index);
             IndexMetaData previousIndexMetaData = previousMetaData == null ? null : previousMetaData.index(index);
             String writeReason = null;
-            if (previouslyWrittenIndices.contains(index) == false || previousIndexMetaData == null) {
+            if (previouslyWrittenIndices.containsKey(index) == false || previousIndexMetaData == null) {
                 writeReason = "freshly created";
             } else if (previousIndexMetaData.getVersion() != newIndexMetaData.getVersion()) {
                 writeReason = "version changed from [" + previousIndexMetaData.getVersion() + "] to [" + newIndexMetaData.getVersion() + "]";
             }
-            if (writeReason != null) {
-                indicesToWrite.add(new GatewayMetaState.IndexMetaWriteInfo(newIndexMetaData, previousIndexMetaData, writeReason));
-            }
+            indicesToWrite.add(new GatewayMetaState.IndexMetaWriteInfo(newIndexMetaData, previousIndexMetaData, writeReason, previouslyWrittenIndices.getOrDefault(index, -1L)));
         }
         return indicesToWrite;
     }
@@ -363,13 +390,16 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
 
     public static class IndexMetaWriteInfo {
         final IndexMetaData newMetaData;
-        final String reason;
+        @Nullable final String reason;
         final IndexMetaData previousMetaData;
+        final long previousGeneration;
 
-        public IndexMetaWriteInfo(IndexMetaData newMetaData, IndexMetaData previousMetaData, String reason) {
+        public IndexMetaWriteInfo(IndexMetaData newMetaData, IndexMetaData previousMetaData, @Nullable String reason,
+                                  long previousGeneration) {
             this.newMetaData = newMetaData;
             this.reason = reason;
             this.previousMetaData = previousMetaData;
+            this.previousGeneration = previousGeneration;
         }
 
         public IndexMetaData getNewMetaData() {
@@ -378,6 +408,14 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
 
         public String getReason() {
             return reason;
+        }
+
+        public boolean shouldWrite() {
+            return reason != null;
+        }
+
+        public long previousGeneration() {
+            return previousGeneration;
         }
     }
 }

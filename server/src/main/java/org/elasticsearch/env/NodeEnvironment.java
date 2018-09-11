@@ -348,7 +348,7 @@ public final class NodeEnvironment  implements Closeable {
     private static NodeMetaData loadOrCreateNodeMetaData(Settings settings, Logger logger,
                                                          NodePath... nodePaths) throws IOException {
         final Path[] paths = Arrays.stream(nodePaths).map(np -> np.path).toArray(Path[]::new);
-        NodeMetaData metaData = NodeMetaData.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, paths);
+        NodeMetaData metaData = NodeMetaData.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, paths).v1();
         if (metaData == null) {
             metaData = new NodeMetaData(generateNodeId(settings));
         }

@@ -32,6 +32,7 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.decider.ClusterRebalanceAllocationDecider;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.plugins.MetaDataUpgrader;
@@ -42,7 +43,10 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static java.util.Collections.emptySet;
 import static org.elasticsearch.cluster.routing.ShardRoutingState.INITIALIZING;
@@ -186,9 +190,10 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
             inMemoryMetaData = event.previousState().metaData();
             oldIndicesList = GatewayMetaState.getRelevantIndices(event.previousState(), event.previousState(), oldIndicesList);
         }
-        Set<Index> newIndicesList = GatewayMetaState.getRelevantIndices(event.state(),event.previousState(), oldIndicesList);
+        Set<Index> newIndicesList = GatewayMetaState.getRelevantIndices(event.state(), event.previousState(), oldIndicesList);
         // third, get the actual write info
-        Iterator<GatewayMetaState.IndexMetaWriteInfo> indices = GatewayMetaState.resolveStatesToBeWritten(oldIndicesList, newIndicesList,
+        Map<Index, Long> oldIndicesMap = oldIndicesList.stream().collect(Collectors.toMap(Function.identity(), idx -> 42L));
+        Iterator<GatewayMetaState.IndexMetaWriteInfo> indices = GatewayMetaState.resolveStatesToBeWritten(oldIndicesMap, newIndicesList,
                 inMemoryMetaData, event.state().metaData()).iterator();
 
         if (expectMetaData) {

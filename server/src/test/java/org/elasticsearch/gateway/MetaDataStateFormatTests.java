@@ -257,7 +257,7 @@ public class MetaDataStateFormatTests extends ESTestCase {
         }
         List<Path> dirList = Arrays.asList(dirs);
         Collections.shuffle(dirList, random());
-        MetaData loadedMetaData = format.loadLatestState(logger, xContentRegistry(), dirList.toArray(new Path[0]));
+        MetaData loadedMetaData = format.loadLatestState(logger, xContentRegistry(), dirList.toArray(new Path[0])).v1();
         MetaData latestMetaData = meta.get(numStates-1);
         assertThat(loadedMetaData.clusterUUID(), not(equalTo("_na_")));
         assertThat(loadedMetaData.clusterUUID(), equalTo(latestMetaData.clusterUUID()));

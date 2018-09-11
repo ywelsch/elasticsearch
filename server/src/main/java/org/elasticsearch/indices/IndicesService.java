@@ -833,7 +833,7 @@ public class IndicesService extends AbstractLifecycleComponent
         if (nodeEnv.hasNodeFile() && FileSystemUtils.exists(nodeEnv.indexPaths(index))) {
             final IndexMetaData metaData;
             try {
-                metaData = metaStateService.loadIndexState(index);
+                metaData = metaStateService.loadIndexState(index).v1();
             } catch (Exception e) {
                 logger.warn(() -> new ParameterizedMessage("[{}] failed to load state file from a stale deleted index, folders will be left on disk", index), e);
                 return null;

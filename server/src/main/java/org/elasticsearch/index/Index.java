@@ -40,7 +40,7 @@ public class Index implements Writeable, ToXContentObject {
     public static final Index[] EMPTY_ARRAY = new Index[0];
     private static final String INDEX_UUID_KEY = "index_uuid";
     private static final String INDEX_NAME_KEY = "index_name";
-    private static final ObjectParser<Builder, Void> INDEX_PARSER = new ObjectParser<>("index", Builder::new);
+    public static final ObjectParser<Builder, Void> INDEX_PARSER = new ObjectParser<>("index", Builder::new);
     static {
         INDEX_PARSER.declareString(Builder::name, new ParseField(INDEX_NAME_KEY));
         INDEX_PARSER.declareString(Builder::uuid, new ParseField(INDEX_UUID_KEY));
@@ -122,7 +122,7 @@ public class Index implements Writeable, ToXContentObject {
     /**
      * Builder for Index objects.  Used by ObjectParser instances only.
      */
-    private static final class Builder {
+    public static final class Builder {
         private String name;
         private String uuid;
 

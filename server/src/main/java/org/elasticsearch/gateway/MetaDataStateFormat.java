@@ -30,6 +30,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.apache.lucene.store.SimpleFSDirectory;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.lucene.store.IndexOutputOutputStream;
 import org.elasticsearch.common.lucene.store.InputStreamIndexInput;
@@ -52,6 +53,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -92,9 +94,10 @@ public abstract class MetaDataStateFormat<T> {
      *
      * @param state the state object to write
      * @param locations the locations where the state should be written to.
+     * @return returns generation of the file
      * @throws IOException if an IOException occurs
      */
-    public final void write(final T state, final Path... locations) throws IOException {
+    public final long write(final T state, final Path... locations) throws IOException {
         if (locations == null) {
             throw new IllegalArgumentException("Locations must not be null");
         }
@@ -155,6 +158,7 @@ public abstract class MetaDataStateFormat<T> {
             logger.trace("cleaned up {}", tmpStatePath);
         }
         cleanupOldFiles(prefix, fileName, locations);
+        return maxStateId;
     }
 
     protected XContentBuilder newXContentBuilder(XContentType type, OutputStream stream ) throws IOException {
@@ -254,9 +258,21 @@ public abstract class MetaDataStateFormat<T> {
      * @param dataLocations the data-locations to try.
      * @return the latest state or <code>null</code> if no state was found.
      */
-    public T loadLatestState(Logger logger, NamedXContentRegistry namedXContentRegistry, Path... dataLocations) throws IOException {
+    public Tuple<T, Long> loadLatestState(Logger logger, NamedXContentRegistry namedXContentRegistry, Path... dataLocations)
+        throws IOException {
+        return loadState(logger, namedXContentRegistry, Optional.empty(), dataLocations);
+    }
+
+    public final T loadGeneration(Logger logger, NamedXContentRegistry namedXContentRegistry, long generation,
+                                  Path... dataLocations) throws IOException {
+        return loadState(logger, namedXContentRegistry, Optional.of(generation), dataLocations).v1();
+    }
+
+    private Tuple<T, Long> loadState(Logger logger, NamedXContentRegistry namedXContentRegistry, Optional<Long> generation,
+                                     Path... dataLocations)
+        throws IOException {
         List<PathAndStateId> files = new ArrayList<>();
-        long maxStateId = -1;
+        long maxStateId = generation.orElse(-1L);
         if (dataLocations != null) { // select all eligible files first
             for (Path dataLocation : dataLocations) {
                 final Path stateDir = dataLocation.resolve(STATE_DIR_NAME);
@@ -269,7 +285,9 @@ public abstract class MetaDataStateFormat<T> {
                         final Matcher matcher = stateFilePattern.matcher(stateFile.getFileName().toString());
                         if (matcher.matches()) {
                             final long stateId = Long.parseLong(matcher.group(1));
-                            maxStateId = Math.max(maxStateId, stateId);
+                            if (generation.isPresent() == false) {
+                                maxStateId = Math.max(maxStateId, stateId);
+                            }
                             PathAndStateId pav = new PathAndStateId(stateFile, stateId);
                             logger.trace("found state file: {}", pav);
                             files.add(pav);
@@ -284,20 +302,20 @@ public abstract class MetaDataStateFormat<T> {
         //       we iterate only over the ones with the max version.
         long finalMaxStateId = maxStateId;
         Collection<PathAndStateId> pathAndStateIds = files
-                .stream()
-                .filter(pathAndStateId -> pathAndStateId.id == finalMaxStateId)
-                .collect(Collectors.toCollection(ArrayList::new));
+            .stream()
+            .filter(pathAndStateId -> pathAndStateId.id == finalMaxStateId)
+            .collect(Collectors.toCollection(ArrayList::new));
 
         final List<Throwable> exceptions = new ArrayList<>();
         for (PathAndStateId pathAndStateId : pathAndStateIds) {
             try {
                 T state = read(namedXContentRegistry, pathAndStateId.file);
                 logger.trace("state id [{}] read from [{}]", pathAndStateId.id, pathAndStateId.file.getFileName());
-                return state;
+                return Tuple.tuple(state, maxStateId);
             } catch (Exception e) {
                 exceptions.add(new IOException("failed to read " + pathAndStateId.toString(), e));
                 logger.debug(() -> new ParameterizedMessage(
-                        "{}: failed to read [{}], ignoring...", pathAndStateId.file.toAbsolutePath(), prefix), e);
+                    "{}: failed to read [{}], ignoring...", pathAndStateId.file.toAbsolutePath(), prefix), e);
             }
         }
         // if we reach this something went wrong
@@ -306,7 +324,7 @@ public abstract class MetaDataStateFormat<T> {
             // We have some state files but none of them gave us a usable state
             throw new IllegalStateException("Could not find a state file to recover from among " + files);
         }
-        return null;
+        return Tuple.tuple(null, maxStateId);
     }
 
     /**
