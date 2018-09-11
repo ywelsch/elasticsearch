@@ -20,6 +20,8 @@
 package org.elasticsearch.gateway;
 
 import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.SimpleFSDirectory;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.common.ParseField;
@@ -36,6 +38,7 @@ import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -57,6 +60,10 @@ public class MetaStateService extends AbstractComponent {
         super(settings);
         this.nodeEnv = nodeEnv;
         this.namedXContentRegistry = namedXContentRegistry;
+    }
+
+    protected Directory newDirectory(Path dir) throws IOException {
+        return new SimpleFSDirectory(dir);
     }
 
     /**
@@ -125,7 +132,7 @@ public class MetaStateService extends AbstractComponent {
     /**
      * State format for {@link IndexMetaData} to write to and load from disk
      */
-    public static final MetaDataStateFormat<IndexMetaData> INDEX_METADATA_FORMAT = new MetaDataStateFormat<IndexMetaData>(INDEX_STATE_FILE_PREFIX) {
+    public final MetaDataStateFormat<IndexMetaData> INDEX_METADATA_FORMAT = new MetaDataStateFormat<IndexMetaData>(INDEX_STATE_FILE_PREFIX) {
 
         @Override
         public void toXContent(XContentBuilder builder, IndexMetaData state) throws IOException {
@@ -137,6 +144,11 @@ public class MetaStateService extends AbstractComponent {
             assert parser.getXContentRegistry() != NamedXContentRegistry.EMPTY
                 : "loading index metadata requires a working named xcontent registry";
             return IndexMetaData.Builder.fromXContent(parser);
+        }
+
+        @Override
+        protected Directory newDirectory(Path dir) throws IOException {
+            return MetaStateService.this.newDirectory(dir);
         }
     };
 
@@ -218,7 +230,7 @@ public class MetaStateService extends AbstractComponent {
     /**
      * State format for {@link MetaData} to write to and load from disk
      */
-    public static final MetaDataStateFormat<MetaData> METADATA_FORMAT = new MetaDataStateFormat<MetaData>(GLOBAL_STATE_FILE_PREFIX) {
+    public final MetaDataStateFormat<MetaData> METADATA_FORMAT = new MetaDataStateFormat<MetaData>(GLOBAL_STATE_FILE_PREFIX) {
 
         @Override
         public void toXContent(XContentBuilder builder, MetaData state) throws IOException {
@@ -229,11 +241,14 @@ public class MetaStateService extends AbstractComponent {
         public MetaData fromXContent(XContentParser parser) throws IOException {
             return MetaData.Builder.fromXContent(parser);
         }
+
+        @Override
+        protected Directory newDirectory(Path dir) throws IOException {
+            return MetaStateService.this.newDirectory(dir);
+        }
     };
 
     static class MetaState implements ToXContentFragment {
-
-        public static final String META_STATE_FILE_PREFIX = "meta-";
 
         private final long globalStateGeneration;
 
@@ -289,21 +304,6 @@ public class MetaStateService extends AbstractComponent {
             return PARSER.parse(parser, null);
         }
 
-        private static final ToXContent.Params FORMAT_PARAMS = new MapParams(Collections.singletonMap("binary", "true"));
-
-        public static final MetaDataStateFormat<MetaState> FORMAT = new MetaDataStateFormat<MetaState>(META_STATE_FILE_PREFIX) {
-
-            @Override
-            public void toXContent(XContentBuilder builder, MetaState state) throws IOException {
-                state.toXContent(builder, FORMAT_PARAMS);
-            }
-
-            @Override
-            public MetaState fromXContent(XContentParser parser) throws IOException {
-                return MetaState.fromXContent(parser);
-            }
-        };
-
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
@@ -319,14 +319,36 @@ public class MetaStateService extends AbstractComponent {
         }
     }
 
+    public static final String META_STATE_FILE_PREFIX = "meta-";
+
+    private static final ToXContent.Params METASTATE_FORMAT_PARAMS = new ToXContent.MapParams(Collections.singletonMap("binary", "true"));
+
+    public final MetaDataStateFormat<MetaState> METASTATE_FORMAT = new MetaDataStateFormat<MetaState>(META_STATE_FILE_PREFIX) {
+
+        @Override
+        public void toXContent(XContentBuilder builder, MetaState state) throws IOException {
+            state.toXContent(builder, METASTATE_FORMAT_PARAMS);
+        }
+
+        @Override
+        public MetaState fromXContent(XContentParser parser) throws IOException {
+            return MetaState.fromXContent(parser);
+        }
+
+        @Override
+        protected Directory newDirectory(Path dir) throws IOException {
+            return MetaStateService.this.newDirectory(dir);
+        }
+    };
+
     MetaState loadMetaState() throws IOException {
-        return MetaState.FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.nodeDataPaths()).v1();
+        return METASTATE_FORMAT.loadLatestState(logger, namedXContentRegistry, nodeEnv.nodeDataPaths()).v1();
     }
 
     long writeMetaState(String reason, MetaState metaState) throws IOException {
         logger.trace("[_meta] writing state, reason [{}]",  reason);
         try {
-            final long generation = MetaState.FORMAT.write(metaState, nodeEnv.nodeDataPaths());
+            final long generation = METASTATE_FORMAT.write(metaState, nodeEnv.nodeDataPaths());
             logger.trace("[_meta] state written (generation: {})", generation);
             return generation;
         } catch (Exception ex) {

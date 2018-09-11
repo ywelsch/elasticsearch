@@ -355,14 +355,14 @@ public class CreateIndexIT extends ESIntegTestCase {
             @Override
             public Settings onNodeStopped(String nodeName) throws Exception {
                 if (dataOrMasterNodeNames.contains(nodeName)) {
-                    final NodeEnvironment nodeEnvironment = internalCluster().getInstance(NodeEnvironment.class, nodeName);
+                    final MetaStateService metaStateService = internalCluster().getInstance(MetaStateService.class, nodeName);
                     final IndexMetaData brokenMetaData =
                             IndexMetaData
                                     .builder(metaData)
                                     .settings(Settings.builder().put(metaData.getSettings()).put("index.foo", true))
                                     .build();
                     // so evil
-                    MetaStateService.INDEX_METADATA_FORMAT.write(brokenMetaData, nodeEnvironment.indexPaths(brokenMetaData.getIndex()));
+                    metaStateService.writeIndex("broken metadata", brokenMetaData);
                 }
                 return Settings.EMPTY;
             }
