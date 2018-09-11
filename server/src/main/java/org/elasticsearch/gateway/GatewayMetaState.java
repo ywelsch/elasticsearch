@@ -336,7 +336,7 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
      * @param newMetaData                 The new metadata
      * @return iterable over all indices states that should be written to disk
      */
-    public static Iterable<GatewayMetaState.IndexMetaWriteInfo> resolveStatesToBeWritten(Map<Index, Long> previouslyWrittenIndices, Set<Index> potentiallyUnwrittenIndices, MetaData previousMetaData, MetaData newMetaData) {
+    public static List<GatewayMetaState.IndexMetaWriteInfo> resolveStatesToBeWritten(Map<Index, Long> previouslyWrittenIndices, Set<Index> potentiallyUnwrittenIndices, MetaData previousMetaData, MetaData newMetaData) {
         List<GatewayMetaState.IndexMetaWriteInfo> indicesToWrite = new ArrayList<>();
         for (Index index : potentiallyUnwrittenIndices) {
             IndexMetaData newIndexMetaData = newMetaData.getIndexSafe(index);

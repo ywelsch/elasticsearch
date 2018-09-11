@@ -43,6 +43,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -51,6 +52,7 @@ import java.util.stream.Collectors;
 import static java.util.Collections.emptySet;
 import static org.elasticsearch.cluster.routing.ShardRoutingState.INITIALIZING;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasSize;
 
 /**
  * Test IndexMetaState for master and data only nodes return correct list of indices to write
@@ -183,7 +185,7 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
 
     public void assertState(ClusterChangedEvent event,
                             boolean stateInMemory,
-                            boolean expectMetaData) throws Exception {
+                            boolean expectMetaData) {
         MetaData inMemoryMetaData = null;
         Set<Index> oldIndicesList = emptySet();
         if (stateInMemory) {
@@ -193,15 +195,16 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
         Set<Index> newIndicesList = GatewayMetaState.getRelevantIndices(event.state(), event.previousState(), oldIndicesList);
         // third, get the actual write info
         Map<Index, Long> oldIndicesMap = oldIndicesList.stream().collect(Collectors.toMap(Function.identity(), idx -> 42L));
-        Iterator<GatewayMetaState.IndexMetaWriteInfo> indices = GatewayMetaState.resolveStatesToBeWritten(oldIndicesMap, newIndicesList,
-                inMemoryMetaData, event.state().metaData()).iterator();
+        List<GatewayMetaState.IndexMetaWriteInfo> indices = GatewayMetaState.resolveStatesToBeWritten(oldIndicesMap, newIndicesList,
+                inMemoryMetaData, event.state().metaData()).stream()
+            .filter(GatewayMetaState.IndexMetaWriteInfo::shouldWrite)
+            .collect(Collectors.toList());
 
         if (expectMetaData) {
-            assertThat(indices.hasNext(), equalTo(true));
-            assertThat(indices.next().getNewMetaData().getIndex().getName(), equalTo("test"));
-            assertThat(indices.hasNext(), equalTo(false));
+            assertThat(indices, hasSize(1));
+            assertThat(indices.get(0).getNewMetaData().getIndex().getName(), equalTo("test"));
         } else {
-            assertThat(indices.hasNext(), equalTo(false));
+            assertThat(indices.toString(), indices, hasSize(0));
         }
     }
 
