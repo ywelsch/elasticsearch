@@ -86,7 +86,7 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
         if (DiscoveryNode.isMasterNode(settings) || DiscoveryNode.isDataNode(settings)) {
             try {
                 ensureNoPre019State();
-                final MetaData metaData = metaStateService.loadAtomicFullState();
+                final MetaData metaData = metaStateService.loadFullState();
                 final MetaData upgradedMetaData = upgradeMetaData(metaData, metaDataIndexUpgradeService, metaDataUpgrader);
                 // We finished global state validation and successfully checked all indices for backward compatibility
                 // and found no non-upgradable indices, which means the upgrade can continue.
@@ -107,7 +107,7 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
                     metaStateService.writeMetaState("upgrade", new MetaState(globalStateGeneration, indices));
                 }
                 long startNS = System.nanoTime();
-                metaStateService.loadAtomicFullState();
+                metaStateService.loadFullState();
                 logger.debug("took {} to load state", TimeValue.timeValueMillis(TimeValue.nsecToMSec(System.nanoTime() - startNS)));
             } catch (Exception e) {
                 logger.error("failed to read local state, exiting...", e);
@@ -117,7 +117,7 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
     }
 
     public MetaData loadMetaState() throws IOException {
-        return metaStateService.loadAtomicFullState();
+        return metaStateService.loadFullState();
     }
 
     @Override

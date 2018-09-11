@@ -45,14 +45,14 @@ public class MetaStateServiceTests extends ESTestCase {
 
             IndexMetaData index = IndexMetaData.builder("test1").settings(indexSettings).build();
             metaStateService.writeIndex("test_write", index);
-            assertThat(metaStateService.loadIndexState(index.getIndex()), equalTo(index));
+            assertThat(metaStateService.loadIndexState(index.getIndex()).v1(), equalTo(index));
         }
     }
 
     public void testLoadMissingIndex() throws Exception {
         try (NodeEnvironment env = newNodeEnvironment()) {
             MetaStateService metaStateService = new MetaStateService(Settings.EMPTY, env, xContentRegistry());
-            assertThat(metaStateService.loadIndexState(new Index("test1", "test1UUID")), nullValue());
+            assertThat(metaStateService.loadIndexState(new Index("test1", "test1UUID")).v1(), nullValue());
         }
     }
 

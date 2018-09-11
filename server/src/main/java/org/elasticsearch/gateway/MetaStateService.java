@@ -66,11 +66,7 @@ public class MetaStateService extends AbstractComponent {
         return new SimpleFSDirectory(dir);
     }
 
-    /**
-     * Loads the full state, which includes both the global state and all the indices
-     * meta state.
-     */
-    MetaData loadFullState() throws IOException {
+    private MetaData loadFullStateBWC() throws IOException {
         MetaData globalMetaData = loadGlobalState().v1();
         MetaData.Builder metaDataBuilder;
         if (globalMetaData != null) {
@@ -90,19 +86,22 @@ public class MetaStateService extends AbstractComponent {
         return metaDataBuilder.build();
     }
 
-    MetaData loadAtomicFullState() throws IOException {
+    /**
+     * Loads the full state, which includes both the global state and all the indices
+     * meta state.
+     */
+    MetaData loadFullState() throws IOException {
         final MetaState metaState = loadMetaState();
         if (metaState == null) {
-            return MetaData.builder().build();
+            return loadFullStateBWC();
         }
-        MetaData.Builder metaDataBuilder;
-        MetaData globalMetaData = METADATA_FORMAT.loadGeneration(logger, namedXContentRegistry, metaState.getGlobalStateGeneration(),
+        final MetaData.Builder metaDataBuilder;
+        final MetaData globalMetaData = METADATA_FORMAT.loadGeneration(logger, namedXContentRegistry, metaState.getGlobalStateGeneration(),
             nodeEnv.nodeDataPaths());
         if (globalMetaData != null) {
             metaDataBuilder = MetaData.builder(globalMetaData);
         } else {
-            // TODO: throw exception?
-            metaDataBuilder = MetaData.builder();
+            throw new IllegalStateException("failed to find global metadata [generation: " + metaState.getGlobalStateGeneration() + "]");
         }
 
         for (Map.Entry<Index, Long> entry : metaState.getIndices().entrySet()) {
@@ -112,8 +111,8 @@ public class MetaStateService extends AbstractComponent {
             if (indexMetaData != null) {
                 metaDataBuilder.put(indexMetaData, false);
             } else {
-                // TODO: throw exception?
-                logger.debug("[{}] failed to find metadata for existing index location", indexFolderName);
+                throw new IllegalStateException("failed to find metadata for existing index [location: " + indexFolderName +
+                    ", generation: " + metaState.getGlobalStateGeneration() + "]");
             }
         }
         return metaDataBuilder.build();
