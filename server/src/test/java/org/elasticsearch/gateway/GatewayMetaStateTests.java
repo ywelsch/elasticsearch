@@ -19,6 +19,8 @@
 
 package org.elasticsearch.gateway;
 
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.MockDirectoryWrapper;
 import org.elasticsearch.Version;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterState;
@@ -32,20 +34,23 @@ import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RoutingTable;
 import org.elasticsearch.cluster.routing.allocation.AllocationService;
 import org.elasticsearch.cluster.routing.allocation.decider.ClusterRebalanceAllocationDecider;
-import org.elasticsearch.common.collect.Tuple;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.plugins.MetaDataUpgrader;
 import org.elasticsearch.test.TestCustomMetaData;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -107,6 +112,7 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
         // create new meta data either with version changed or not
         MetaData metaDataNewClusterState = MetaData.builder()
                 .put(init.metaData().index("test"), versionChanged)
+                .version(1L)
                 .build();
 
 
@@ -570,5 +576,50 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
             );
         }
         return builder.build();
+    }
+
+    public void testAtomicStore() throws IOException {
+        Settings settings = Settings.EMPTY;
+        try (NodeEnvironment nodeEnvironment = newNodeEnvironment(settings)) {
+            AtomicBoolean injectFailures = new AtomicBoolean();
+            MetaStateService metaStateService = new MetaStateService(settings, nodeEnvironment, xContentRegistry()) {
+                @Override
+                protected Directory newDirectory(Path path) throws IOException {
+                    if (injectFailures.get() == false) {
+                        return super.newDirectory(path);
+                    }
+                    MockDirectoryWrapper wrapper = newMockFSDirectory(path);
+                    wrapper.setFailOnOpenInput(randomBoolean());
+                    wrapper.setAllowRandomFileNotFoundException(randomBoolean());
+                    wrapper.setRandomIOExceptionRate(randomDouble());
+                    wrapper.setRandomIOExceptionRateOnOpen(randomDouble());
+                    return wrapper;
+                }
+            };
+            GatewayMetaState gatewayMetaState = new GatewayMetaState(settings, nodeEnvironment, metaStateService, null,
+                new MetaDataUpgrader(Collections.emptyList(), Collections.emptyList()));
+            gatewayMetaState.loadMetaState();
+
+            injectFailures.set(true);
+            ClusterChangedEvent clusterChangedEvent = generateEvent(randomBoolean(), true, randomBoolean());
+            gatewayMetaState.applyClusterState(clusterChangedEvent);
+            injectFailures.set(false);
+            MetaData metaData = gatewayMetaState.loadMetaState();
+            if (metaData.version() > 0) {
+                assertEquals(Strings.toString(clusterChangedEvent.state().metaData()), Strings.toString(metaData));
+            }
+        }
+    }
+
+    public void testSimpleStore() throws IOException {
+        Settings settings = Settings.EMPTY;
+        try (NodeEnvironment nodeEnvironment = newNodeEnvironment(settings)) {
+            MetaStateService metaStateService = new MetaStateService(settings, nodeEnvironment, xContentRegistry());
+            GatewayMetaState gatewayMetaState = new GatewayMetaState(settings, nodeEnvironment, metaStateService, null,
+                new MetaDataUpgrader(Collections.emptyList(), Collections.emptyList()));
+            assertEquals(0, gatewayMetaState.loadMetaState().version());
+            gatewayMetaState.applyClusterState(generateEvent(randomBoolean(), true, randomBoolean()));
+            assertEquals(1, gatewayMetaState.loadMetaState().version());
+        }
     }
 }

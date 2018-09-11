@@ -122,7 +122,6 @@ public class GatewayMetaState extends AbstractComponent implements ClusterStateA
 
     @Override
     public void applyClusterState(ClusterChangedEvent event) {
-
         final ClusterState state = event.state();
         if (state.blocks().disableStatePersistence()) {
             // reset the current metadata, we need to start fresh...
