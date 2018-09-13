@@ -66,26 +66,6 @@ public class MetaStateService extends AbstractComponent {
         return new SimpleFSDirectory(dir);
     }
 
-    private MetaData loadFullStateBWC() throws IOException {
-        MetaData globalMetaData = loadGlobalState().v1();
-        MetaData.Builder metaDataBuilder;
-        if (globalMetaData != null) {
-            metaDataBuilder = MetaData.builder(globalMetaData);
-        } else {
-            metaDataBuilder = MetaData.builder();
-        }
-        for (String indexFolderName : nodeEnv.availableIndexFolders()) {
-            IndexMetaData indexMetaData = INDEX_METADATA_FORMAT.loadLatestState(logger, namedXContentRegistry,
-                nodeEnv.resolveIndexFolder(indexFolderName)).v1();
-            if (indexMetaData != null) {
-                metaDataBuilder.put(indexMetaData, false);
-            } else {
-                logger.debug("[{}] failed to find metadata for existing index location", indexFolderName);
-            }
-        }
-        return metaDataBuilder.build();
-    }
-
     /**
      * Loads the full state, which includes both the global state and all the indices
      * meta state.
@@ -113,6 +93,26 @@ public class MetaStateService extends AbstractComponent {
             } else {
                 throw new IllegalStateException("failed to find metadata for existing index [location: " + indexFolderName +
                     ", generation: " + metaState.getGlobalStateGeneration() + "]");
+            }
+        }
+        return metaDataBuilder.build();
+    }
+
+    private MetaData loadFullStateBWC() throws IOException {
+        MetaData globalMetaData = loadGlobalState().v1();
+        MetaData.Builder metaDataBuilder;
+        if (globalMetaData != null) {
+            metaDataBuilder = MetaData.builder(globalMetaData);
+        } else {
+            metaDataBuilder = MetaData.builder();
+        }
+        for (String indexFolderName : nodeEnv.availableIndexFolders()) {
+            IndexMetaData indexMetaData = INDEX_METADATA_FORMAT.loadLatestState(logger, namedXContentRegistry,
+                nodeEnv.resolveIndexFolder(indexFolderName)).v1();
+            if (indexMetaData != null) {
+                metaDataBuilder.put(indexMetaData, false);
+            } else {
+                logger.debug("[{}] failed to find metadata for existing index location", indexFolderName);
             }
         }
         return metaDataBuilder.build();

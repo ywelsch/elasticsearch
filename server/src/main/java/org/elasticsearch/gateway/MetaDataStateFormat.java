@@ -104,7 +104,7 @@ public abstract class MetaDataStateFormat<T> {
         }
         final long maxStateId = findMaxStateId(prefix, locations)+1;
         assert maxStateId >= 0 : "maxStateId must be positive but was: [" + maxStateId + "]";
-        final String fileName = prefix + maxStateId + STATE_FILE_EXTENSION;
+        final String fileName = getFileName(maxStateId);
         Path stateLocation = locations[0].resolve(STATE_DIR_NAME);
         final String tmpFileName = fileName + ".tmp";
         final Path finalStatePath = stateLocation.resolve(fileName);
@@ -167,8 +167,12 @@ public abstract class MetaDataStateFormat<T> {
                 }
             }
         }
-        cleanupOldFiles(fileName, locations);
+        cleanupOldFilesExcept(maxStateId, locations);
         return maxStateId;
+    }
+
+    public String getFileName(long generation) {
+        return prefix + generation + STATE_FILE_EXTENSION;
     }
 
     protected XContentBuilder newXContentBuilder(XContentType type, OutputStream stream ) throws IOException {
@@ -221,13 +225,14 @@ public abstract class MetaDataStateFormat<T> {
         return new SimpleFSDirectory(dir);
     }
 
-    private void cleanupOldFiles(final String currentStateFile, Path[] locations) throws IOException {
+    public void cleanupOldFilesExcept(long generation, Path[] locations) throws IOException {
+        final String fileName = getFileName(generation);
         for (Path dataLocation : locations) {
             logger.trace("cleanupOldFiles: cleaning up {}", dataLocation);
             Path stateLocation = dataLocation.resolve(STATE_DIR_NAME);
             try (Directory dir = newDirectory(stateLocation)) {
                 for (String file : dir.listAll()) {
-                    if (file.startsWith(prefix) && currentStateFile.equals(file) == false) {
+                    if (file.startsWith(prefix) && fileName.equals(file) == false) {
                         dir.deleteFile(file);
                         logger.trace("cleanupOldFiles: cleaned up {}", stateLocation.resolve(file));
                     }

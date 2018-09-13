@@ -622,4 +622,67 @@ public class GatewayMetaStateTests extends ESAllocationTestCase {
             assertEquals(1, gatewayMetaState.loadMetaState().version());
         }
     }
+
+    public void testCleanupStore() throws IOException {
+        Settings settings = Settings.EMPTY;
+        try (NodeEnvironment nodeEnvironment = newNodeEnvironment(settings)) {
+            AtomicBoolean injectFailures = new AtomicBoolean();
+            MetaStateService metaStateService = new MetaStateService(settings, nodeEnvironment, xContentRegistry()) {
+                @Override
+                protected Directory newDirectory(Path path) throws IOException {
+                    if (injectFailures.get() == false) {
+                        return super.newDirectory(path);
+                    }
+                    MockDirectoryWrapper wrapper = newMockFSDirectory(path);
+                    wrapper.setFailOnOpenInput(randomBoolean());
+                    wrapper.setAllowRandomFileNotFoundException(randomBoolean());
+                    wrapper.setRandomIOExceptionRate(randomDoubleBetween(0.0d, 1.0d, true));
+                    wrapper.setRandomIOExceptionRateOnOpen(randomDoubleBetween(0.0d, 1.0d, true));
+                    return wrapper;
+                }
+            };
+            GatewayMetaState gatewayMetaState = new GatewayMetaState(settings, nodeEnvironment, metaStateService, null,
+                new MetaDataUpgrader(Collections.emptyList(), Collections.emptyList()));
+            gatewayMetaState.loadMetaState();
+
+            ClusterChangedEvent clusterChangedEvent = generateEvent(randomBoolean(), true, randomBoolean());
+            gatewayMetaState.applyClusterState(clusterChangedEvent);
+            assertEquals(1, gatewayMetaState.loadMetaState().version());
+
+            injectFailures.set(true);
+            ClusterChangedEvent clusterChangedEvent2 = new ClusterChangedEvent("test",
+                ClusterState.builder(clusterChangedEvent.state())
+                    .metaData(MetaData.builder(clusterChangedEvent.state().metaData())
+                        .version(42)
+                        .updateSettings(Settings.builder().put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 42).build(), "test"))
+                    .build(),
+                clusterChangedEvent.state());
+            gatewayMetaState.applyClusterState(clusterChangedEvent2);
+            injectFailures.set(false);
+            assertEquals(1, gatewayMetaState.loadMetaState().version());
+
+            injectFailures.set(true);
+            ClusterChangedEvent clusterChangedEvent3 = new ClusterChangedEvent("test",
+                ClusterState.builder(clusterChangedEvent2.state())
+                    .metaData(MetaData.builder(clusterChangedEvent2.state().metaData())
+                        .version(43)
+                        .updateSettings(Settings.builder().put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 43).build(), "test"))
+                    .build(),
+                clusterChangedEvent.state());
+            gatewayMetaState.applyClusterState(clusterChangedEvent2);
+            injectFailures.set(false);
+            assertEquals(1, gatewayMetaState.loadMetaState().version());
+
+            ClusterChangedEvent clusterChangedEvent4 = new ClusterChangedEvent("test",
+                ClusterState.builder(clusterChangedEvent3.state())
+                    .metaData(MetaData.builder(clusterChangedEvent3.state().metaData())
+                        .version(44)
+                        .updateSettings(Settings.builder().put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, 44).build(), "test"))
+                    .build(),
+                clusterChangedEvent.state());
+            gatewayMetaState.applyClusterState(clusterChangedEvent4);
+            injectFailures.set(false);
+            assertEquals(1, gatewayMetaState.loadMetaState().version());
+        }
+    }
 }
