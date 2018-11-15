@@ -204,6 +204,8 @@ bwcVersions.forPreviousUnreleased { VersionCollection.UnreleasedVersionInfo unre
         // Since these are only used for testing, we don't want to assemble them if `assemble` is the single command being
         // ran.
         logger.info("Skipping BWC builds since `assemble` is the only task name provided on the command line")
+    } else if (project.bwc_tests_enabled == false) {
+        logger.info("Skipping BWC builds since BWC tests are disabled")
     } else {
         artifacts {
             for (File artifactFile : artifactFiles) {
