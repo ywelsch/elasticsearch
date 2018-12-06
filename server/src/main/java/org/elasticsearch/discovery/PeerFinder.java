@@ -457,8 +457,9 @@ public abstract class PeerFinder {
             final TransportResponseHandler<?> transportResponseHandler;
             if (Coordinator.isZen1Node(discoveryNode)) {
                 actionName = UnicastZenPing.ACTION_NAME;
-                transportRequest = new UnicastZenPing.UnicastPingRequest(1, ZenDiscovery.PING_TIMEOUT_SETTING.get(settings),
-                    new ZenPing.PingResponse(getLocalNode(), null, ClusterName.CLUSTER_NAME_SETTING.get(settings),
+                transportRequest = new UnicastZenPing.UnicastPingRequest(0, ZenDiscovery.PING_TIMEOUT_SETTING.get(settings),
+                    new ZenPing.PingResponse(createFakeDiscoNodeWithSuperHighId(getLocalNode()), null,
+                        ClusterName.CLUSTER_NAME_SETTING.get(settings),
                         ClusterState.UNKNOWN_VERSION));
                 transportResponseHandler = peersResponseHandler.wrap(ucResponse -> {
                     Optional<DiscoveryNode> optionalMasterNode = Arrays.stream(ucResponse.pingResponses)
@@ -502,11 +503,24 @@ public abstract class PeerFinder {
             final PeersResponse peersResponse = handlePeersRequest(peersRequest);
             final List<ZenPing.PingResponse> pingResponses = new ArrayList<>();
             final ClusterName clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);
-            pingResponses.add(new ZenPing.PingResponse(transportService.getLocalNode(), peersResponse.getMasterNode().orElse(null),
+            pingResponses.add(new ZenPing.PingResponse(
+                createFakeDiscoNodeWithSuperHighId(transportService.getLocalNode()),
+                peersResponse.getMasterNode().orElse(null),
                 clusterName, ClusterState.UNKNOWN_VERSION));
             peersResponse.getKnownPeers().forEach(dn -> pingResponses.add(
                 new ZenPing.PingResponse(ZenPing.PingResponse.FAKE_PING_ID, dn, null, clusterName, ClusterState.UNKNOWN_VERSION)));
             channel.sendResponse(new UnicastZenPing.UnicastPingResponse(request.id, pingResponses.toArray(new ZenPing.PingResponse[0])));
         }
+    }
+
+    /**
+     * creates a fake disco node to fool Zen1 into not electing this node
+     */
+    public static DiscoveryNode createFakeDiscoNodeWithSuperHighId(DiscoveryNode node) {
+        final String fakeId = "🤡" + node.getId();
+        final DiscoveryNode fakeNode = new DiscoveryNode(node.getName(), fakeId, node.getEphemeralId(), node.getHostName(),
+            node.getHostAddress(), node.getAddress(), node.getAttributes(), node.getRoles(), node.getVersion());
+        return fakeNode;
+
     }
 }

@@ -33,6 +33,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.CountDown;
+import org.elasticsearch.discovery.PeerFinder;
 import org.elasticsearch.discovery.zen.ElectMasterService;
 import org.elasticsearch.discovery.zen.ElectMasterService.MasterCandidate;
 import org.elasticsearch.discovery.zen.UnicastZenPing;
@@ -253,7 +254,8 @@ public class DiscoveryUpgradeService {
                             foundOldMaster = true;
                             transportService.sendRequest(discoveryNode, UnicastZenPing.ACTION_NAME,
                                 new UnicastPingRequest(0, TimeValue.ZERO,
-                                    new PingResponse(transportService.getLocalNode(), null, clusterName, UNKNOWN_VERSION)),
+                                    new PingResponse(PeerFinder.createFakeDiscoNodeWithSuperHighId(transportService.getLocalNode()), null, clusterName,
+                                        UNKNOWN_VERSION)),
                                 TransportRequestOptions.builder().withTimeout(bwcPingTimeout).build(),
                                 new TransportResponseHandler<UnicastPingResponse>() {
                                     @Override
@@ -288,7 +290,7 @@ public class DiscoveryUpgradeService {
                                 });
 
                         } else {
-                            masterCandidates.add(new MasterCandidate(discoveryNode, UNKNOWN_VERSION));
+                            masterCandidates.add(new MasterCandidate(PeerFinder.createFakeDiscoNodeWithSuperHighId(discoveryNode), UNKNOWN_VERSION));
                             listenableCountDown.countDown();
                         }
                     }
@@ -302,4 +304,5 @@ public class DiscoveryUpgradeService {
             });
         }
     }
+
 }
