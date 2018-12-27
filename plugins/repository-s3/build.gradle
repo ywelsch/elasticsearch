@@ -212,6 +212,8 @@ if (useFixture && minioDistribution) {
         throw new GradleException("Could not find a free port for Minio")
       }
 
+      minioPort = 62000
+
       new File("${minioDataDir}/${s3PermanentBucket}").mkdirs()
       // we skip these tests on Windows so we do no need to worry about compatibility here
       final ProcessBuilder minio = new ProcessBuilder(
@@ -294,14 +296,15 @@ if (useFixture && minioDistribution) {
     ClusterConfiguration cluster = project.extensions.getByName('integTestMinioCluster') as ClusterConfiguration
     cluster.dependsOn(project.bundlePlugin)
     cluster.dependsOn(startMinio) // otherwise we don't know the Minio port
-    cluster.keystoreSetting 's3.client.integration_test_permanent.access_key', s3PermanentAccessKey
-    cluster.keystoreSetting 's3.client.integration_test_permanent.secret_key', s3PermanentSecretKey
+    //cluster.keystoreSetting 's3.client.integration_test_permanent.access_key', s3PermanentAccessKey
+    //cluster.keystoreSetting 's3.client.integration_test_permanent.secret_key', s3PermanentSecretKey
+    cluster.systemProperty 'es.allow_insecure_settings', 'true'
 
     Closure<String> minioAddressAndPort = {
       assert startMinio.minioPort > 0
       return 'http://' + minioAddress + ':' + startMinio.minioPort
     }
-    cluster.setting 's3.client.integration_test_permanent.endpoint', "${ -> minioAddressAndPort.call()}"
+    //cluster.setting 's3.client.integration_test_permanent.endpoint', "${ -> minioAddressAndPort.call()}"
 
     Task restIntegTestTask = project.tasks.getByName('integTestMinio')
     restIntegTestTask.clusterConfig.plugin(project.path)
@@ -364,6 +367,8 @@ Map<String, Object> expansions = [
   'temporary_bucket': s3TemporaryBucket,
   'temporary_base_path': s3TemporaryBasePath,
   'ec2_bucket': s3EC2Bucket,
+  'access_key': s3PermanentAccessKey,
+  'secret_key': s3PermanentSecretKey,
   'ec2_base_path': s3EC2BasePath,
   'ecs_bucket': s3ECSBucket,
   'ecs_base_path': s3ECSBasePath
@@ -387,8 +392,8 @@ project.afterEvaluate {
 }
 
 integTestCluster {
-  keystoreSetting 's3.client.integration_test_permanent.access_key', s3PermanentAccessKey
-  keystoreSetting 's3.client.integration_test_permanent.secret_key', s3PermanentSecretKey
+  //keystoreSetting 's3.client.integration_test_permanent.access_key', s3PermanentAccessKey
+  //keystoreSetting 's3.client.integration_test_permanent.secret_key', s3PermanentSecretKey
 
   keystoreSetting 's3.client.integration_test_temporary.access_key', s3TemporaryAccessKey
   keystoreSetting 's3.client.integration_test_temporary.secret_key', s3TemporarySecretKey
@@ -397,7 +402,7 @@ integTestCluster {
   if (useFixture) {
     dependsOn s3Fixture
     /* Use a closure on the string to delay evaluation until tests are executed */
-    setting 's3.client.integration_test_permanent.endpoint', "http://${-> s3Fixture.addressAndPort}"
+    //setting 's3.client.integration_test_permanent.endpoint', "http://${-> s3Fixture.addressAndPort}"
     setting 's3.client.integration_test_temporary.endpoint', "http://${-> s3Fixture.addressAndPort}"
     setting 's3.client.integration_test_ec2.endpoint', "http://${-> s3Fixture.addressAndPort}"
 
