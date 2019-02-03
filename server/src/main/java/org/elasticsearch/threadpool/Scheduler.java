@@ -19,9 +19,7 @@
 
 package org.elasticsearch.threadpool;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.message.ParameterizedMessage;
+import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
@@ -250,10 +248,10 @@ public interface Scheduler {
     }
 
     /**
-     * This subclass ensures to properly bubble up Throwable instances of type Error and logs exceptions thrown in submitted/scheduled tasks
+     * This subclass ensures to properly bubble up Throwable instances of type Error as well as exceptions thrown in
+     * submitted/scheduled tasks to the uncaught exception handler
      */
     class SafeScheduledThreadPoolExecutor extends ScheduledThreadPoolExecutor {
-        private static final Logger logger = LogManager.getLogger(SafeScheduledThreadPoolExecutor.class);
 
         @SuppressForbidden(reason = "properly rethrowing errors, see EsExecutors.rethrowErrors")
         public SafeScheduledThreadPoolExecutor(int corePoolSize, ThreadFactory threadFactory, RejectedExecutionHandler handler) {
@@ -274,9 +272,7 @@ public interface Scheduler {
         protected void afterExecute(Runnable r, Throwable t) {
             Throwable exception = EsExecutors.rethrowErrors(r);
             if (exception != null) {
-                logger.warn(() ->
-                    new ParameterizedMessage("uncaught exception in scheduled thread [{}]", Thread.currentThread().getName()),
-                    exception);
+                ExceptionsHelper.uncheckedRethrow(exception);
             }
         }
     }

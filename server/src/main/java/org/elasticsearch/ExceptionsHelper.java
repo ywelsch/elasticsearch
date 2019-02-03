@@ -21,6 +21,7 @@ package org.elasticsearch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.util.Throwables;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexFormatTooNewException;
 import org.apache.lucene.index.IndexFormatTooOldException;
@@ -172,6 +173,19 @@ public final class ExceptionsHelper {
             first.addSuppressed(second);
         }
         return first;
+    }
+
+    /**
+     * Unchecked rethrow of the given exception
+     * @param t exception to rethrow
+     */
+    public static void uncheckedRethrow(final Throwable t) {
+        ExceptionsHelper.<RuntimeException>innerUncheckedRethrow(t);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static <T extends Throwable> void innerUncheckedRethrow(final Throwable t) throws T {
+        throw (T) t;
     }
 
     public static IOException unwrapCorruption(Throwable t) {
