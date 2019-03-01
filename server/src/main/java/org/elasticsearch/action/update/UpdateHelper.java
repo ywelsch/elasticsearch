@@ -129,6 +129,7 @@ public class UpdateHelper {
                 throw new DocumentMissingException(shardId, request.type(), request.id());
             }
             IndexRequest indexRequest = request.docAsUpsert() ? request.doc() : request.upsertRequest();
+
             if (request.scriptedUpsert() && request.script() != null) {
                 // Run the script to perform the create logic
                 IndexRequest upsert = request.upsertRequest();
@@ -136,6 +137,7 @@ public class UpdateHelper {
                 switch (upsertResult.v1()) {
                     case CREATE:
                         // Update the index request with the new "_source"
+                        indexRequest = new IndexRequest();
                         indexRequest.source(upsertResult.v2());
                         break;
                     case NONE:
@@ -195,7 +197,7 @@ public class UpdateHelper {
         if (detectNoop && noop) {
             UpdateResponse update = new UpdateResponse(shardId, getResult.getType(), getResult.getId(),
                     getResult.getVersion(), DocWriteResponse.Result.NOOP);
-            update.setGetResult(extractGetResult(request, request.index(), getResult.getSeqNo(), getResult.getPrimaryTerm(),
+            update.setGetResult(extractGetResult(request, shardId.getIndexName(), getResult.getSeqNo(), getResult.getPrimaryTerm(),
                 getResult.getVersion(), updatedSourceAsMap, updateSourceContentType, getResult.internalSourceRef()));
             return new Result(update, DocWriteResponse.Result.NOOP, updatedSourceAsMap, updateSourceContentType);
         } else {
@@ -258,7 +260,7 @@ public class UpdateHelper {
                 // If it was neither an INDEX or DELETE operation, treat it as a noop
                 UpdateResponse update = new UpdateResponse(shardId, getResult.getType(), getResult.getId(),
                         getResult.getVersion(), DocWriteResponse.Result.NOOP);
-                update.setGetResult(extractGetResult(request, request.index(), getResult.getSeqNo(), getResult.getPrimaryTerm(),
+                update.setGetResult(extractGetResult(request, shardId.getIndexName(), getResult.getSeqNo(), getResult.getPrimaryTerm(),
                     getResult.getVersion(), updatedSourceAsMap, updateSourceContentType, getResult.internalSourceRef()));
                 return new Result(update, DocWriteResponse.Result.NOOP, updatedSourceAsMap, updateSourceContentType);
         }

@@ -24,8 +24,7 @@ import org.elasticsearch.action.DocWriteRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.WriteRequest;
-import org.elasticsearch.action.support.replication.ReplicationRequest;
-import org.elasticsearch.action.support.single.instance.InstanceShardOperationRequest;
+import org.elasticsearch.action.support.replication.ReplicatedWriteRequest;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.ParseField;
 import org.elasticsearch.common.Strings;
@@ -56,7 +55,7 @@ import static org.elasticsearch.action.ValidateActions.addValidationError;
 import static org.elasticsearch.index.seqno.SequenceNumbers.UNASSIGNED_PRIMARY_TERM;
 import static org.elasticsearch.index.seqno.SequenceNumbers.UNASSIGNED_SEQ_NO;
 
-public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
+public class UpdateRequest extends ReplicatedWriteRequest<UpdateRequest>
         implements DocWriteRequest<UpdateRequest>, WriteRequest<UpdateRequest>, ToXContentObject {
     private static ObjectParser<UpdateRequest, Void> PARSER;
 
@@ -96,6 +95,8 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
         PARSER.declareLong(UpdateRequest::setIfPrimaryTerm, IF_PRIMARY_TERM);
     }
 
+    private static final ShardId NO_SHARD_ID = null;
+
     // Set to null initially so we can know to override in bulk requests that have a default type.
     private String type;
     private String id;
@@ -114,8 +115,6 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
 
     private RefreshPolicy refreshPolicy = RefreshPolicy.NONE;
 
-    private ActiveShardCount waitForActiveShards = ActiveShardCount.DEFAULT;
-
     private IndexRequest upsertRequest;
 
     private boolean scriptedUpsert = false;
@@ -125,12 +124,38 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
     @Nullable
     private IndexRequest doc;
 
-    public UpdateRequest() {
+    public UpdateRequest(StreamInput in) throws IOException {
+        super(in);
+        waitForActiveShards = ActiveShardCount.readFrom(in);
+        type = in.readString();
+        id = in.readString();
+        routing = in.readOptionalString();
+        if (in.readBoolean()) {
+            script = new Script(in);
+        }
+        retryOnConflict = in.readVInt();
+        refreshPolicy = RefreshPolicy.readFrom(in);
+        if (in.readBoolean()) {
+            doc = new IndexRequest(in);
+        }
+        fetchSourceContext = in.readOptionalWriteable(FetchSourceContext::new);
+        if (in.readBoolean()) {
+            upsertRequest = new IndexRequest(in);
+        }
+        docAsUpsert = in.readBoolean();
+        ifSeqNo = in.readZLong();
+        ifPrimaryTerm = in.readVLong();
+        detectNoop = in.readBoolean();
+        scriptedUpsert = in.readBoolean();
+    }
 
+    public UpdateRequest() {
+        super(NO_SHARD_ID);
     }
 
     public UpdateRequest(String index, String id) {
-        super(index);
+        super(NO_SHARD_ID);
+        this.index = index;
         this.id = id;
     }
 
@@ -139,7 +164,8 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
      */
     @Deprecated
     public UpdateRequest(String index, String type, String id) {
-        super(index);
+        super(NO_SHARD_ID);
+        this.index = index;
         this.type = type;
         this.id = id;
     }
@@ -602,24 +628,6 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
     }
 
     /**
-     * Sets the number of shard copies that must be active before proceeding with the write.
-     * See {@link ReplicationRequest#waitForActiveShards(ActiveShardCount)} for details.
-     */
-    public UpdateRequest waitForActiveShards(ActiveShardCount waitForActiveShards) {
-        this.waitForActiveShards = waitForActiveShards;
-        return this;
-    }
-
-    /**
-     * A shortcut for {@link #waitForActiveShards(ActiveShardCount)} where the numerical
-     * shard count is passed in, instead of having to first call {@link ActiveShardCount#from(int)}
-     * to get the ActiveShardCount.
-     */
-    public UpdateRequest waitForActiveShards(final int waitForActiveShards) {
-        return waitForActiveShards(ActiveShardCount.from(waitForActiveShards));
-    }
-
-    /**
      * Sets the doc to use for updates when a script is not specified.
      */
     public UpdateRequest doc(IndexRequest doc) {
@@ -826,32 +834,6 @@ public class UpdateRequest extends InstanceShardOperationRequest<UpdateRequest>
     public UpdateRequest scriptedUpsert(boolean scriptedUpsert) {
         this.scriptedUpsert = scriptedUpsert;
         return this;
-    }
-
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        super.readFrom(in);
-        waitForActiveShards = ActiveShardCount.readFrom(in);
-        type = in.readString();
-        id = in.readString();
-        routing = in.readOptionalString();
-        if (in.readBoolean()) {
-            script = new Script(in);
-        }
-        retryOnConflict = in.readVInt();
-        refreshPolicy = RefreshPolicy.readFrom(in);
-        if (in.readBoolean()) {
-            doc = new IndexRequest(in);
-        }
-        fetchSourceContext = in.readOptionalWriteable(FetchSourceContext::new);
-        if (in.readBoolean()) {
-            upsertRequest = new IndexRequest(in);
-        }
-        docAsUpsert = in.readBoolean();
-        ifSeqNo = in.readZLong();
-        ifPrimaryTerm = in.readVLong();
-        detectNoop = in.readBoolean();
-        scriptedUpsert = in.readBoolean();
     }
 
     @Override

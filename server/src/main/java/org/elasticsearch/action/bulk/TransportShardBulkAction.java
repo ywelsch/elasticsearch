@@ -223,13 +223,14 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                     IndexRequest indexRequest = updateResult.action();
                     IndexMetaData metaData = context.getPrimary().indexSettings().getIndexMetaData();
                     MappingMetaData mappingMd = metaData.mappingOrDefault();
-                    indexRequest.process(metaData.getCreationVersion(), mappingMd, updateRequest.concreteIndex());
+                    indexRequest.process(metaData.getCreationVersion(), mappingMd, metaData.getIndex().getName());
                     context.setRequestToExecute(indexRequest);
                     break;
                 case DELETED:
                     context.setRequestToExecute(updateResult.action());
                     break;
                 case NOOP:
+                    context.getPrimary().noopUpdate(updateRequest.type());
                     context.markOperationAsNoOp(updateResult.action());
                     context.markAsCompleted(context.getExecutionResult());
                     return true;
@@ -313,7 +314,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         }
         final BulkItemResponse response;
         if (isUpdate) {
-            response = processUpdateResponse((UpdateRequest) docWriteRequest, context.getConcreteIndex(), executionResult, updateResult);
+            response = processUpdateResponse((UpdateRequest) docWriteRequest, executionResult, updateResult);
         } else {
             if (isFailed) {
                 final Exception failure = executionResult.getFailure().getCause();
@@ -338,13 +339,13 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
     /**
      * Creates a new bulk item result from the given requests and result of performing the update operation on the shard.
      */
-    private static BulkItemResponse processUpdateResponse(final UpdateRequest updateRequest, final String concreteIndex,
+    private static BulkItemResponse processUpdateResponse(final UpdateRequest updateRequest,
                                                           BulkItemResponse operationResponse, final UpdateHelper.Result translate) {
         final BulkItemResponse response;
-        DocWriteResponse.Result translatedResult = translate.getResponseResult();
         if (operationResponse.isFailed()) {
             response = new BulkItemResponse(operationResponse.getItemId(), DocWriteRequest.OpType.UPDATE, operationResponse.getFailure());
         } else {
+            final DocWriteResponse.Result translatedResult = translate.getResponseResult();
 
             final UpdateResponse updateResponse;
             if (translatedResult == DocWriteResponse.Result.CREATED || translatedResult == DocWriteResponse.Result.UPDATED) {
@@ -358,7 +359,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                     final BytesReference indexSourceAsBytes = updateIndexRequest.source();
                     final Tuple<XContentType, Map<String, Object>> sourceAndContent =
                         XContentHelper.convertToMap(indexSourceAsBytes, true, updateIndexRequest.getContentType());
-                    updateResponse.setGetResult(UpdateHelper.extractGetResult(updateRequest, concreteIndex,
+                    updateResponse.setGetResult(UpdateHelper.extractGetResult(updateRequest, indexResponse.getIndex(),
                         indexResponse.getSeqNo(), indexResponse.getPrimaryTerm(),
                         indexResponse.getVersion(), sourceAndContent.v2(), sourceAndContent.v1(), indexSourceAsBytes));
                 }
@@ -368,7 +369,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                     deleteResponse.getType(), deleteResponse.getId(), deleteResponse.getSeqNo(), deleteResponse.getPrimaryTerm(),
                     deleteResponse.getVersion(), deleteResponse.getResult());
 
-                final GetResult getResult = UpdateHelper.extractGetResult(updateRequest, concreteIndex,
+                final GetResult getResult = UpdateHelper.extractGetResult(updateRequest, deleteResponse.getIndex(),
                     deleteResponse.getSeqNo(), deleteResponse.getPrimaryTerm(), deleteResponse.getVersion(),
                     translate.updatedSourceAsMap(), translate.updateSourceContentType(), null);
 

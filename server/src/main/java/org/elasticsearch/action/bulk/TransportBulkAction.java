@@ -36,7 +36,6 @@ import org.elasticsearch.action.ingest.IngestActionForwarder;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.AutoCreateIndex;
 import org.elasticsearch.action.support.HandledTransportAction;
-import org.elasticsearch.action.update.TransportUpdateAction;
 import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.action.update.UpdateResponse;
 import org.elasticsearch.client.node.NodeClient;
@@ -386,8 +385,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                             indexRequest.process(indexCreated, mappingMd, concreteIndex.getName());
                             break;
                         case UPDATE:
-                            TransportUpdateAction.resolveAndValidateRouting(metaData, concreteIndex.getName(),
-                                (UpdateRequest) docWriteRequest);
+                            resolveAndValidateRouting(metaData, concreteIndex.getName(), (UpdateRequest) docWriteRequest);
                             break;
                         case DELETE:
                             docWriteRequest.routing(metaData.resolveWriteIndexRouting(docWriteRequest.routing(), docWriteRequest.index()));
@@ -548,6 +546,14 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             responses.set(idx, bulkItemResponse);
             // make sure the request gets never processed again
             bulkRequest.requests.set(idx, null);
+        }
+    }
+
+    public static void resolveAndValidateRouting(MetaData metaData, String concreteIndex, UpdateRequest request) {
+        request.routing((metaData.resolveWriteIndexRouting(request.routing(), request.index())));
+        // Fail fast on the node that received the request, rather than failing when translating on the index or delete request.
+        if (request.routing() == null && metaData.routingRequired(concreteIndex)) {
+            throw new RoutingMissingException(concreteIndex, request.type(), request.id());
         }
     }
 

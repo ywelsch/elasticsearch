@@ -33,7 +33,6 @@ import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.discovery.MasterNotDiscoveredException;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.script.Script;
@@ -128,13 +127,13 @@ public class NoMasterNodeIT extends ESIntegTestCase {
             ClusterBlockException.class, RestStatus.SERVICE_UNAVAILABLE
         );
 
-        checkUpdateAction(false, timeout,
+        checkWriteAction(
             clientToMasterlessNode.prepareUpdate("test", "type1", "1")
                 .setScript(new Script(
                     ScriptType.INLINE, Script.DEFAULT_SCRIPT_LANG, "test script",
                     Collections.emptyMap())).setTimeout(timeout));
 
-        checkUpdateAction(true, timeout,
+        checkWriteAction(
             clientToMasterlessNode.prepareUpdate("no_index", "type1", "1")
                 .setScript(new Script(
                     ScriptType.INLINE, Script.DEFAULT_SCRIPT_LANG, "test script",
@@ -166,21 +165,6 @@ public class NoMasterNodeIT extends ESIntegTestCase {
         disruptionScheme.stopDisrupting();
 
         client().admin().cluster().prepareHealth().setWaitForGreenStatus().setWaitForNodes("3").execute().actionGet();
-    }
-
-    void checkUpdateAction(boolean autoCreateIndex, TimeValue timeout, ActionRequestBuilder<?, ?> builder) {
-        // we clean the metadata when loosing a master, therefore all operations on indices will auto create it, if allowed
-        try {
-            builder.get();
-            fail("expected ClusterBlockException or MasterNotDiscoveredException");
-        } catch (ClusterBlockException | MasterNotDiscoveredException e) {
-            if (e instanceof MasterNotDiscoveredException) {
-                assertTrue(autoCreateIndex);
-            } else {
-                assertFalse(autoCreateIndex);
-            }
-            assertThat(e.status(), equalTo(RestStatus.SERVICE_UNAVAILABLE));
-        }
     }
 
     void checkWriteAction(ActionRequestBuilder<?, ?> builder) {

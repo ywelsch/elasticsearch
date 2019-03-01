@@ -169,7 +169,7 @@ class BulkPrimaryExecutionContext {
 
     /** returns the name of the index the current request used */
     public String getConcreteIndex() {
-        return getCurrentItem().index();
+        return primary.shardId().getIndexName();
     }
 
     /** returns a translog location that is needed to be synced in order to persist all operations executed so far */
