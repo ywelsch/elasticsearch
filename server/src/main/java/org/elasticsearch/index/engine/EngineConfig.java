@@ -41,6 +41,7 @@ import org.elasticsearch.index.store.Store;
 import org.elasticsearch.index.translog.TranslogConfig;
 import org.elasticsearch.indices.IndexingMemoryController;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.List;
@@ -81,6 +82,7 @@ public final class EngineConfig {
     private final CircuitBreakerService circuitBreakerService;
     private final LongSupplier globalCheckpointSupplier;
     private final Supplier<RetentionLeases> retentionLeasesSupplier;
+    private final RepositoriesService repositoriesService;
 
     /**
      * A supplier of the outstanding retention leases. This is used during merged operations to determine which operations that have been
@@ -132,7 +134,8 @@ public final class EngineConfig {
                         CircuitBreakerService circuitBreakerService, LongSupplier globalCheckpointSupplier,
                         Supplier<RetentionLeases> retentionLeasesSupplier,
                         LongSupplier primaryTermSupplier,
-                        TombstoneDocSupplier tombstoneDocSupplier) {
+                        TombstoneDocSupplier tombstoneDocSupplier,
+                        RepositoriesService repositoriesService) {
         this.shardId = shardId;
         this.allocationId = allocationId;
         this.indexSettings = indexSettings;
@@ -171,6 +174,7 @@ public final class EngineConfig {
         this.retentionLeasesSupplier = Objects.requireNonNull(retentionLeasesSupplier);
         this.primaryTermSupplier = primaryTermSupplier;
         this.tombstoneDocSupplier = tombstoneDocSupplier;
+        this.repositoriesService = repositoriesService;
     }
 
     /**
@@ -269,6 +273,10 @@ public final class EngineConfig {
      */
     public IndexSettings getIndexSettings() {
         return indexSettings;
+    }
+
+    public RepositoriesService repositoriesService() {
+        return repositoriesService;
     }
 
     /**

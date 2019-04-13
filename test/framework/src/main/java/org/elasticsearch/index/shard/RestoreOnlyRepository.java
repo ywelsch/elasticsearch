@@ -19,6 +19,7 @@
 package org.elasticsearch.index.shard;
 
 import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.store.Directory;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -100,6 +101,11 @@ public abstract class RestoreOnlyRepository extends AbstractLifecycleComponent i
     public SnapshotInfo finalizeSnapshot(SnapshotId snapshotId, List<IndexId> indices, long startTime, String failure,
                                          int totalShards, List<SnapshotShardFailure> shardFailures, long repositoryStateId,
                                          boolean includeGlobalState) {
+        return null;
+    }
+
+    @Override
+    public Directory asDirectory(SnapshotId snapshotId, IndexId indexId, ShardId snapshotShardId) {
         return null;
     }
 

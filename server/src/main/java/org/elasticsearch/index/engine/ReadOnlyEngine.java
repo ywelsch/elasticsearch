@@ -92,7 +92,7 @@ public class ReadOnlyEngine extends Engine {
             Store store = config.getStore();
             store.incRef();
             DirectoryReader reader = null;
-            Directory directory = store.directory();
+            Directory directory = getDirectoryForReadOnlyOperations();
             Lock indexWriterLock = null;
             boolean success = false;
             try {
@@ -111,14 +111,14 @@ public class ReadOnlyEngine extends Engine {
                     // that guarantee that all operations have been flushed to Lucene.
                     final long globalCheckpoint = engineConfig.getGlobalCheckpointSupplier().getAsLong();
                     final Version indexVersionCreated = engineConfig.getIndexSettings().getIndexVersionCreated();
-                    if (indexVersionCreated.onOrAfter(Version.V_8_0_0) ||
-                        (globalCheckpoint != SequenceNumbers.UNASSIGNED_SEQ_NO && indexVersionCreated.onOrAfter(Version.V_6_7_0))) {
-                        if (seqNoStats.getMaxSeqNo() != globalCheckpoint) {
-                            assertMaxSeqNoEqualsToGlobalCheckpoint(seqNoStats.getMaxSeqNo(), globalCheckpoint);
-                            throw new IllegalStateException("Maximum sequence number [" + seqNoStats.getMaxSeqNo()
-                                + "] from last commit does not match global checkpoint [" + globalCheckpoint + "]");
-                        }
-                    }
+//                    if (indexVersionCreated.onOrAfter(Version.V_8_0_0) ||
+//                        (globalCheckpoint != SequenceNumbers.UNASSIGNED_SEQ_NO && indexVersionCreated.onOrAfter(Version.V_6_7_0))) {
+//                        if (seqNoStats.getMaxSeqNo() != globalCheckpoint) {
+//                            assertMaxSeqNoEqualsToGlobalCheckpoint(seqNoStats.getMaxSeqNo(), globalCheckpoint);
+//                            throw new IllegalStateException("Maximum sequence number [" + seqNoStats.getMaxSeqNo()
+//                                + "] from last commit does not match global checkpoint [" + globalCheckpoint + "]");
+//                        }
+//                    }
                 }
                 this.seqNoStats = seqNoStats;
                 this.indexCommit = Lucene.getIndexCommit(lastCommittedSegmentInfos, directory);
@@ -136,6 +136,10 @@ public class ReadOnlyEngine extends Engine {
         } catch (IOException e) {
             throw new UncheckedIOException(e); // this is stupid
         }
+    }
+
+    protected Directory getDirectoryForReadOnlyOperations() {
+        return store.directory();
     }
 
     protected void assertMaxSeqNoEqualsToGlobalCheckpoint(final long maxSeqNo, final long globalCheckpoint) {

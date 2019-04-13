@@ -19,6 +19,10 @@
 
 package org.elasticsearch.common.blobstore.fs;
 
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.NoLockFactory;
+import org.apache.lucene.store.SimpleFSDirectory;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.blobstore.BlobMetaData;
 import org.elasticsearch.common.blobstore.BlobPath;
@@ -121,6 +125,11 @@ public class FsBlobContainer extends AbstractBlobContainer {
         } catch (FileNotFoundException fnfe) {
             throw new NoSuchFileException("[" + name + "] blob not found");
         }
+    }
+
+    @Override
+    public IndexInput readIndexInputBlob(String blobName, IOContext context) throws IOException {
+        return new SimpleFSDirectory(path, NoLockFactory.INSTANCE).openInput(blobName, context);
     }
 
     @Override

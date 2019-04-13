@@ -230,7 +230,7 @@ public abstract class EngineTestCase extends ESTestCase {
             config.getTranslogConfig(), config.getFlushMergesAfter(),
             config.getExternalRefreshListener(), Collections.emptyList(), config.getIndexSort(),
             config.getCircuitBreakerService(), globalCheckpointSupplier, config.retentionLeasesSupplier(),
-                config.getPrimaryTermSupplier(), tombstoneDocSupplier());
+                config.getPrimaryTermSupplier(), tombstoneDocSupplier(), config.repositoriesService());
     }
 
     public EngineConfig copy(EngineConfig config, Analyzer analyzer) {
@@ -240,7 +240,7 @@ public abstract class EngineTestCase extends ESTestCase {
                 config.getTranslogConfig(), config.getFlushMergesAfter(),
                 config.getExternalRefreshListener(), Collections.emptyList(), config.getIndexSort(),
                 config.getCircuitBreakerService(), config.getGlobalCheckpointSupplier(), config.retentionLeasesSupplier(),
-                config.getPrimaryTermSupplier(), config.getTombstoneDocSupplier());
+                config.getPrimaryTermSupplier(), config.getTombstoneDocSupplier(), config.repositoriesService());
     }
 
     public EngineConfig copy(EngineConfig config, MergePolicy mergePolicy) {
@@ -250,7 +250,7 @@ public abstract class EngineTestCase extends ESTestCase {
             config.getTranslogConfig(), config.getFlushMergesAfter(),
             config.getExternalRefreshListener(), Collections.emptyList(), config.getIndexSort(),
             config.getCircuitBreakerService(), config.getGlobalCheckpointSupplier(), config.retentionLeasesSupplier(),
-                config.getPrimaryTermSupplier(), config.getTombstoneDocSupplier());
+                config.getPrimaryTermSupplier(), config.getTombstoneDocSupplier(), config.repositoriesService());
     }
 
     @Override
@@ -694,7 +694,8 @@ public abstract class EngineTestCase extends ESTestCase {
                 globalCheckpointSupplier,
                 retentionLeasesSupplier,
                 primaryTerm,
-                tombstoneDocSupplier());
+                tombstoneDocSupplier(),
+                null);
     }
 
     protected EngineConfig config(EngineConfig config, Store store, Path translogPath,
@@ -709,7 +710,7 @@ public abstract class EngineTestCase extends ESTestCase {
             translogConfig, config.getFlushMergesAfter(), config.getExternalRefreshListener(),
             config.getInternalRefreshListener(), config.getIndexSort(), config.getCircuitBreakerService(),
             config.getGlobalCheckpointSupplier(), config.retentionLeasesSupplier(),
-            config.getPrimaryTermSupplier(), tombstoneDocSupplier);
+            config.getPrimaryTermSupplier(), tombstoneDocSupplier, config.repositoriesService());
     }
 
     protected EngineConfig noOpConfig(IndexSettings indexSettings, Store store, Path translogPath) {

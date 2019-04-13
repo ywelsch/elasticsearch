@@ -23,8 +23,13 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.store.BufferedIndexInput;
+import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.store.Lock;
+import org.apache.lucene.store.NoLockFactory;
 import org.apache.lucene.store.RateLimiter;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
@@ -113,6 +118,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.index.snapshots.blobstore.BlobStoreIndexShardSnapshot.FileInfo.canonicalName;
@@ -606,7 +612,8 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
 
     protected void assertSnapshotOrGenericThread() {
         assert Thread.currentThread().getName().contains(ThreadPool.Names.SNAPSHOT)
-            || Thread.currentThread().getName().contains(ThreadPool.Names.GENERIC) :
+            || Thread.currentThread().getName().contains(ThreadPool.Names.GENERIC)
+            || Thread.currentThread().getName().contains(ThreadPool.Names.SEARCH_THROTTLED) :
             "Expected current thread [" + Thread.currentThread() + "] to be the snapshot or generic thread.";
     }
 
@@ -1092,6 +1099,97 @@ public abstract class BlobStoreRepository extends AbstractLifecycleComponent imp
                 }
             }
             return new Tuple<>(new BlobStoreIndexShardSnapshots(snapshots), -1);
+        }
+    }
+
+    @Override
+    public Directory asDirectory(SnapshotId snapshotId, IndexId indexId, ShardId snapshotShardId) {
+        BlobContainer blobContainer = blobStore().blobContainer(basePath().add("indices").add(indexId.getId())
+            .add(Integer.toString(snapshotShardId.getId())));
+
+        final BlobStoreIndexShardSnapshot snapshot;
+        try {
+            snapshot = indexShardSnapshotFormat.read(blobContainer, snapshotId.getUUID());
+        } catch (IOException ex) {
+            throw new SnapshotException(metadata.name(), snapshotId, "failed to read shard snapshot file for " + snapshotShardId, ex);
+        }
+
+//        final Context context = new Context(snapshotId, indexId, shard.shardId(), snapshotShardId);
+//        BlobPath path = basePath().add("indices").add(indexId.getId()).add(Integer.toString(snapshotShardId.getId()));
+//        BlobContainer blobContainer = blobStore().blobContainer(path);
+//        final RestoreContext snapshotContext = new RestoreContext(shard, snapshotId, recoveryState, blobContainer);
+        try {
+//            BlobStoreIndexShardSnapshot snapshot = context.loadSnapshot();
+
+            final SnapshotFiles snapshotFiles = new SnapshotFiles(snapshot.snapshot(), snapshot.indexFiles());
+            final String[] allFiles = snapshotFiles.indexFiles().stream().map(BlobStoreIndexShardSnapshot.FileInfo::physicalName)
+                .toArray(String[]::new);
+            return new Directory() {
+
+                @Override
+                public String[] listAll() {
+                    return allFiles;
+                }
+
+                @Override
+                public void deleteFile(String name) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public long fileLength(String name) {
+                    return snapshotFiles.findPhysicalIndexFile(name).length();
+                }
+
+                @Override
+                public IndexOutput createOutput(String name, IOContext context) throws IOException {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public void sync(Collection<String> names) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public void syncMetaData() {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public void rename(String source, String dest) {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public IndexInput openInput(String name, IOContext context) throws IOException {
+                    BlobStoreIndexShardSnapshot.FileInfo fileInfo = snapshotFiles.findPhysicalIndexFile(name);
+                    if (fileInfo.numberOfParts() > 1) {
+                        throw new UnsupportedOperationException("chunking not supported"); // TODO: fix
+                    }
+                    BlobContainer blobContainer = blobStore().blobContainer(basePath().add("indices").add(indexId.getId())
+                        .add(Integer.toString(snapshotShardId.getId())));
+                    // TODO: take parts into account
+                    return blobContainer.readIndexInputBlob(fileInfo.name(), context);
+                }
+
+                @Override
+                public Lock obtainLock(String name) {
+                    return NoLockFactory.INSTANCE.obtainLock(this, name);
+                }
+
+                @Override
+                public void close() {
+                    // NOOP
+                }
+            };
+        } catch (Exception e) {
+            throw new IndexShardRestoreFailedException(snapshotShardId, "failed to restore snapshot [" + snapshotId + "]", e);
         }
     }
 

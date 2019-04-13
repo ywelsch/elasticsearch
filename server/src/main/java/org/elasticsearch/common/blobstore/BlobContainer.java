@@ -19,6 +19,9 @@
 
 package org.elasticsearch.common.blobstore;
 
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -57,6 +60,10 @@ public interface BlobContainer {
      * @throws  IOException if the blob can not be read.
      */
     InputStream readBlob(String blobName) throws IOException;
+
+    default IndexInput readIndexInputBlob(String blobName, IOContext context) throws IOException {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Reads blob content from the input stream and writes it to the container in a new blob with the given name.

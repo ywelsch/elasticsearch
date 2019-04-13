@@ -54,6 +54,7 @@ import org.elasticsearch.repositories.Repository;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.snapshots.SearchableSnapshotRepository;
 import org.elasticsearch.snapshots.SourceOnlySnapshotRepository;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.watcher.ResourceWatcherService;
@@ -79,6 +80,7 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -360,7 +362,10 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
     @Override
     public Map<String, Repository.Factory> getRepositories(Environment env, NamedXContentRegistry namedXContentRegistry,
                                                            ThreadPool threadPool) {
-        return Collections.singletonMap("source", SourceOnlySnapshotRepository.newRepositoryFactory());
+        Map<String, Repository.Factory> repositories = new HashMap<>();
+        repositories.put("source", SourceOnlySnapshotRepository.newRepositoryFactory());
+        repositories.put("searchable", SearchableSnapshotRepository.newRepositoryFactory());
+        return repositories;
     }
 
     @Override
@@ -369,6 +374,8 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
             return Optional.of(SourceOnlySnapshotRepository.getEngineFactory());
         } else if (indexSettings.getValue(FrozenEngine.INDEX_FROZEN)) {
             return Optional.of(FrozenEngine::new);
+        } else if (indexSettings.getValue(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS)) {
+            return Optional.of(SearchableSnapshotRepository.getEngineFactory());
         }
 
         return Optional.empty();
@@ -379,12 +386,21 @@ public class XPackPlugin extends XPackClientPlugin implements ScriptPlugin, Exte
         List<Setting<?>> settings = super.getSettings();
         settings.add(SourceOnlySnapshotRepository.SOURCE_ONLY);
         settings.add(FrozenEngine.INDEX_FROZEN);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS_REPOSITORY_NAME);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS_SNAPSHOT_NAME);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS_SNAPSHOT_UUID);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS_INDEX_NAME);
+        settings.add(SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS_INDEX_ID);
         return settings;
     }
 
     @Override
     public void onIndexModule(IndexModule indexModule) {
         if (FrozenEngine.INDEX_FROZEN.get(indexModule.getSettings())) {
+            indexModule.addSearchOperationListener(new FrozenEngine.ReacquireEngineSearcherListener());
+        }
+        if (SearchableSnapshotRepository.SEARCHABLE_SNAPSHOTS.get(indexModule.getSettings())) {
             indexModule.addSearchOperationListener(new FrozenEngine.ReacquireEngineSearcherListener());
         }
         super.onIndexModule(indexModule);

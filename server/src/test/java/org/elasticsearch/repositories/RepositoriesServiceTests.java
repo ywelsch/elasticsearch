@@ -20,6 +20,7 @@
 package org.elasticsearch.repositories;
 
 import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.store.Directory;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -198,6 +199,11 @@ public class RepositoriesServiceTests extends ESTestCase {
 
         @Override
         public IndexShardSnapshotStatus getShardSnapshotStatus(SnapshotId snapshotId, Version version, IndexId indexId, ShardId shardId) {
+            return null;
+        }
+
+        @Override
+        public Directory asDirectory(SnapshotId snapshotId, IndexId indexId, ShardId snapshotShardId) {
             return null;
         }
 

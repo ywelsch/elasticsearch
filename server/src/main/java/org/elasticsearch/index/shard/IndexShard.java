@@ -1472,8 +1472,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         assert userData.containsKey(SequenceNumbers.LOCAL_CHECKPOINT_KEY) : "commit point doesn't contains a local checkpoint";
         assert userData.containsKey(SequenceNumbers.MAX_SEQ_NO) : "commit point doesn't contains a maximum sequence number";
         assert userData.containsKey(Engine.HISTORY_UUID_KEY) : "commit point doesn't contains a history uuid";
-        assert userData.get(Engine.HISTORY_UUID_KEY).equals(getHistoryUUID()) : "commit point history uuid ["
-            + userData.get(Engine.HISTORY_UUID_KEY) + "] is different than engine [" + getHistoryUUID() + "]";
+//        assert userData.get(Engine.HISTORY_UUID_KEY).equals(getHistoryUUID()) : "commit point history uuid ["
+//            + userData.get(Engine.HISTORY_UUID_KEY) + "] is different than engine [" + getHistoryUUID() + "]";
         return true;
     }
 
@@ -2309,6 +2309,8 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         return this.currentEngineReference.get();
     }
 
+    private volatile RepositoriesService repositoriesService;
+
     public void startRecovery(RecoveryState recoveryState, PeerRecoveryTargetService recoveryTargetService,
                               PeerRecoveryTargetService.RecoveryListener recoveryListener, RepositoriesService repositoriesService,
                               BiConsumer<String, MappingMetaData> mappingUpdateConsumer,
@@ -2329,6 +2331,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
         //           }
         //     }}
         // }
+        this.repositoriesService = repositoriesService; // Ugly hack. Pass RepositoriesService at shard construction time
         assert recoveryState.getRecoverySource().equals(shardRouting.recoverySource());
         switch (recoveryState.getRecoverySource().getType()) {
             case EMPTY_STORE:
@@ -2494,7 +2497,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 Collections.singletonList(refreshListeners),
                 Collections.singletonList(new RefreshMetricUpdater(refreshMetric)),
                 indexSort, circuitBreakerService, replicationTracker, replicationTracker::getRetentionLeases,
-                () -> getOperationPrimaryTerm(), tombstoneDocSupplier());
+                () -> getOperationPrimaryTerm(), tombstoneDocSupplier(), repositoriesService);
     }
 
     /**
