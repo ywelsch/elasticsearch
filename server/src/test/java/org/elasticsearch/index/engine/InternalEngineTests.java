@@ -3507,6 +3507,7 @@ public class InternalEngineTests extends EngineTestCase {
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) > 0);
         } else {
+            engine.advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(retry.seqNo());
             Engine.IndexResult retryResult = engine.index(retry);
             assertLuceneOperations(engine, 1, 0, 0);
             assertEquals(1, engine.getNumVersionLookups());
@@ -3532,9 +3533,8 @@ public class InternalEngineTests extends EngineTestCase {
             new BytesArray("{}".getBytes(Charset.defaultCharset())), null);
         Engine.Index operation = appendOnlyReplica(doc.get(), false, 1, randomIntBetween(0, 5));
         Engine.Index retry = appendOnlyReplica(doc.get(), true, 1, randomIntBetween(0, 5));
-        // operations with a seq# equal or lower to the local checkpoint are not indexed to lucene
-        // and the version lookup is skipped
-        final boolean belowLckp = operation.seqNo() == 0 && retry.seqNo() == 0;
+        // operations with same seq# are deduplicated by lookup on local checkpoint tracker
+        final boolean sameSeqNo = operation.seqNo() == retry.seqNo();
         if (randomBoolean()) {
             Engine.IndexResult indexResult = engine.index(operation);
             assertLuceneOperations(engine, 1, 0, 0);
@@ -3546,10 +3546,11 @@ public class InternalEngineTests extends EngineTestCase {
             } else {
                 assertLuceneOperations(engine, 1, 0, 0);
             }
-            assertEquals(belowLckp ? 0 : 1, engine.getNumVersionLookups());
+            assertEquals(sameSeqNo ? 0 : 1, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) > 0);
         } else {
+            engine.advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(retry.seqNo());
             Engine.IndexResult retryResult = engine.index(retry);
             assertLuceneOperations(engine, 1, 0, 0);
             assertEquals(1, engine.getNumVersionLookups());
@@ -3560,7 +3561,7 @@ public class InternalEngineTests extends EngineTestCase {
             } else {
                 assertLuceneOperations(engine, 1, 0, 0);
             }
-            assertEquals(belowLckp ? 1 : 2, engine.getNumVersionLookups());
+            assertEquals(sameSeqNo ? 1 : 2, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) < 0);
         }
@@ -3599,6 +3600,7 @@ public class InternalEngineTests extends EngineTestCase {
         Engine.Index operation = replicaIndexForDoc(doc, 1, 20, false);
         Engine.Index duplicate = replicaIndexForDoc(doc, 1, 20, true);
         if (randomBoolean()) {
+            engine.advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(operation.seqNo());
             Engine.IndexResult indexResult = engine.index(operation);
             assertLuceneOperations(engine, 1, 0, 0);
             assertEquals(1, engine.getNumVersionLookups());
@@ -3608,10 +3610,11 @@ public class InternalEngineTests extends EngineTestCase {
             }
             Engine.IndexResult retryResult = engine.index(duplicate);
             assertLuceneOperations(engine, 1, 0, 0);
-            assertEquals(2, engine.getNumVersionLookups());
+            assertEquals(1, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) > 0);
         } else {
+            engine.advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(duplicate.seqNo());
             Engine.IndexResult retryResult = engine.index(duplicate);
             assertLuceneOperations(engine, 1, 0, 0);
             assertEquals(1, engine.getNumVersionLookups());
@@ -5283,6 +5286,7 @@ public class InternalEngineTests extends EngineTestCase {
         final long seqNoAppendOnly1 = generateNewSeqNo(engine);
         final long seqnoNormalOp = generateNewSeqNo(engine);
         if (randomBoolean()) {
+            engine.advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(seqnoNormalOp);
             engine.index(replicaIndexForDoc(
                 testParsedDocument("d", null, testDocumentWithTextField(), SOURCE, null), 1, seqnoNormalOp, false));
         } else {

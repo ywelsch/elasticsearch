@@ -169,6 +169,7 @@ public class InternalEngine extends Engine {
     private final CounterMetric numDocDeletes = new CounterMetric();
     private final CounterMetric numDocAppends = new CounterMetric();
     private final CounterMetric numDocUpdates = new CounterMetric();
+    private final CounterMetric numOfOptimizedIndexing = new CounterMetric();
     private final NumericDocValuesField softDeletesField = Lucene.newSoftDeletesField();
     private final boolean softDeleteEnabled;
     private final SoftDeletesPolicy softDeletesPolicy;
@@ -379,6 +380,14 @@ public class InternalEngine extends Engine {
                 return translogRecoveryRunner.run(this, snapshot);
             }
         }
+    }
+
+    /**
+     * Returns the number of indexing operations that have been optimized (bypass version lookup) using sequence numbers in this engine.
+     * This metric is not persisted, and started from 0 when the engine is opened.
+     */
+    public long getNumberOfOptimizedIndexing() {
+        return numOfOptimizedIndexing.count();
     }
 
     @Override
@@ -963,12 +972,11 @@ public class InternalEngine extends Engine {
                 assert maxSeqNoOfNonAppendOnlyOperations.get() >= index.seqNo() : "max_seqno of non-append-only was not updated;" +
                     "max_seqno non-append-only [" + maxSeqNoOfNonAppendOnlyOperations.get() + "], seqno of index [" + index.seqNo() + "]";
             }
+
             versionMap.enforceSafeAccess();
-            // unlike the primary, replicas don't really care to about creation status of documents
-            // this allows to ignore the case where a document was found in the live version maps in
-            // a delete state and return false for the created flag in favor of code simplicity
-            if (index.seqNo() <= localCheckpointTracker.getProcessedCheckpoint()){
-                // the operation seq# is lower then the current local checkpoint and thus was already put into lucene
+
+            if (hasBeenProcessedBefore(index)){
+                // the operation seq# has been processed before and was thus already put into lucene
                 // this can happen during recovery where older operations are sent from the translog that are already
                 // part of the lucene commit (either from a peer recovery or a local translog)
                 // or due to concurrent indexing & recovery. For the former it is important to skip lucene as the operation in
@@ -977,12 +985,20 @@ public class InternalEngine extends Engine {
                 // See testRecoveryWithOutOfOrderDelete for an example of peer recovery
                 plan = IndexingStrategy.processButSkipLucene(false, index.version());
             } else {
-                final OpVsLuceneDocStatus opVsLucene = compareOpToLuceneDocBasedOnSeqNo(index);
-                if (opVsLucene == OpVsLuceneDocStatus.OP_STALE_OR_EQUAL) {
-                    plan = IndexingStrategy.processAsStaleOp(softDeleteEnabled, index.version());
+                final long maxSeqNoOfUpdatesOrDeletes = getMaxSeqNoOfUpdatesOrDeletes();
+                assert maxSeqNoOfUpdatesOrDeletes != SequenceNumbers.UNASSIGNED_SEQ_NO : "max_seq_no_of_updates is not initialized";
+                if (maxSeqNoOfUpdatesOrDeletes <= localCheckpointTracker.getProcessedCheckpoint()) {
+                    assert maxSeqNoOfUpdatesOrDeletes < index.seqNo() :
+                        "seq_no[" + index.seqNo() + "] <= msu[" + maxSeqNoOfUpdatesOrDeletes + "]";
+                    numOfOptimizedIndexing.inc();
+                    plan = InternalEngine.IndexingStrategy.optimizedAppendOnly(index.version());
                 } else {
-                    plan = IndexingStrategy.processNormally(opVsLucene == OpVsLuceneDocStatus.LUCENE_DOC_NOT_FOUND,
-                        index.version());
+                    final OpVsLuceneDocStatus opVsLucene = compareOpToLuceneDocBasedOnSeqNo(index);
+                    if (opVsLucene == OpVsLuceneDocStatus.OP_STALE_OR_EQUAL) {
+                        plan = IndexingStrategy.processAsStaleOp(softDeleteEnabled, index.version());
+                    } else {
+                        plan = IndexingStrategy.processNormally(opVsLucene == OpVsLuceneDocStatus.LUCENE_DOC_NOT_FOUND, index.version());
+                    }
                 }
             }
         }
