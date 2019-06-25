@@ -5208,65 +5208,6 @@ public class InternalEngineTests extends EngineTestCase {
         }
     }
 
-    public void testTrackMaxSeqNoOfNonAppendOnlyOperations() throws Exception {
-        IOUtils.close(engine, store);
-        store = createStore();
-        final Path translogPath = createTempDir();
-        final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
-        try (InternalEngine engine = createEngine(store, translogPath, globalCheckpoint::get)) {
-            final CountDownLatch latch = new CountDownLatch(1);
-            final Thread appendOnlyIndexer = new Thread(() -> {
-                try {
-                    latch.countDown();
-                    final int numDocs = scaledRandomIntBetween(100, 1000);
-                    for (int i = 0; i < numDocs; i++) {
-                        ParsedDocument doc =
-                            testParsedDocument("append-only" + i, null, testDocumentWithTextField(), SOURCE, null);
-                        engine.index(appendOnlyPrimary(doc, randomBoolean(), randomNonNegativeLong()));
-                    }
-                } catch (Exception ex) {
-                    throw new RuntimeException("Failed to index", ex);
-                }
-            });
-            appendOnlyIndexer.setName("append-only indexer");
-            appendOnlyIndexer.start();
-            latch.await();
-            long maxSeqNoOfNonAppendOnly = SequenceNumbers.NO_OPS_PERFORMED;
-            final int numOps = scaledRandomIntBetween(100, 1000);
-            for (int i = 0; i < numOps; i++) {
-                ParsedDocument parsedDocument =
-                    testParsedDocument(Integer.toString(i), null, testDocumentWithTextField(), SOURCE, null);
-                if (randomBoolean()) { // On replica - update max_seqno for non-append-only operations
-                    final long seqno = generateNewSeqNo(engine);
-                    final Engine.Index doc = replicaIndexForDoc(parsedDocument, 1, seqno, randomBoolean());
-                    if (randomBoolean()) {
-                        engine.index(doc);
-                    } else {
-                        engine.delete(new Engine.Delete(doc.type(), doc.id(), doc.uid(), seqno, doc.primaryTerm(),
-                            doc.version(), doc.versionType(), doc.origin(), threadPool.relativeTimeInMillis(), UNASSIGNED_SEQ_NO, 0));
-                    }
-                    maxSeqNoOfNonAppendOnly = seqno;
-                } else { // On primary - do not update max_seqno for non-append-only operations
-                    if (randomBoolean()) {
-                        engine.index(indexForDoc(parsedDocument));
-                    } else {
-                        engine.delete(new Engine.Delete(parsedDocument.type(), parsedDocument.id(),
-                            newUid(parsedDocument.id()), primaryTerm.get()));
-                    }
-                }
-            }
-            appendOnlyIndexer.join(120_000);
-            assertThat(engine.getMaxSeqNoOfNonAppendOnlyOperations(), equalTo(maxSeqNoOfNonAppendOnly));
-            engine.syncTranslog();
-            globalCheckpoint.set(engine.getPersistedLocalCheckpoint());
-            engine.flush();
-        }
-        try (InternalEngine engine = createEngine(store, translogPath, globalCheckpoint::get)) {
-            assertThat("max_seqno from non-append-only was not bootstrap from the safe commit",
-                engine.getMaxSeqNoOfNonAppendOnlyOperations(), equalTo(globalCheckpoint.get()));
-        }
-    }
-
     public void testSkipOptimizeForExposedAppendOnlyOperations() throws Exception {
         long lookupTimes = 0L;
         final int initDocs = between(0, 10);
@@ -5286,7 +5227,6 @@ public class InternalEngineTests extends EngineTestCase {
         }
         lookupTimes++;
         assertThat(engine.getNumVersionLookups(), equalTo(lookupTimes));
-        assertThat(engine.getMaxSeqNoOfNonAppendOnlyOperations(), equalTo(seqnoNormalOp));
 
         // should not optimize for doc1 and process as a regular doc (eg. look up in version map)
         engine.index(appendOnlyReplica(testParsedDocument("append-only-1", null, testDocumentWithTextField(), SOURCE, null),

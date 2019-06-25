@@ -461,11 +461,6 @@ public class ReadOnlyEngine extends Engine {
         return docsStats;
     }
 
-    @Override
-    public void updateMaxUnsafeAutoIdTimestamp(long newTimestamp) {
-
-    }
-
     protected void processReader(IndexReader reader) {
         searcherFactory.processReaders(reader, null);
     }

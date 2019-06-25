@@ -1897,19 +1897,12 @@ public abstract class Engine implements Closeable {
     public abstract void maybePruneDeletes();
 
     /**
-     * Returns the maximum auto_id_timestamp of all append-only index requests have been processed by this engine
-     * or the auto_id_timestamp received from its primary shard via {@link #updateMaxUnsafeAutoIdTimestamp(long)}.
+     * Returns the maximum auto_id_timestamp of all append-only index requests have been processed by this engine.
      * Notes this method returns the auto_id_timestamp of all append-only requests, not max_unsafe_auto_id_timestamp.
      */
     public long getMaxSeenAutoIdTimestamp() {
         return IndexRequest.UNSET_AUTO_GENERATED_TIMESTAMP;
     }
-
-    /**
-     * Forces this engine to advance its max_unsafe_auto_id_timestamp marker to at least the given timestamp.
-     * The engine will disable optimization for all append-only whose timestamp at most {@code newTimestamp}.
-     */
-    public abstract void updateMaxUnsafeAutoIdTimestamp(long newTimestamp);
 
     @FunctionalInterface
     public interface TranslogRecoveryRunner {
