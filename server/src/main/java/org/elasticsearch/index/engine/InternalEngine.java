@@ -950,7 +950,7 @@ public class InternalEngine extends Engine {
         final IndexingStrategy plan;
 
         // maxSeqNoOfNonAppendOnlyOperations optimization is for primaries only, but need to track max timestamp and max seq number here so
-        // that when we switch to primary, that we enable the optimization.
+        // that when we switch to primary, that we properly deoptimize duplicates.
         if (canOptimizeAddDocument(index)) {
             mayHaveBeenIndexedBefore(index);
         }
