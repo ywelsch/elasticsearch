@@ -954,51 +954,40 @@ public class InternalEngine extends Engine {
     protected final IndexingStrategy planIndexingAsNonPrimary(Index index) throws IOException {
         assert assertNonPrimaryOrigin(index);
         final IndexingStrategy plan;
-        final boolean appendOnlyRequest = canOptimizeAddDocument(index);
-        if (appendOnlyRequest && mayHaveBeenIndexedBefore(index) == false && index.seqNo() > maxSeqNoOfNonAppendOnlyOperations.get()) {
-            /*
-             * As soon as an append-only request was indexed into the primary, it can be exposed to a search then users can issue
-             * a follow-up operation on it. In rare cases, the follow up operation can be arrived and processed on a replica before
-             * the original append-only. In this case we can't simply proceed with the append only without consulting the version map.
-             * If a replica has seen a non-append-only operation with a higher seqno than the seqno of an append-only, it may have seen
-             * the document of that append-only request. However if the seqno of an append-only is higher than seqno of any non-append-only
-             * requests, we can assert the replica have not seen the document of that append-only request, thus we can apply optimization.
-             */
-            assert index.version() == 1L : "can optimize on replicas but incoming version is [" + index.version() + "]";
-            plan = IndexingStrategy.optimizedAppendOnly(1L);
+
+        // maxSeqNoOfNonAppendOnlyOperations optimization is for primaries only, but need to track max timestamp and max seq number here so
+        // that when we switch to primary, that we enable the optimization.
+        if (canOptimizeAddDocument(index)) {
+            mayHaveBeenIndexedBefore(index);
+        }
+        maxSeqNoOfNonAppendOnlyOperations.updateAndGet(curr -> Math.max(index.seqNo(), curr));
+        assert maxSeqNoOfNonAppendOnlyOperations.get() >= index.seqNo() : "max_seqno of non-append-only was not updated;" +
+            "max_seqno non-append-only [" + maxSeqNoOfNonAppendOnlyOperations.get() + "], seqno of index [" + index.seqNo() + "]";
+
+        if (hasBeenProcessedBefore(index)){
+            // the operation seq# has been processed before and was thus already put into lucene
+            // this can happen during recovery where older operations are sent from the translog that are already
+            // part of the lucene commit (either from a peer recovery or a local translog)
+            // or due to concurrent indexing & recovery. For the former it is important to skip lucene as the operation in
+            // question may have been deleted in an out of order op that is not replayed.
+            // See testRecoverFromStoreWithOutOfOrderDelete for an example of local recovery
+            // See testRecoveryWithOutOfOrderDelete for an example of peer recovery
+            plan = IndexingStrategy.processButSkipLucene(false, index.version());
         } else {
-            if (appendOnlyRequest == false) {
-                maxSeqNoOfNonAppendOnlyOperations.updateAndGet(curr -> Math.max(index.seqNo(), curr));
-                assert maxSeqNoOfNonAppendOnlyOperations.get() >= index.seqNo() : "max_seqno of non-append-only was not updated;" +
-                    "max_seqno non-append-only [" + maxSeqNoOfNonAppendOnlyOperations.get() + "], seqno of index [" + index.seqNo() + "]";
-            }
-
-            versionMap.enforceSafeAccess();
-
-            if (hasBeenProcessedBefore(index)){
-                // the operation seq# has been processed before and was thus already put into lucene
-                // this can happen during recovery where older operations are sent from the translog that are already
-                // part of the lucene commit (either from a peer recovery or a local translog)
-                // or due to concurrent indexing & recovery. For the former it is important to skip lucene as the operation in
-                // question may have been deleted in an out of order op that is not replayed.
-                // See testRecoverFromStoreWithOutOfOrderDelete for an example of local recovery
-                // See testRecoveryWithOutOfOrderDelete for an example of peer recovery
-                plan = IndexingStrategy.processButSkipLucene(false, index.version());
+            final long maxSeqNoOfUpdatesOrDeletes = getMaxSeqNoOfUpdatesOrDeletes();
+            assert maxSeqNoOfUpdatesOrDeletes != SequenceNumbers.UNASSIGNED_SEQ_NO : "max_seq_no_of_updates is not initialized";
+            if (maxSeqNoOfUpdatesOrDeletes <= localCheckpointTracker.getProcessedCheckpoint()) {
+                assert maxSeqNoOfUpdatesOrDeletes < index.seqNo() :
+                    "seq_no[" + index.seqNo() + "] <= msu[" + maxSeqNoOfUpdatesOrDeletes + "]";
+                numOfOptimizedIndexing.inc();
+                plan = InternalEngine.IndexingStrategy.optimizedAppendOnly(index.version());
             } else {
-                final long maxSeqNoOfUpdatesOrDeletes = getMaxSeqNoOfUpdatesOrDeletes();
-                assert maxSeqNoOfUpdatesOrDeletes != SequenceNumbers.UNASSIGNED_SEQ_NO : "max_seq_no_of_updates is not initialized";
-                if (maxSeqNoOfUpdatesOrDeletes <= localCheckpointTracker.getProcessedCheckpoint()) {
-                    assert maxSeqNoOfUpdatesOrDeletes < index.seqNo() :
-                        "seq_no[" + index.seqNo() + "] <= msu[" + maxSeqNoOfUpdatesOrDeletes + "]";
-                    numOfOptimizedIndexing.inc();
-                    plan = InternalEngine.IndexingStrategy.optimizedAppendOnly(index.version());
+                versionMap.enforceSafeAccess();
+                final OpVsLuceneDocStatus opVsLucene = compareOpToLuceneDocBasedOnSeqNo(index);
+                if (opVsLucene == OpVsLuceneDocStatus.OP_STALE_OR_EQUAL) {
+                    plan = IndexingStrategy.processAsStaleOp(softDeleteEnabled, index.version());
                 } else {
-                    final OpVsLuceneDocStatus opVsLucene = compareOpToLuceneDocBasedOnSeqNo(index);
-                    if (opVsLucene == OpVsLuceneDocStatus.OP_STALE_OR_EQUAL) {
-                        plan = IndexingStrategy.processAsStaleOp(softDeleteEnabled, index.version());
-                    } else {
-                        plan = IndexingStrategy.processNormally(opVsLucene == OpVsLuceneDocStatus.LUCENE_DOC_NOT_FOUND, index.version());
-                    }
+                    plan = IndexingStrategy.processNormally(opVsLucene == OpVsLuceneDocStatus.LUCENE_DOC_NOT_FOUND, index.version());
                 }
             }
         }
@@ -1334,8 +1323,8 @@ public class InternalEngine extends Engine {
         // this allows to ignore the case where a document was found in the live version maps in
         // a delete state and return true for the found flag in favor of code simplicity
         final DeletionStrategy plan;
-        if (delete.seqNo() <= localCheckpointTracker.getProcessedCheckpoint()) {
-            // the operation seq# is lower then the current local checkpoint and thus was already put into lucene
+        if (hasBeenProcessedBefore(delete)) {
+            // the operation seq# has been processed before was thus already put into lucene
             // this can happen during recovery where older operations are sent from the translog that are already
             // part of the lucene commit (either from a peer recovery or a local translog)
             // or due to concurrent indexing & recovery. For the former it is important to skip lucene as the operation in

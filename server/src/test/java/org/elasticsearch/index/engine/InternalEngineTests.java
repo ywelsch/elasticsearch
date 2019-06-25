@@ -212,9 +212,7 @@ public class InternalEngineTests extends EngineTestCase {
     public void testVersionMapAfterAutoIDDocument() throws IOException {
         ParsedDocument doc = testParsedDocument("1", null, testDocumentWithTextField("test"),
             new BytesArray("{}".getBytes(Charset.defaultCharset())), null);
-        Engine.Index operation = randomBoolean() ?
-            appendOnlyPrimary(doc, false, 1)
-            : appendOnlyReplica(doc, false, 1, randomIntBetween(0, 5));
+        Engine.Index operation = appendOnlyPrimary(doc, false, 1);
         engine.index(operation);
         assertFalse(engine.isSafeAccessRequired());
         doc = testParsedDocument("1", null, testDocumentWithTextField("updated"),
@@ -249,9 +247,7 @@ public class InternalEngineTests extends EngineTestCase {
 
         doc = testParsedDocument("2", null, testDocumentWithTextField("test"),
             new BytesArray("{}".getBytes(Charset.defaultCharset())), null);
-        operation = randomBoolean() ?
-            appendOnlyPrimary(doc, false, 1)
-            : appendOnlyReplica(doc, false, 1, generateNewSeqNo(engine));
+        operation = appendOnlyPrimary(doc, false, 1);
         engine.index(operation);
         assertTrue("safe access should be required", engine.isSafeAccessRequired());
         assertThat(engine.getVersionMap().values(), hasSize(1)); // now we add this to the map
@@ -3493,7 +3489,7 @@ public class InternalEngineTests extends EngineTestCase {
                 operation.versionType(), REPLICA, operation.startTime()+1, UNASSIGNED_SEQ_NO, 0);
         // operations with a seq# equal or lower to the local checkpoint are not indexed to lucene
         // and the version lookup is skipped
-        final boolean belowLckp = operation.seqNo() == 0 && retry.seqNo() == 0;
+        final boolean sameSeqNo = operation.seqNo() == retry.seqNo();
         if (randomBoolean()) {
             Engine.IndexResult indexResult = engine.index(operation);
             assertLuceneOperations(engine, 1, 0, 0);
@@ -3503,7 +3499,7 @@ public class InternalEngineTests extends EngineTestCase {
             assertEquals(1, engine.getNumVersionLookups());
             assertLuceneOperations(engine, 1, 0, 1);
             Engine.IndexResult retryResult = engine.index(retry);
-            assertEquals(belowLckp ? 1 : 2, engine.getNumVersionLookups());
+            assertEquals(sameSeqNo ? 1 : 2, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) > 0);
         } else {
@@ -3516,7 +3512,7 @@ public class InternalEngineTests extends EngineTestCase {
             assertLuceneOperations(engine, 1, 0, 1);
             assertEquals(2, engine.getNumVersionLookups());
             Engine.IndexResult indexResult = engine.index(operation);
-            assertEquals(belowLckp ? 2 : 3, engine.getNumVersionLookups());
+            assertEquals(sameSeqNo ? 2 : 3, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) < 0);
         }
@@ -3624,7 +3620,7 @@ public class InternalEngineTests extends EngineTestCase {
             }
             Engine.IndexResult indexResult = engine.index(operation);
             assertLuceneOperations(engine, 1, 0, 0);
-            assertEquals(2, engine.getNumVersionLookups());
+            assertEquals(1, engine.getNumVersionLookups());
             assertNotNull(retryResult.getTranslogLocation());
             assertTrue(retryResult.getTranslogLocation().compareTo(indexResult.getTranslogLocation()) < 0);
         }
@@ -5226,11 +5222,7 @@ public class InternalEngineTests extends EngineTestCase {
                     for (int i = 0; i < numDocs; i++) {
                         ParsedDocument doc =
                             testParsedDocument("append-only" + i, null, testDocumentWithTextField(), SOURCE, null);
-                        if (randomBoolean()) {
-                            engine.index(appendOnlyReplica(doc, randomBoolean(), 1, generateNewSeqNo(engine)));
-                        } else {
-                            engine.index(appendOnlyPrimary(doc, randomBoolean(), randomNonNegativeLong()));
-                        }
+                        engine.index(appendOnlyPrimary(doc, randomBoolean(), randomNonNegativeLong()));
                     }
                 } catch (Exception ex) {
                     throw new RuntimeException("Failed to index", ex);
