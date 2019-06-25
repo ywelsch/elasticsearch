@@ -1484,6 +1484,7 @@ public class InternalEngine extends Engine {
                 noOpResult = new NoOpResult(getPrimaryTerm(), SequenceNumbers.UNASSIGNED_SEQ_NO, preFlightError.get());
             } else {
                 markSeqNoAsSeen(noOp.seqNo());
+                // TODO: add planning step as we should avoid adding duplicate noops
                 if (softDeleteEnabled) {
                     try {
                         final ParsedDocument tombstone = engineConfig.getTombstoneDocSupplier().newNoopTombstoneDoc(noOp.reason());
