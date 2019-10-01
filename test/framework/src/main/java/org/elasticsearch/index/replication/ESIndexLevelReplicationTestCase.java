@@ -233,13 +233,28 @@ public abstract class ESIndexLevelReplicationTestCase extends IndexShardTestCase
         }
 
         public int appendDocs(final int numOfDoc) throws Exception {
+            return appendDocs(numOfDoc, false);
+        }
+
+        public int appendDocs(final int numOfDoc, boolean withDuplicates) throws Exception {
             for (int doc = 0; doc < numOfDoc; doc++) {
-                final IndexRequest indexRequest = new IndexRequest(index.getName(), "type").source("{}", XContentType.JSON);
+                final IndexRequest indexRequest = new IndexRequest(index.getName(), "type").source("{}", XContentType.JSON)
+                    .opType(DocWriteRequest.OpType.CREATE);
                 final BulkItemResponse response = index(indexRequest);
                 if (response.isFailed()) {
                     throw response.getFailure().getCause();
                 } else if (response.isFailed() == false) {
                     assertEquals(DocWriteResponse.Result.CREATED, response.getResponse().getResult());
+                }
+
+                if (withDuplicates) {
+                    indexRequest.onRetry();
+                    final BulkItemResponse response2 = index(indexRequest);
+                    if (response2.isFailed()) {
+                        throw response2.getFailure().getCause();
+                    } else if (response2.isFailed() == false) {
+                        assertEquals(DocWriteResponse.Result.CREATED, response.getResponse().getResult());
+                    }
                 }
             }
             return numOfDoc;

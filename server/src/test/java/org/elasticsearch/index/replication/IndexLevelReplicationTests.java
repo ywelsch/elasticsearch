@@ -101,6 +101,21 @@ public class IndexLevelReplicationTests extends ESIndexLevelReplicationTestCase 
             final int docCount = randomInt(50);
             shards.appendDocs(docCount);
             shards.assertAllEqual(docCount);
+            assertThat(EngineTestCase.getNumVersionLookups(getEngine(shards.getPrimary())), equalTo(0L));
+            for (IndexShard replica : shards.getReplicas()) {
+                assertThat(EngineTestCase.getNumVersionLookups(getEngine(replica)), equalTo(0L));
+            }
+        }
+    }
+
+    public void testAppendOnlyReplicationWithDuplicates() throws Exception {
+        try (ReplicationGroup shards = createGroup(randomInt(2))) {
+            shards.startAll();
+            final int docCount = randomInt(50);
+            shards.appendDocs(docCount, true);
+            shards.assertAllEqual(docCount);
+            // duplicate requests lead to version map lookups on primary
+            assertThat(EngineTestCase.getNumVersionLookups(getEngine(shards.getPrimary())), equalTo((long) docCount));
             for (IndexShard replica : shards.getReplicas()) {
                 assertThat(EngineTestCase.getNumVersionLookups(getEngine(replica)), equalTo(0L));
             }
