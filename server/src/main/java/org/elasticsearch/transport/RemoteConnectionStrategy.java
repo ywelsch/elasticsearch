@@ -25,7 +25,9 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.support.ContextPreservingActionListener;
+import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
@@ -33,6 +35,7 @@ import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -46,7 +49,8 @@ public abstract class RemoteConnectionStrategy implements TransportConnectionLis
 
     enum ConnectionStrategy {
         SNIFF,
-        SIMPLE
+        SIMPLE,
+        REVERSE
     }
 
     public static final Setting.AffixSetting<ConnectionStrategy> REMOTE_CONNECTION_MODE = Setting.affixKeySetting(
@@ -54,7 +58,7 @@ public abstract class RemoteConnectionStrategy implements TransportConnectionLis
             key,
             ConnectionStrategy.SNIFF.name(),
             value -> ConnectionStrategy.valueOf(value.toUpperCase(Locale.ROOT)),
-            Setting.Property.Dynamic));
+            Setting.Property.Dynamic, Setting.Property.NodeScope));
 
 
     private static final Logger logger = LogManager.getLogger(RemoteConnectionStrategy.class);
@@ -134,6 +138,8 @@ public abstract class RemoteConnectionStrategy implements TransportConnectionLis
         if (mode.equals(ConnectionStrategy.SNIFF)) {
             List<String> seeds = RemoteClusterAware.REMOTE_CLUSTERS_SEEDS.getConcreteSettingForNamespace(clusterAlias).get(settings);
             return seeds.isEmpty() == false;
+        } else if (mode.equals(ConnectionStrategy.REVERSE)) {
+            return true;
         } else {
             return false;
         }
@@ -163,6 +169,38 @@ public abstract class RemoteConnectionStrategy implements TransportConnectionLis
     protected abstract boolean strategyMustBeRebuilt(Settings newSettings);
 
     protected abstract ConnectionStrategy strategyType();
+
+    @Override
+    public void onNodeConnected(DiscoveryNode node, Transport.Connection connection) {
+        if (this instanceof ReverseConnectionStrategy) {
+            return;
+        }
+        // send special message to have target cluster register backchannel for reverse remote connection
+        transportService.sendRequest(connection, ReverseRemoteAction.NAME,
+            new ReverseRemoteAction.Request(transportService.clusterName.value(), transportService.getLocalNode()),
+            TransportRequestOptions.EMPTY, new TransportResponseHandler<AcknowledgedResponse>() {
+                @Override
+                public AcknowledgedResponse read(StreamInput in) throws IOException {
+                    return new AcknowledgedResponse(in);
+                }
+
+                @Override
+                public void handleResponse(AcknowledgedResponse response) {
+
+                }
+
+                @Override
+                public void handleException(TransportException exp) {
+
+                }
+
+                @Override
+                public String executor() {
+                    return ThreadPool.Names.SAME;
+                }
+            });
+    }
+
 
     @Override
     public void onNodeDisconnected(DiscoveryNode node, Transport.Connection connection) {

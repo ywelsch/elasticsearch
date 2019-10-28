@@ -20,6 +20,7 @@
 package org.elasticsearch.transport;
 
 import org.elasticsearch.Version;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 
@@ -62,6 +63,11 @@ public final class TcpTransportChannel implements TransportChannel {
         } finally {
             release(false);
         }
+    }
+
+    public void sendRequest(DiscoveryNode discoNode, long requestId, String action, TransportRequest request,
+                            TransportRequestOptions options) throws IOException, TransportException {
+        outboundHandler.sendRequest(discoNode, channel, requestId, action, request, options, version, compressResponse, false);
     }
 
     @Override

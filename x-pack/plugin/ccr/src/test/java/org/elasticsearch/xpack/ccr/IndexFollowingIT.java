@@ -16,6 +16,8 @@ import org.elasticsearch.ResourceNotFoundException;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksRequest;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksResponse;
+import org.elasticsearch.action.admin.cluster.remote.RemoteInfoAction;
+import org.elasticsearch.action.admin.cluster.remote.RemoteInfoRequest;
 import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
 import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest;
@@ -80,6 +82,7 @@ import org.elasticsearch.test.BackgroundIndexer;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.transport.NoSuchRemoteClusterException;
 import org.elasticsearch.transport.RemoteClusterService;
+import org.elasticsearch.transport.RemoteConnectionInfo;
 import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xpack.CcrIntegTestCase;
 import org.elasticsearch.xpack.ccr.action.ShardFollowTask;
@@ -238,6 +241,41 @@ public class IndexFollowingIT extends CcrIntegTestCase {
 
             pauseFollow("index2");
             assertMaxSeqNoOfUpdatesIsTransferred(resolveLeaderIndex("index1"), resolveFollowerIndex("index2"), numberOfPrimaryShards);
+
+            // leader cluster has no remote cluster set up
+            List<RemoteConnectionInfo> infos = leaderClient().execute(RemoteInfoAction.INSTANCE, new RemoteInfoRequest()).get().getInfos();
+            assertThat(infos.size(), equalTo(0));
+
+            // set up reverse remote cluster connection on leader cluster
+            ClusterUpdateSettingsRequest updateSettingsRequest = new ClusterUpdateSettingsRequest();
+            // match cluster by its name (which it shares on incoming remote connections)
+            updateSettingsRequest.transientSettings(Settings.builder().put("cluster.remote.follower_cluster.mode", "reverse"));
+            assertAcked(leaderClient().admin().cluster().updateSettings(updateSettingsRequest).actionGet());
+
+            infos = leaderClient().execute(RemoteInfoAction.INSTANCE, new RemoteInfoRequest()).get().getInfos();
+            assertThat(infos.size(), equalTo(1));
+            assertThat(infos.get(0).getNumNodesConnected(), greaterThan(0)); // not tracked yet
+
+            PutFollowAction.Request reverseFollowRequest = new PutFollowAction.Request();
+            reverseFollowRequest.setRemoteCluster("follower_cluster");
+            reverseFollowRequest.setLeaderIndex("index2");
+            reverseFollowRequest.setFollowerIndex("index3");
+            reverseFollowRequest.getParameters().setMaxRetryDelay(TimeValue.timeValueMillis(10));
+            reverseFollowRequest.getParameters().setReadPollTimeout(TimeValue.timeValueMillis(10));
+            reverseFollowRequest.waitForActiveShards(ActiveShardCount.ALL);
+
+            PutFollowAction.Response reverseFollowResponse = leaderClient().execute(PutFollowAction.INSTANCE, reverseFollowRequest).get();
+            assertTrue(reverseFollowResponse.isFollowIndexCreated());
+            assertTrue(reverseFollowResponse.isFollowIndexShardsAcked());
+            assertTrue(reverseFollowResponse.isIndexFollowingStarted());
+
+            // wait for all documents from follower cluster's index2 to have arrived on leader cluster's index3
+            for (String docId : indexer.getIds()) {
+                assertBusy(() -> {
+                    final GetResponse getResponse = leaderClient().prepareGet("index3", docId).get();
+                    assertTrue("Doc with id [" + docId + "] is missing", getResponse.isExists());
+                });
+            }
         }
     }
 

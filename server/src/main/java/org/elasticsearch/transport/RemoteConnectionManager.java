@@ -115,7 +115,7 @@ public class RemoteConnectionManager implements Closeable {
         private final Transport.Connection connection;
         private final DiscoveryNode targetNode;
 
-        private ProxyConnection(Transport.Connection connection, DiscoveryNode targetNode) {
+        ProxyConnection(Transport.Connection connection, DiscoveryNode targetNode) {
             this.connection = connection;
             this.targetNode = targetNode;
         }

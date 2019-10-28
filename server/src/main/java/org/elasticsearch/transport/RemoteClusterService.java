@@ -26,6 +26,7 @@ import org.elasticsearch.action.OriginalIndices;
 import org.elasticsearch.action.support.GroupedActionListener;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.action.support.PlainActionFuture;
+import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.Strings;
@@ -41,7 +42,9 @@ import org.elasticsearch.threadpool.ThreadPool;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -130,9 +133,109 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
     private final TransportService transportService;
     private final Map<String, RemoteClusterConnection> remoteClusters = ConcurrentCollections.newConcurrentMap();
 
+    private final Map<String, ReverseRemoteClusterConnection> reverseClusters = ConcurrentCollections.newConcurrentMap();
+
+    private static class ReverseRemoteClusterConnection implements BasicRemoteClusterConnection {
+        private final String name;
+        // manage connections per source node here
+        private final Map<TcpChannel, Transport.Connection> channels = ConcurrentCollections.newConcurrentMap();
+
+        private ReverseRemoteClusterConnection(String name) {
+            this.name = name;
+        }
+
+        RemoteConnectionInfo getConnectionInfo() {
+            return new RemoteConnectionInfo(name, Collections.emptyList(), 0, channels.size(), TimeValue.ZERO, true);
+        }
+
+        @Override
+        public void ensureConnected(ActionListener<Void> listener) {
+            // noop
+            listener.onResponse(null);
+        }
+
+        @Override
+        public Transport.Connection getConnection(DiscoveryNode remoteClusterNode) {
+            Iterator<Transport.Connection> it = channels.values().iterator();
+            // TODO: be smarter about picking connection
+            if (it.hasNext()) {
+                if (remoteClusterNode == null) {
+                    return it.next();
+                } else {
+                    return new RemoteConnectionManager.ProxyConnection(it.next(), remoteClusterNode);
+                }
+            }
+            throw new NoSuchRemoteClusterException(name);
+        }
+
+        @Override
+        public Transport.Connection getConnection() {
+            return getConnection(null);
+        }
+    }
+
     RemoteClusterService(Settings settings, TransportService transportService) {
         super(settings);
         this.transportService = transportService;
+        transportService.registerRequestHandler(
+                ReverseRemoteAction.NAME,
+                ThreadPool.Names.SAME,
+                false, false,
+                ReverseRemoteAction.Request::new,
+                (request, channel, task) -> {
+                    final ReverseRemoteClusterConnection reverseConnection =
+                        reverseClusters.computeIfAbsent(request.clusterName, k -> new ReverseRemoteClusterConnection(k));
+                    TransportChannel unwrappedChannel = channel;
+                    if (unwrappedChannel instanceof TaskTransportChannel) {
+                        unwrappedChannel = ((TaskTransportChannel) unwrappedChannel).getChannel();
+                    }
+
+                    if ((unwrappedChannel instanceof TcpTransportChannel)) {
+                        TcpTransportChannel tcpTransportChannel = (TcpTransportChannel) unwrappedChannel;
+                        TcpChannel tcpChannel = tcpTransportChannel.getChannel();
+
+                        assert tcpChannel.isServerChannel();
+
+                        reverseConnection.channels.put(tcpChannel, new Transport.Connection() {
+                            @Override
+                            public DiscoveryNode getNode() {
+                                return request.discoNode;
+                            }
+
+                            @Override
+                            public void sendRequest(long requestId, String action, TransportRequest request,
+                                                    TransportRequestOptions options)
+                                throws IOException, TransportException {
+                                tcpTransportChannel.sendRequest(getNode(), requestId, action, request, options);
+                            }
+
+                            @Override
+                            public void addCloseListener(ActionListener<Void> listener) {
+                                // ignore
+                            }
+
+                            @Override
+                            public boolean isClosed() {
+                                return false;
+                            }
+
+                            @Override
+                            public void close() {
+                                // ignore
+                            }
+                        });
+                        tcpChannel.addCloseListener(ActionListener.wrap(() -> {
+                            reverseConnection.channels.remove(tcpChannel);
+                            if (reverseConnection.channels.isEmpty()) {
+                                // TODO: properly synchronize this
+                                reverseClusters.remove(request.clusterName);
+                            }
+                        }));
+
+                    }
+
+                    channel.sendResponse(new AcknowledgedResponse(true));
+                });
     }
 
     /**
@@ -188,7 +291,7 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
      * @throws IllegalArgumentException if the remote cluster is unknown
      */
     public Transport.Connection getConnection(DiscoveryNode node, String cluster) {
-        return getRemoteClusterConnection(cluster).getConnection(node);
+        return getBasicRemoteClusterConnection(cluster).getConnection(node);
     }
 
     /**
@@ -196,7 +299,7 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
      * will invoke the listener immediately.
      */
     void ensureConnected(String clusterAlias, ActionListener<Void> listener) {
-        getRemoteClusterConnection(clusterAlias).ensureConnected(listener);
+        getBasicRemoteClusterConnection(clusterAlias).ensureConnected(listener);
     }
 
     /**
@@ -207,7 +310,22 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
     }
 
     public Transport.Connection getConnection(String cluster) {
-        return getRemoteClusterConnection(cluster).getConnection();
+        return getBasicRemoteClusterConnection(cluster).getConnection();
+    }
+
+    BasicRemoteClusterConnection getBasicRemoteClusterConnection(String cluster) {
+        RemoteClusterConnection connection = remoteClusters.get(cluster);
+        if (connection != null) {
+            if (connection.getConnectionStrategy().strategyType() != RemoteConnectionStrategy.ConnectionStrategy.REVERSE) {
+                return connection;
+            } else {
+                ReverseRemoteClusterConnection reverseConnection = reverseClusters.get(cluster);
+                if (reverseConnection != null) {
+                    return reverseConnection;
+                }
+            }
+        }
+        throw new NoSuchRemoteClusterException(cluster);
     }
 
     RemoteClusterConnection getRemoteClusterConnection(String cluster) {
@@ -340,7 +458,15 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
     }
 
     public Stream<RemoteConnectionInfo> getRemoteConnectionInfos() {
-        return remoteClusters.values().stream().map(RemoteClusterConnection::getConnectionInfo);
+        return remoteClusters.values().stream().map(conn -> {
+            if (conn.getConnectionStrategy().strategyType() == RemoteConnectionStrategy.ConnectionStrategy.REVERSE) {
+                final ReverseRemoteClusterConnection reverseConnection = reverseClusters.get(conn.getConnectionInfo().getClusterAlias());
+                if (reverseConnection != null) {
+                    return reverseConnection.getConnectionInfo();
+                }
+            }
+            return conn.getConnectionInfo();
+        });
     }
 
     /**
@@ -391,7 +517,7 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
      * @throws IllegalArgumentException if the given clusterAlias doesn't exist
      */
     public Client getRemoteClusterClient(ThreadPool threadPool, String clusterAlias) {
-        if (transportService.getRemoteClusterService().getRemoteClusterNames().contains(clusterAlias) == false) {
+        if (getRemoteClusterNames().contains(clusterAlias) == false) {
             throw new NoSuchRemoteClusterException(clusterAlias);
         }
         return new RemoteClusterAwareClient(settings, threadPool, transportService, clusterAlias);

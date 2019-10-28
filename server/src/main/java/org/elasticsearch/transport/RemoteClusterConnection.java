@@ -37,6 +37,8 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.function.Function;
 
+import static org.elasticsearch.transport.RemoteConnectionStrategy.REMOTE_CONNECTION_MODE;
+
 /**
  * Represents a connection to a single remote cluster. In contrast to a local cluster a remote cluster is not joined such that the
  * current node is part of the cluster and it won't receive cluster state updates from the remote cluster. Remote clusters are also not
@@ -50,7 +52,7 @@ import java.util.function.Function;
  * {@link RemoteClusterService#REMOTE_CONNECTIONS_PER_CLUSTER} until either all eligible nodes are exhausted or the maximum number of
  * connections per cluster has been reached.
  */
-final class RemoteClusterConnection implements Closeable {
+final class RemoteClusterConnection implements Closeable, BasicRemoteClusterConnection {
 
     private final TransportService transportService;
     private final RemoteConnectionManager remoteConnectionManager;
@@ -76,7 +78,11 @@ final class RemoteClusterConnection implements Closeable {
         this.transportService = transportService;
         this.clusterAlias = clusterAlias;
         this.remoteConnectionManager = new RemoteConnectionManager(clusterAlias, connectionManager);
-        this.connectionStrategy = new SniffConnectionStrategy(clusterAlias, transportService, remoteConnectionManager, settings);
+        final RemoteConnectionStrategy.ConnectionStrategy connectionStrategy =
+            REMOTE_CONNECTION_MODE.getConcreteSettingForNamespace(clusterAlias).get(settings);
+        this.connectionStrategy = connectionStrategy == RemoteConnectionStrategy.ConnectionStrategy.SNIFF ?
+            new SniffConnectionStrategy(clusterAlias, transportService, remoteConnectionManager, settings) :
+            new ReverseConnectionStrategy(clusterAlias, transportService, remoteConnectionManager);
         // we register the transport service here as a listener to make sure we notify handlers on disconnect etc.
         connectionManager.addListener(transportService);
         this.skipUnavailable = RemoteClusterService.REMOTE_CLUSTER_SKIP_UNAVAILABLE
@@ -103,12 +109,17 @@ final class RemoteClusterConnection implements Closeable {
      * Ensures that this cluster is connected. If the cluster is connected this operation
      * will invoke the listener immediately.
      */
-    void ensureConnected(ActionListener<Void> listener) {
+    @Override
+    public void ensureConnected(ActionListener<Void> listener) {
         if (remoteConnectionManager.size() == 0) {
             connectionStrategy.connect(listener);
         } else {
             listener.onResponse(null);
         }
+    }
+
+    public RemoteConnectionStrategy getConnectionStrategy() {
+        return connectionStrategy;
     }
 
     /**
@@ -176,11 +187,13 @@ final class RemoteClusterConnection implements Closeable {
      * Returns a connection to the remote cluster, preferably a direct connection to the provided {@link DiscoveryNode}.
      * If such node is not connected, the returned connection will be a proxy connection that redirects to it.
      */
-    Transport.Connection getConnection(DiscoveryNode remoteClusterNode) {
+    @Override
+    public Transport.Connection getConnection(DiscoveryNode remoteClusterNode) {
         return remoteConnectionManager.getRemoteConnection(remoteClusterNode);
     }
 
-    Transport.Connection getConnection() {
+    @Override
+    public Transport.Connection getConnection() {
         return remoteConnectionManager.getAnyRemoteConnection();
     }
 

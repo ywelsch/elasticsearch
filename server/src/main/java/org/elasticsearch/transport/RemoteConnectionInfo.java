@@ -19,6 +19,7 @@
 
 package org.elasticsearch.transport;
 
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
@@ -133,6 +134,11 @@ public final class RemoteConnectionInfo implements ToXContentFragment, Writeable
     public int hashCode() {
         return Objects.hash(seedNodes, connectionsPerCluster, initialConnectionTimeout,
                 numNodesConnected, clusterAlias, skipUnavailable);
+    }
+
+    @Override
+    public String toString() {
+        return Strings.toString(this);
     }
 
 }

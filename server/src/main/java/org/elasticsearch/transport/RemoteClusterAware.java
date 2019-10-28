@@ -30,6 +30,7 @@ import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.common.util.set.Sets;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -107,10 +108,16 @@ public abstract class RemoteClusterAware {
      */
     protected static Set<String> getEnabledRemoteClusters(final Settings settings) {
         final Stream<Setting<List<String>>> allConcreteSettings = REMOTE_CLUSTERS_SEEDS.getAllConcreteSettings(settings);
-        return allConcreteSettings
+        final Stream<Setting<RemoteConnectionStrategy.ConnectionStrategy>> allConcreteSettings2 =
+            RemoteConnectionStrategy.REMOTE_CONNECTION_MODE.getAllConcreteSettings(settings);
+        return Sets.union(allConcreteSettings
             .map(REMOTE_CLUSTERS_SEEDS::getNamespace)
             .filter(clusterAlias -> RemoteConnectionStrategy.isConnectionEnabled(clusterAlias, settings))
-            .collect(Collectors.toSet());
+            .collect(Collectors.toSet()),
+            allConcreteSettings2
+                .map(RemoteConnectionStrategy.REMOTE_CONNECTION_MODE::getNamespace)
+                .filter(clusterAlias -> RemoteConnectionStrategy.isConnectionEnabled(clusterAlias, settings))
+                .collect(Collectors.toSet()));
     }
 
     /**
@@ -205,7 +212,7 @@ public abstract class RemoteClusterAware {
     public void listenForUpdates(ClusterSettings clusterSettings) {
         List<Setting.AffixSetting<?>> remoteClusterSettings = Arrays.asList(RemoteClusterAware.REMOTE_CLUSTERS_PROXY,
             RemoteClusterAware.REMOTE_CLUSTERS_SEEDS, RemoteClusterService.REMOTE_CLUSTER_COMPRESS,
-            RemoteClusterService.REMOTE_CLUSTER_PING_SCHEDULE);
+            RemoteClusterService.REMOTE_CLUSTER_PING_SCHEDULE, RemoteConnectionStrategy.REMOTE_CONNECTION_MODE);
         clusterSettings.addAffixGroupUpdateConsumer(remoteClusterSettings, this::validateAndUpdateRemoteCluster);
     }
 
