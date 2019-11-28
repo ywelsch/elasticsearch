@@ -30,6 +30,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.containsString;
@@ -56,11 +57,14 @@ public class EsExecutorsTests extends ESTestCase {
                 EsExecutors.newFixed(getName(), 1, 1, EsExecutors.daemonThreadFactory("test"), threadContext);
         final CountDownLatch wait = new CountDownLatch(1);
 
+        assertEquals(0, executor.numPendingResults());
+
         final CountDownLatch exec1Wait = new CountDownLatch(1);
         final AtomicBoolean executed1 = new AtomicBoolean();
         executor.execute(new Runnable() {
             @Override
             public void run() {
+                assertEquals(1, executor.numPendingResults());
                 try {
                     wait.await();
                 } catch (InterruptedException e) {
@@ -76,6 +80,7 @@ public class EsExecutorsTests extends ESTestCase {
         executor.execute(new Runnable() {
             @Override
             public void run() {
+                assertEquals(1, executor.numPendingResults());
                 executed2.set(true);
                 exec2Wait.countDown();
             }
@@ -86,6 +91,9 @@ public class EsExecutorsTests extends ESTestCase {
         executor.execute(new AbstractRunnable() {
             @Override
             protected void doRun() {
+                assertEquals(1, executor.numPendingResults());
+                threadContext.removeCompletion().run();
+                assertEquals(0, executor.numPendingResults());
                 executed3.set(true);
                 exec3Wait.countDown();
             }
@@ -107,6 +115,8 @@ public class EsExecutorsTests extends ESTestCase {
         exec2Wait.await();
         exec3Wait.await();
 
+        assertEquals(0, executor.numPendingResults());
+
         assertThat(executed1.get(), equalTo(true));
         assertThat(executed2.get(), equalTo(true));
         assertThat(executed3.get(), equalTo(true));
@@ -124,6 +134,7 @@ public class EsExecutorsTests extends ESTestCase {
         executor.execute(new Runnable() {
             @Override
             public void run() {
+                assertEquals(1, executor.numPendingResults());
                 try {
                     wait.await();
                 } catch (InterruptedException e) {
@@ -139,6 +150,7 @@ public class EsExecutorsTests extends ESTestCase {
         executor.execute(new Runnable() {
             @Override
             public void run() {
+                assertEquals(1, executor.numPendingResults());
                 executed2.set(true);
                 exec2Wait.countDown();
             }
@@ -165,6 +177,139 @@ public class EsExecutorsTests extends ESTestCase {
         assertThat(executed1.get(), equalTo(true));
         assertThat(executed2.get(), equalTo(true));
         assertThat(executed3.get(), equalTo(false));
+
+        terminate(executor);
+    }
+
+    public void testFixedMaxPending() throws Exception {
+        EsThreadPoolExecutor executor =
+            EsExecutors.newFixed(getName(), 2, 100, 1, EsExecutors.daemonThreadFactory("test"), threadContext);
+        final CountDownLatch wait = new CountDownLatch(1);
+
+        final CountDownLatch exec1Wait = new CountDownLatch(1);
+        final AtomicBoolean executed1 = new AtomicBoolean();
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                assertEquals(1, executor.numPendingResults());
+                try {
+                    wait.await();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                executed1.set(true);
+                exec1Wait.countDown();
+            }
+        });
+
+        final CountDownLatch exec2Wait = new CountDownLatch(1);
+        final AtomicBoolean executed2 = new AtomicBoolean();
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                assertEquals(2, executor.numPendingResults());
+                try {
+                    wait.await();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                executed2.set(true);
+                exec2Wait.countDown();
+            }
+        });
+
+        final AtomicBoolean executed3 = new AtomicBoolean();
+        try {
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    assertEquals(2, executor.numPendingResults());
+                    executed3.set(true);
+                }
+            });
+            fail("should be rejected...");
+        } catch (EsRejectedExecutionException e) {
+            // all is well
+        }
+
+        wait.countDown();
+
+        exec1Wait.await();
+        exec2Wait.await();
+
+        assertThat(executed1.get(), equalTo(true));
+        assertThat(executed2.get(), equalTo(true));
+        assertThat(executed3.get(), equalTo(false));
+
+        terminate(executor);
+    }
+
+    public void testFixedMaxPendingDelayResponse() throws Exception {
+        EsThreadPoolExecutor executor =
+            EsExecutors.newFixed(getName(), 1, 100, 0, EsExecutors.daemonThreadFactory("test"), threadContext);
+
+        final CountDownLatch exec1Wait = new CountDownLatch(1);
+        final AtomicBoolean executed1 = new AtomicBoolean();
+        final AtomicReference<Runnable> onCompletion = new AtomicReference<>();
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                assertEquals(1, executor.numPendingResults());
+                onCompletion.set(threadContext.removeCompletion());
+                executed1.set(true);
+                exec1Wait.countDown();
+            }
+        });
+
+        exec1Wait.await();
+
+        final AtomicBoolean executed2 = new AtomicBoolean();
+        try {
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    executed2.set(true);
+                }
+            });
+            fail("should be rejected...");
+        } catch (EsRejectedExecutionException e) {
+            // all is well
+        }
+
+        assertEquals(1, executor.numPendingResults());
+        onCompletion.get().run();
+        assertEquals(0, executor.numPendingResults());
+
+        if (randomBoolean()) {
+            onCompletion.get().run();
+            assertEquals(0, executor.numPendingResults());
+        }
+
+        final CountDownLatch exec3Wait = new CountDownLatch(1);
+        final AtomicBoolean executed3 = new AtomicBoolean();
+        final CountDownLatch wait = new CountDownLatch(1);
+
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                assertEquals(1, executor.numPendingResults());
+                try {
+                    wait.await();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                executed3.set(true);
+                exec3Wait.countDown();
+            }
+        });
+
+        wait.countDown();
+
+        exec3Wait.await();
+
+        assertThat(executed1.get(), equalTo(true));
+        assertThat(executed2.get(), equalTo(false));
+        assertThat(executed3.get(), equalTo(true));
 
         terminate(executor);
     }

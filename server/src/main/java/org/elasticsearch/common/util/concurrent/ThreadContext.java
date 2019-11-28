@@ -94,6 +94,7 @@ public final class ThreadContext implements Writeable {
     private static final ThreadContextStruct DEFAULT_CONTEXT = new ThreadContextStruct();
     private final Map<String, String> defaultHeader;
     private final ThreadLocal<ThreadContextStruct> threadLocal;
+    private final ThreadLocal<Runnable> onCompletion;
     private final int maxWarningHeaderCount;
     private final long maxWarningHeaderSize;
 
@@ -106,6 +107,7 @@ public final class ThreadContext implements Writeable {
         this.threadLocal = ThreadLocal.withInitial(() -> DEFAULT_CONTEXT);
         this.maxWarningHeaderCount = SETTING_HTTP_MAX_WARNING_HEADER_COUNT.get(settings);
         this.maxWarningHeaderSize = SETTING_HTTP_MAX_WARNING_HEADER_SIZE.get(settings).getBytes();
+        this.onCompletion = ThreadLocal.withInitial(() -> (Runnable) () -> {});
     }
 
     /**
@@ -132,6 +134,16 @@ public final class ThreadContext implements Writeable {
             // uncaught exception
             threadLocal.set(context);
         };
+    }
+
+    public void setCompletion(Runnable runnable) {
+        onCompletion.set(runnable);
+    }
+
+    public Runnable removeCompletion() {
+        Runnable r = onCompletion.get();
+        onCompletion.remove();
+        return r;
     }
 
     /**

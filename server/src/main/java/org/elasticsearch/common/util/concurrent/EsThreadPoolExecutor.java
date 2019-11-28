@@ -25,6 +25,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
@@ -34,6 +36,8 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
 
     private final ThreadContext contextHolder;
     private volatile ShutdownListener listener;
+
+    private final AtomicInteger numPendingResults = new AtomicInteger();
 
     private final Object monitor = new Object();
     /**
@@ -90,7 +94,6 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
                     ((AbstractRunnable) command).onRejection(ex);
                 } finally {
                     ((AbstractRunnable) command).onAfter();
-
                 }
             } else {
                 throw ex;
@@ -98,9 +101,26 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
         }
     }
 
+    public int numPendingResults() {
+        return numPendingResults.get();
+    }
+
+    @Override
+    protected void beforeExecute(Thread t, Runnable r) {
+        super.beforeExecute(t, r);
+        numPendingResults.incrementAndGet();
+        final AtomicBoolean finished = new AtomicBoolean();
+        contextHolder.setCompletion(() -> {
+            if (finished.compareAndSet(false, true)) {
+                numPendingResults.decrementAndGet();
+            }
+        });
+    }
+
     @Override
     protected void afterExecute(Runnable r, Throwable t) {
         super.afterExecute(r, t);
+        contextHolder.removeCompletion().run();
         EsExecutors.rethrowErrors(unwrap(r));
         assert assertDefaultContext(r);
     }
@@ -129,6 +149,7 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
             SizeBlockingQueue queue = (SizeBlockingQueue) getQueue();
             b.append("queue capacity = ").append(queue.capacity()).append(", ");
         }
+        b.append("pending = ").append(numPendingResults.get()).append(", ");
         appendThreadPoolExecutorDetails(b);
         /*
          * ThreadPoolExecutor has some nice information in its toString but we

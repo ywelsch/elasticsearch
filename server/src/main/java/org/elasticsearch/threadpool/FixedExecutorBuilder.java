@@ -39,6 +39,7 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
 
     private final Setting<Integer> sizeSetting;
     private final Setting<Integer> queueSizeSetting;
+    private final Setting<Integer> maxPendingSizeSetting;
 
     /**
      * Construct a fixed executor builder; the settings will have the key prefix "thread_pool." followed by the executor name.
@@ -52,6 +53,14 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
         this(settings, name, size, queueSize, "thread_pool." + name);
     }
 
+    FixedExecutorBuilder(final Settings settings, final String name, final int size, final int queueSize, final int maxPendingSize) {
+        this(settings, name, size, queueSize, maxPendingSize, "thread_pool." + name);
+    }
+
+    public FixedExecutorBuilder(final Settings settings, final String name, final int size, final int queueSize, final String prefix) {
+        this(settings, name, size, queueSize, -1, prefix);
+    }
+
     /**
      * Construct a fixed executor builder.
      *
@@ -59,9 +68,11 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
      * @param name      the name of the executor
      * @param size      the fixed number of threads
      * @param queueSize the size of the backing queue, -1 for unbounded
+     * @param maxPendingSize the maximum size of pending responses, -1 for unbounded
      * @param prefix    the prefix for the settings keys
      */
-    public FixedExecutorBuilder(final Settings settings, final String name, final int size, final int queueSize, final String prefix) {
+    public FixedExecutorBuilder(final Settings settings, final String name, final int size, final int queueSize, final int maxPendingSize,
+                                final String prefix) {
         super(name);
         final String sizeKey = settingsKey(prefix, "size");
         this.sizeSetting =
@@ -72,6 +83,8 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
                         Setting.Property.NodeScope);
         final String queueSizeKey = settingsKey(prefix, "queue_size");
         this.queueSizeSetting = Setting.intSetting(queueSizeKey, queueSize, Setting.Property.NodeScope);
+        final String maxPendingSizeKey = settingsKey(prefix, "max_pending_size");
+        this.maxPendingSizeSetting = Setting.intSetting(maxPendingSizeKey, maxPendingSize, Setting.Property.NodeScope);
     }
 
     @Override
@@ -84,16 +97,18 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
         final String nodeName = Node.NODE_NAME_SETTING.get(settings);
         final int size = sizeSetting.get(settings);
         final int queueSize = queueSizeSetting.get(settings);
-        return new FixedExecutorSettings(nodeName, size, queueSize);
+        final int maxPendingSize = maxPendingSizeSetting.get(settings);
+        return new FixedExecutorSettings(nodeName, size, queueSize, maxPendingSize);
     }
 
     @Override
     ThreadPool.ExecutorHolder build(final FixedExecutorSettings settings, final ThreadContext threadContext) {
         int size = settings.size;
         int queueSize = settings.queueSize;
+        int maxPendingSize = settings.maxPendingSize;
         final ThreadFactory threadFactory = EsExecutors.daemonThreadFactory(EsExecutors.threadName(settings.nodeName, name()));
         final ExecutorService executor =
-                EsExecutors.newFixed(settings.nodeName + "/" + name(), size, queueSize, threadFactory, threadContext);
+                EsExecutors.newFixed(settings.nodeName + "/" + name(), size, queueSize, maxPendingSize, threadFactory, threadContext);
         final ThreadPool.Info info =
             new ThreadPool.Info(name(), ThreadPool.ThreadPoolType.FIXED, size, size, null, queueSize < 0 ? null : new SizeValue(queueSize));
         return new ThreadPool.ExecutorHolder(executor, info);
@@ -113,11 +128,13 @@ public final class FixedExecutorBuilder extends ExecutorBuilder<FixedExecutorBui
 
         private final int size;
         private final int queueSize;
+        private final int maxPendingSize;
 
-        FixedExecutorSettings(final String nodeName, final int size, final int queueSize) {
+        FixedExecutorSettings(final String nodeName, final int size, final int queueSize, final int maxPendingSize) {
             super(nodeName);
             this.size = size;
             this.queueSize = queueSize;
+            this.maxPendingSize = maxPendingSize;
         }
 
     }

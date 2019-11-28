@@ -152,6 +152,16 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
     @Override
     protected void doExecute(Task task, BulkRequest bulkRequest, ActionListener<BulkResponse> listener) {
+        Runnable completion = threadPool.getThreadContext().removeCompletion();
+        listener = ActionListener.runBefore(listener, () -> completion.run());
+        try {
+            doExecuteInternal(task, bulkRequest, listener);
+        } catch (Exception e) {
+            listener.onFailure(e);
+        }
+    }
+
+    private void doExecuteInternal(Task task, BulkRequest bulkRequest, ActionListener<BulkResponse> listener) {
         final long startTime = relativeTime();
         final AtomicArray<BulkItemResponse> responses = new AtomicArray<>(bulkRequest.requests.size());
 

@@ -19,6 +19,7 @@
 
 package org.elasticsearch.common.util.concurrent;
 
+import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.settings.Setting;
@@ -42,6 +43,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntSupplier;
 import java.util.stream.Collectors;
 
 public class EsExecutors {
@@ -84,14 +86,23 @@ public class EsExecutors {
 
     public static EsThreadPoolExecutor newFixed(String name, int size, int queueCapacity,
                                                 ThreadFactory threadFactory, ThreadContext contextHolder) {
+        return newFixed(name, size, queueCapacity, -1, threadFactory, contextHolder);
+    }
+
+    public static EsThreadPoolExecutor newFixed(String name, int size, int queueCapacity, int maxPendingSize,
+                                                ThreadFactory threadFactory, ThreadContext contextHolder) {
         BlockingQueue<Runnable> queue;
         if (queueCapacity < 0) {
             queue = ConcurrentCollections.newBlockingQueue();
         } else {
-            queue = new SizeBlockingQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity);
+            queue = new FixedExecutorQueue<>(ConcurrentCollections.<Runnable>newBlockingQueue(), queueCapacity, maxPendingSize);
         }
-        return new EsThreadPoolExecutor(name, size, size, 0, TimeUnit.MILLISECONDS,
+        EsThreadPoolExecutor executor = new EsThreadPoolExecutor(name, size, size, 0, TimeUnit.MILLISECONDS,
             queue, threadFactory, new EsAbortPolicy(), contextHolder);
+        if (queue instanceof FixedExecutorQueue) {
+            ((FixedExecutorQueue<Runnable>) queue).pendingResultsSupplier.set(executor::numPendingResults);
+        }
+        return executor;
     }
 
     /**
@@ -278,6 +289,26 @@ public class EsExecutors {
      * Cannot instantiate.
      */
     private EsExecutors() {
+    }
+
+    static class FixedExecutorQueue<E> extends SizeBlockingQueue<E> {
+
+        private final int maxPendingSize;
+        final SetOnce<IntSupplier> pendingResultsSupplier;
+
+        public FixedExecutorQueue(BlockingQueue<E> queue, int capacity, int maxPendingSize) {
+            super(queue, capacity);
+            this.maxPendingSize = maxPendingSize;
+            this.pendingResultsSupplier = new SetOnce<>();
+        }
+
+        @Override
+        public boolean offer(E e) {
+            if (maxPendingSize >= 0 && pendingResultsSupplier.get().getAsInt() > maxPendingSize) {
+                return false;
+            }
+            return super.offer(e);
+        }
     }
 
     static class ExecutorScalingQueue<E> extends LinkedTransferQueue<E> {
