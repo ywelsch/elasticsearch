@@ -62,6 +62,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -558,8 +559,38 @@ public class TransportService extends AbstractLifecycleComponent implements Tran
                                                                 final TransportRequest request,
                                                                 final TransportRequestOptions options,
                                                                 TransportResponseHandler<T> handler) {
+        final TransportResponseHandler<T> finalHandler;
         try {
-            asyncSender.sendRequest(connection, action, request, options, handler);
+            if (request.getParentTask().isSet()) {
+                final long parentTaskId = request.getParentTask().getId();
+                final long childId = taskManager.registerChildNode(parentTaskId, connection.getNode());
+                finalHandler = new TransportResponseHandler<T>() {
+                    @Override
+                    public void handleResponse(T response) {
+                        taskManager.unregisterChildNode(parentTaskId, childId);
+                        handler.handleResponse(response);
+                    }
+
+                    @Override
+                    public void handleException(TransportException exp) {
+                        taskManager.unregisterChildNode(parentTaskId, childId);
+                        handler.handleException(exp);
+                    }
+
+                    @Override
+                    public String executor() {
+                        return handler.executor();
+                    }
+
+                    @Override
+                    public T read(StreamInput in) throws IOException {
+                        return handler.read(in);
+                    }
+                };
+            } else {
+                finalHandler = handler;
+            }
+            asyncSender.sendRequest(connection, action, request, options, finalHandler);
         } catch (final Exception ex) {
             // the caller might not handle this so we invoke the handler
             final TransportException te;

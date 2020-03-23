@@ -19,6 +19,8 @@
 
 package org.elasticsearch.tasks;
 
+import com.carrotsearch.hppc.LongObjectHashMap;
+import com.carrotsearch.hppc.LongObjectMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
@@ -45,6 +47,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +56,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.elasticsearch.common.unit.TimeValue.timeValueMillis;
 import static org.elasticsearch.http.HttpTransportSettings.SETTING_HTTP_MAX_HEADER_SIZE;
@@ -163,7 +168,7 @@ public class TaskManager implements ClusterStateApplier {
         CancellableTaskHolder oldHolder = cancellableTasks.put(task.getId(), holder);
         assert oldHolder == null;
         // Check if this task was banned before we start it
-        if (task.getParentTaskId().isSet() && banedParents.isEmpty() == false) {
+        if (task.getParentTaskId().isSet()) {
             String reason = banedParents.get(task.getParentTaskId());
             if (reason != null) {
                 try {
@@ -417,11 +422,43 @@ public class TaskManager implements ClusterStateApplier {
         throw new ElasticsearchTimeoutException("Timed out waiting for completion of [{}]", task);
     }
 
+    public long registerChildNode(long taskId, DiscoveryNode node) {
+        CancellableTaskHolder holder = cancellableTasks.get(taskId);
+        if (holder != null) {
+            return holder.registerChildNode(node);
+        }
+        return -1L;
+    }
+
+    public void unregisterChildNode(long parentTaskId, long childId) {
+        CancellableTaskHolder holder = cancellableTasks.get(parentTaskId);
+        if (holder != null) {
+            holder.unregisterChildNode(childId);
+        }
+    }
+
+    public Iterable<DiscoveryNode> startBanOnChildrenNodes(long taskId) {
+        CancellableTaskHolder holder = cancellableTasks.get(taskId);
+        if (holder != null) {
+            return holder.startBan();
+        }
+        logger.warn("Trying to cancel task without registered cancellable task " + taskId);
+        assert false : "Should not start ban for non cancellable task";
+        // We still need to set ban on local node for persistent tasks
+        return DiscoveryNodes.EMPTY_NODES;
+    }
+
     private static class CancellableTaskHolder {
 
         private static final String TASK_FINISHED_MARKER = "task finished";
 
         private final CancellableTask task;
+
+        private final AtomicLong childTaskIdCounter = new AtomicLong();
+
+        private final LongObjectMap<DiscoveryNode> nodes = new LongObjectHashMap<>();
+
+        private volatile boolean banChildren = false;
 
         private volatile String cancellationReason = null;
 
@@ -429,6 +466,36 @@ public class TaskManager implements ClusterStateApplier {
 
         CancellableTaskHolder(CancellableTask task) {
             this.task = task;
+        }
+
+        public long registerChildNode(DiscoveryNode node) {
+            synchronized (this) {
+                if (banChildren) {
+                    throw new TaskCancelledException("The parent task was cancelled, shouldn't start any children tasks");
+                }
+                final long childId = childTaskIdCounter.incrementAndGet();
+                nodes.put(childId, node);
+                return childId;
+            }
+        }
+
+        public void unregisterChildNode(long childId) {
+            synchronized (this) {
+                nodes.remove(childId);
+            }
+        }
+
+        public Iterable<DiscoveryNode> startBan() {
+            synchronized (this) {
+                if (banChildren) {
+                    logger.warn("Trying to start ban twice for task " + task.getId());
+                    return null;
+                }
+                banChildren = true;
+                return StreamSupport.stream(nodes.values().spliterator(), false)
+                    .map(entry -> entry.value)
+                    .collect(Collectors.toSet());
+            }
         }
 
         /**
