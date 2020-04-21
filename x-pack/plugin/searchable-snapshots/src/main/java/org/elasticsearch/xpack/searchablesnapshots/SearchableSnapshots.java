@@ -5,6 +5,22 @@
  */
 package org.elasticsearch.xpack.searchablesnapshots;
 
+import org.apache.lucene.codecs.Codec;
+import org.apache.lucene.codecs.FilterCodec;
+import org.apache.lucene.codecs.StoredFieldsFormat;
+import org.apache.lucene.codecs.StoredFieldsReader;
+import org.apache.lucene.codecs.StoredFieldsWriter;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.IndexCommit;
+import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentInfo;
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper;
+import org.apache.lucene.index.StandardDirectoryReader;
+import org.apache.lucene.index.StoredFieldVisitor;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
@@ -13,7 +29,9 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.allocation.ExistingShardsAllocator;
 import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.common.CheckedSupplier;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
+import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.IndexScopedSettings;
 import org.elasticsearch.common.settings.Setting;
@@ -43,6 +61,7 @@ import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.Transports;
 import org.elasticsearch.watcher.ResourceWatcherService;
 import org.elasticsearch.xpack.core.searchablesnapshots.MountSearchableSnapshotAction;
 import org.elasticsearch.xpack.searchablesnapshots.action.ClearSearchableSnapshotsCacheAction;
@@ -58,6 +77,7 @@ import org.elasticsearch.xpack.searchablesnapshots.rest.RestMountSearchableSnaps
 import org.elasticsearch.xpack.searchablesnapshots.rest.RestRepositoryStatsAction;
 import org.elasticsearch.xpack.searchablesnapshots.rest.RestSearchableSnapshotsStatsAction;
 
+import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -201,11 +221,126 @@ public class SearchableSnapshots extends Plugin implements IndexStorePlugin, Eng
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (SearchableSnapshotsConstants.isSearchableSnapshotStore(indexSettings.getSettings())
             && indexSettings.getSettings().getAsBoolean("index.frozen", false) == false) {
-            return Optional.of(
-                engineConfig -> new ReadOnlyEngine(engineConfig, null, new TranslogStats(), false, Function.identity(), false)
-            );
+            return Optional.of(engineConfig -> new ReadOnlyEngine(engineConfig, null, new TranslogStats(), false, Function.identity(),
+                false) {
+
+                @Override
+                protected DirectoryReader open(IndexCommit commit) throws IOException {
+                    assert Transports.assertNotTransportThread("opening index commit of a read-only engine");
+                    final SegmentInfos sis = SegmentInfos.readCommit(commit.getDirectory(), commit.getSegmentsFileName());
+                    final SegmentInfos adaptedSis = new SegmentInfos(sis.getIndexCreatedVersionMajor());
+                    adaptedSis.setUserData(sis.getUserData(), false);
+                    for (SegmentCommitInfo sci : sis) {
+                        final SegmentInfo si = sci.info;
+                        final SegmentInfo adaptedSi = new SegmentInfo(si.dir, si.getVersion(), si.getMinVersion(),
+                            si.name, si.maxDoc(), si.getUseCompoundFile(), new LazyCodec(si.getCodec().getName(), si.getCodec()),
+                            si.getDiagnostics(), si.getId(), si.getAttributes(), si.getIndexSort());
+                        final SegmentCommitInfo adaptedSci = new SegmentCommitInfo(adaptedSi, sci.getDelCount(), sci.getSoftDelCount(),
+                            sci.getDelGen(), sci.getFieldInfosGen(), sci.getDocValuesGen());
+                        adaptedSis.add(adaptedSci);
+                    }
+
+                    return new SoftDeletesDirectoryReaderWrapper(
+                        StandardDirectoryReader.open(commit.getDirectory(), adaptedSis, Collections.emptyList(),
+                            OFF_HEAP_READER_ATTRIBUTES), Lucene.SOFT_DELETES_FIELD);
+                }
+            });
         }
         return Optional.empty();
+    }
+
+    private static class LazyCodec extends FilterCodec {
+
+        private final LazyStoredFieldsFormat storedFieldsFormat;
+
+        protected LazyCodec(String name, Codec delegate) {
+            super(name, delegate);
+            storedFieldsFormat = new LazyStoredFieldsFormat(delegate.storedFieldsFormat());
+        }
+
+        @Override
+        public StoredFieldsFormat storedFieldsFormat() {
+            return storedFieldsFormat;
+        }
+    }
+
+    private static class LazyStoredFieldsFormat extends StoredFieldsFormat {
+
+        final StoredFieldsFormat delegate;
+
+        LazyStoredFieldsFormat(StoredFieldsFormat delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public StoredFieldsReader fieldsReader(Directory directory, SegmentInfo si, FieldInfos fn, IOContext context) {
+            return new LazyStoredFieldsReader(() -> delegate.fieldsReader(directory, si, fn, context));
+        }
+
+        @Override
+        public StoredFieldsWriter fieldsWriter(Directory directory, SegmentInfo si, IOContext context) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    private static class LazyStoredFieldsReader extends StoredFieldsReader {
+
+        private final CheckedSupplier<StoredFieldsReader, IOException> storedFieldsReaderSupplier;
+        private final Object mutex = new Object();
+        private volatile StoredFieldsReader reader = null;
+
+        LazyStoredFieldsReader(CheckedSupplier<StoredFieldsReader, IOException> storedFieldsReaderSupplier) {
+            this.storedFieldsReaderSupplier = storedFieldsReaderSupplier;
+        }
+
+        @Override
+        public void visitDocument(int docID, StoredFieldVisitor visitor) throws IOException {
+            force().visitDocument(docID, visitor);
+        }
+
+        StoredFieldsReader force() throws IOException {
+            if (reader == null) {
+                synchronized (mutex) {
+                    if (reader == null) {
+                        reader = storedFieldsReaderSupplier.get();
+                    }
+                }
+            }
+            return reader;
+        }
+
+        @Override
+        public StoredFieldsReader clone() {
+            final StoredFieldsReader reader = this.reader;
+            if (reader != null) {
+                return reader.clone();
+            } else {
+                return new LazyStoredFieldsReader(() -> force().clone());
+            }
+        }
+
+        @Override
+        public void checkIntegrity() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void close() throws IOException {
+            final StoredFieldsReader reader = this.reader;
+            if (reader != null) {
+                reader.close();
+            }
+        }
+
+        @Override
+        public long ramBytesUsed() {
+            final StoredFieldsReader reader = this.reader;
+            if (reader == null) {
+                return 0L;
+            } else {
+                return reader.ramBytesUsed();
+            }
+        }
     }
 
     @Override
