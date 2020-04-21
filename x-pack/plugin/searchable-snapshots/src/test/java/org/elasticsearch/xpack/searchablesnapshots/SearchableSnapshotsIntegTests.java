@@ -52,6 +52,8 @@ import static org.elasticsearch.index.IndexSettings.INDEX_SOFT_DELETES_SETTING;
 import static org.elasticsearch.index.query.QueryBuilders.matchQuery;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.xpack.searchablesnapshots.SearchableSnapshotsConstants.SNAPSHOT_DIRECTORY_FACTORY_KEY;
+import static org.hamcrest.Matchers.either;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
@@ -164,6 +166,8 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
         assertTrue(IndexMetadata.INDEX_BLOCKS_WRITE_SETTING.get(settings));
         assertTrue(SearchableSnapshots.SNAPSHOT_SNAPSHOT_ID_SETTING.exists(settings));
         assertTrue(SearchableSnapshots.SNAPSHOT_INDEX_ID_SETTING.exists(settings));
+
+        assertSnapshotStatsBeforeFirstSearch(restoredIndexName);
 
         assertRecovered(restoredIndexName, originalAllHits, originalBarHits);
         assertSearchableSnapshotStats(restoredIndexName, cacheEnabled, nonCachedExtensions);
@@ -437,6 +441,42 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
                             greaterThan(0L)
                         );
                     }
+                }
+            }
+        }
+    }
+
+    private void assertSnapshotStatsBeforeFirstSearch(String indexName) {
+        ensureGreen(indexName);
+
+        final SearchableSnapshotsStatsResponse statsResponse = client().execute(
+            SearchableSnapshotsStatsAction.INSTANCE,
+            new SearchableSnapshotsStatsRequest(indexName)
+        ).actionGet();
+        final NumShards restoredNumShards = getNumShards(indexName);
+        assertThat(statsResponse.getStats(), hasSize(restoredNumShards.totalNumShards));
+
+        final long totalSize = statsResponse.getStats()
+            .stream()
+            .flatMap(s -> s.getStats().stream())
+            .mapToLong(SearchableSnapshotShardStats.CacheIndexInputStats::getFileLength)
+            .sum();
+        assertThat("Expecting stats to exist for at least one Lucene file", totalSize, greaterThan(0L));
+
+        for (SearchableSnapshotShardStats stats : statsResponse.getStats()) {
+            final ShardRouting shardRouting = stats.getShardRouting();
+            assertThat(stats.getShardRouting().getIndexName(), equalTo(indexName));
+            if (shardRouting.started()) {
+                for (SearchableSnapshotShardStats.CacheIndexInputStats indexInputStats : stats.getStats()) {
+                    final String fileName = indexInputStats.getFileName();
+                    assertThat(
+                        "Unexpected open count for " + fileName + " of shard " + shardRouting,
+                        indexInputStats.getOpenCount(),
+                        greaterThan(0L)
+                    );
+                    // SoftDeletesDirectoryReaderWrapper reads dvm files eagerly
+                    // compound files are also read eagerly
+                    assertThat(fileName, either(endsWith("dvm")).or(endsWith("cfe")).or(endsWith("cfs")));
                 }
             }
         }
