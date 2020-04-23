@@ -85,24 +85,30 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
         XContentBuilder mapping = XContentFactory.jsonBuilder()
             .startObject()
             .startObject("properties")
-                .startObject("foo")
-                    .field("type", "text")
-                    .field("term_vector", "with_positions_offsets")
-                    .field("store", true)
-                    .field("norms", true)
-                    .field("fielddata", loadFieldData)
-                .endObject()
-                .startObject("geo").field("type", "geo_point").endObject()
+            .startObject("foo")
+            .field("type", "text")
+            .field("term_vector", "with_positions_offsets")
+            .field("store", true)
+            .field("norms", true)
+            .field("fielddata", loadFieldData)
+            .endObject()
+            .startObject("geo")
+            .field("type", "geo_point")
+            .endObject()
             .endObject()
             .endObject();
-        assertAcked(prepareCreate(indexName, Settings.builder().put(INDEX_SOFT_DELETES_SETTING.getKey(), true))
-            .setMapping(Strings.toString(mapping)));
+        assertAcked(
+            prepareCreate(indexName, Settings.builder().put(INDEX_SOFT_DELETES_SETTING.getKey(), true)).setMapping(
+                Strings.toString(mapping)
+            )
+        );
 
         final List<IndexRequestBuilder> indexRequestBuilders = new ArrayList<>();
         for (int i = between(10, 10_000); i >= 0; i--) {
-            indexRequestBuilders.add(client().prepareIndex(indexName).setSource(
-                "foo", randomBoolean() ? "bar" : "baz",
-                "geo", "POINT(-" + randomInt(5) + " -" + randomInt(5) + ")"));
+            indexRequestBuilders.add(
+                client().prepareIndex(indexName)
+                    .setSource("foo", randomBoolean() ? "bar" : "baz", "geo", "POINT(-" + randomInt(5) + " -" + randomInt(5) + ")")
+            );
         }
         indexRandom(true, true, indexRequestBuilders);
         refresh(indexName);
@@ -495,14 +501,15 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
                         indexInputStats.getOpenCount(),
                         greaterThan(0L)
                     );
-                    CombinableMatcher<String> matcher =
-                        either(endsWith("dvm")) // SoftDeletesDirectoryReaderWrapper reads dvm files eagerly
-                            .or(endsWith("cfe")) // compound files are also read eagerly
-                            .or(endsWith("cfs"))
-                            .or(endsWith("fnm")) // field infos are read eagerly
-                            .or(endsWith("si")); // segment infos are read eagerly
+                    CombinableMatcher<String> matcher = either(endsWith("dvm")) // SoftDeletesDirectoryReaderWrapper reads dvm files eagerly
+                        .or(endsWith("cfe")) // compound files are also read eagerly
+                        .or(endsWith("cfs"))
+                        .or(endsWith("fnm")) // field infos are read eagerly
+                        .or(endsWith("si")); // segment infos are read eagerly
                     if (loadFieldData) {
-                        matcher = matcher.or(endsWith("dvd")); // Don't use fielddata you fool
+                        // Don't use fielddata you fool
+                        matcher = matcher.or(endsWith("dvd"));
+                        matcher = matcher.or(endsWith("fdm"));
                     }
                     assertThat(fileName, matcher);
                 }

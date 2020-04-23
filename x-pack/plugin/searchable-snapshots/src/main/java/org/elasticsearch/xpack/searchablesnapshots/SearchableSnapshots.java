@@ -211,30 +211,53 @@ public class SearchableSnapshots extends Plugin implements IndexStorePlugin, Eng
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (SearchableSnapshotsConstants.isSearchableSnapshotStore(indexSettings.getSettings())
             && indexSettings.getSettings().getAsBoolean("index.frozen", false) == false) {
-            return Optional.of(engineConfig -> new ReadOnlyEngine(engineConfig, null, new TranslogStats(), false, Function.identity(),
-                false) {
+            return Optional.of(
+                engineConfig -> new ReadOnlyEngine(engineConfig, null, new TranslogStats(), false, Function.identity(), false) {
 
-                @Override
-                protected DirectoryReader open(IndexCommit commit) throws IOException {
-                    assert Transports.assertNotTransportThread("opening index commit of a read-only engine");
-                    final SegmentInfos sis = SegmentInfos.readCommit(commit.getDirectory(), commit.getSegmentsFileName());
-                    final SegmentInfos adaptedSis = new SegmentInfos(sis.getIndexCreatedVersionMajor());
-                    adaptedSis.setUserData(sis.getUserData(), false);
-                    for (SegmentCommitInfo sci : sis) {
-                        final SegmentInfo si = sci.info;
-                        final SegmentInfo adaptedSi = new SegmentInfo(si.dir, si.getVersion(), si.getMinVersion(),
-                            si.name, si.maxDoc(), si.getUseCompoundFile(), new LazyReadOnlyCodec(si.getCodec().getName(), si.getCodec()),
-                            si.getDiagnostics(), si.getId(), si.getAttributes(), si.getIndexSort());
-                        final SegmentCommitInfo adaptedSci = new SegmentCommitInfo(adaptedSi, sci.getDelCount(), sci.getSoftDelCount(),
-                            sci.getDelGen(), sci.getFieldInfosGen(), sci.getDocValuesGen());
-                        adaptedSis.add(adaptedSci);
+                    @Override
+                    protected DirectoryReader open(IndexCommit commit) throws IOException {
+                        assert Transports.assertNotTransportThread("opening index commit of a read-only engine");
+                        final SegmentInfos sis = SegmentInfos.readCommit(commit.getDirectory(), commit.getSegmentsFileName());
+                        final SegmentInfos adaptedSis = new SegmentInfos(sis.getIndexCreatedVersionMajor());
+                        adaptedSis.setUserData(sis.getUserData(), false);
+                        for (SegmentCommitInfo sci : sis) {
+                            final SegmentInfo si = sci.info;
+                            final SegmentInfo adaptedSi = new SegmentInfo(
+                                si.dir,
+                                si.getVersion(),
+                                si.getMinVersion(),
+                                si.name,
+                                si.maxDoc(),
+                                si.getUseCompoundFile(),
+                                new LazyReadOnlyCodec(si.getCodec().getName(), si.getCodec()),
+                                si.getDiagnostics(),
+                                si.getId(),
+                                si.getAttributes(),
+                                si.getIndexSort()
+                            );
+                            final SegmentCommitInfo adaptedSci = new SegmentCommitInfo(
+                                adaptedSi,
+                                sci.getDelCount(),
+                                sci.getSoftDelCount(),
+                                sci.getDelGen(),
+                                sci.getFieldInfosGen(),
+                                sci.getDocValuesGen()
+                            );
+                            adaptedSis.add(adaptedSci);
+                        }
+
+                        return new SoftDeletesDirectoryReaderWrapper(
+                            StandardDirectoryReader.open(
+                                commit.getDirectory(),
+                                adaptedSis,
+                                Collections.emptyList(),
+                                OFF_HEAP_READER_ATTRIBUTES
+                            ),
+                            Lucene.SOFT_DELETES_FIELD
+                        );
                     }
-
-                    return new SoftDeletesDirectoryReaderWrapper(
-                        StandardDirectoryReader.open(commit.getDirectory(), adaptedSis, Collections.emptyList(),
-                            OFF_HEAP_READER_ATTRIBUTES), Lucene.SOFT_DELETES_FIELD);
                 }
-            });
+            );
         }
         return Optional.empty();
     }
