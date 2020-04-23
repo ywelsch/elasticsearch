@@ -22,6 +22,8 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.concurrent.AtomicArray;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.index.IndexModule;
 import org.elasticsearch.index.IndexSettings;
@@ -34,6 +36,7 @@ import org.elasticsearch.xpack.searchablesnapshots.action.SearchableSnapshotsSta
 import org.elasticsearch.xpack.searchablesnapshots.action.SearchableSnapshotsStatsRequest;
 import org.elasticsearch.xpack.searchablesnapshots.action.SearchableSnapshotsStatsResponse;
 import org.elasticsearch.xpack.searchablesnapshots.cache.CacheService;
+import org.hamcrest.core.CombinableMatcher;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -78,10 +81,28 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
 
         // Peer recovery always copies .liv files but we do not permit writing to searchable snapshot directories so this doesn't work, but
         // we can bypass this by forcing soft deletes to be used. TODO this restriction can be lifted when #55142 is resolved.
-        assertAcked(prepareCreate(indexName, Settings.builder().put(INDEX_SOFT_DELETES_SETTING.getKey(), true)));
+        final boolean loadFieldData = randomBoolean();
+        XContentBuilder mapping = XContentFactory.jsonBuilder()
+            .startObject()
+            .startObject("properties")
+                .startObject("foo")
+                    .field("type", "text")
+                    .field("term_vector", "with_positions_offsets")
+                    .field("store", true)
+                    .field("norms", true)
+                    .field("fielddata", loadFieldData)
+                .endObject()
+                .startObject("geo").field("type", "geo_point").endObject()
+            .endObject()
+            .endObject();
+        assertAcked(prepareCreate(indexName, Settings.builder().put(INDEX_SOFT_DELETES_SETTING.getKey(), true))
+            .setMapping(Strings.toString(mapping)));
+
         final List<IndexRequestBuilder> indexRequestBuilders = new ArrayList<>();
         for (int i = between(10, 10_000); i >= 0; i--) {
-            indexRequestBuilders.add(client().prepareIndex(indexName).setSource("foo", randomBoolean() ? "bar" : "baz"));
+            indexRequestBuilders.add(client().prepareIndex(indexName).setSource(
+                "foo", randomBoolean() ? "bar" : "baz",
+                "geo", "POINT(-" + randomInt(5) + " -" + randomInt(5) + ")"));
         }
         indexRandom(true, true, indexRequestBuilders);
         refresh(indexName);
@@ -167,7 +188,7 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
         assertTrue(SearchableSnapshots.SNAPSHOT_SNAPSHOT_ID_SETTING.exists(settings));
         assertTrue(SearchableSnapshots.SNAPSHOT_INDEX_ID_SETTING.exists(settings));
 
-        assertSnapshotStatsBeforeFirstSearch(restoredIndexName);
+        assertSnapshotStatsBeforeFirstSearch(restoredIndexName, loadFieldData);
 
         assertRecovered(restoredIndexName, originalAllHits, originalBarHits);
         assertSearchableSnapshotStats(restoredIndexName, cacheEnabled, nonCachedExtensions);
@@ -446,7 +467,7 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
         }
     }
 
-    private void assertSnapshotStatsBeforeFirstSearch(String indexName) {
+    private void assertSnapshotStatsBeforeFirstSearch(String indexName, boolean loadFieldData) {
         ensureGreen(indexName);
 
         final SearchableSnapshotsStatsResponse statsResponse = client().execute(
@@ -474,9 +495,16 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
                         indexInputStats.getOpenCount(),
                         greaterThan(0L)
                     );
-                    // SoftDeletesDirectoryReaderWrapper reads dvm files eagerly
-                    // compound files are also read eagerly
-                    assertThat(fileName, either(endsWith("dvm")).or(endsWith("cfe")).or(endsWith("cfs")));
+                    CombinableMatcher<String> matcher =
+                        either(endsWith("dvm")) // SoftDeletesDirectoryReaderWrapper reads dvm files eagerly
+                            .or(endsWith("cfe")) // compound files are also read eagerly
+                            .or(endsWith("cfs"))
+                            .or(endsWith("fnm")) // field infos are read eagerly
+                            .or(endsWith("si")); // segment infos are read eagerly
+                    if (loadFieldData) {
+                        matcher = matcher.or(endsWith("dvd")); // Don't use fielddata you fool
+                    }
+                    assertThat(fileName, matcher);
                 }
             }
         }

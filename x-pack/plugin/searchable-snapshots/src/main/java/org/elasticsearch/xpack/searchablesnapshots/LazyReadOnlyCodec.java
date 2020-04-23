@@ -32,7 +32,6 @@ import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.Fields;
-import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.SegmentCommitInfo;
@@ -410,11 +409,8 @@ public class LazyReadOnlyCodec extends Codec {
         }
 
         @Override
-        public void files(SegmentCommitInfo info, Collection<String> files) {
-            // TODO: assert that this is consistent with the delegate class codec
-            if (info.hasDeletions()) {
-                files.add(IndexFileNames.fileNameFromGeneration(info.info.name, "liv", info.getDelGen()));
-            }
+        public void files(SegmentCommitInfo info, Collection<String> files) throws IOException {
+            delegate.files(info, files);
         }
     }
 
