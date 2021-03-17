@@ -3,4 +3,5 @@ grant codeBase "${codebase.preallocate}" {
   permission java.lang.RuntimePermission "accessDeclaredMembers";
   // for accessing the file descriptor field in FileChannel
   permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+  permission java.lang.RuntimePermission "accessClassInPackage.sun.nio.ch";
 };

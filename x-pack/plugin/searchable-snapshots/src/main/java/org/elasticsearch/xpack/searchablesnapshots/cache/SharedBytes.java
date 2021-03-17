@@ -186,19 +186,19 @@ public class SharedBytes extends AbstractRefCounted {
 
         @SuppressForbidden(reason = "Use positional writes on purpose")
         public void punchHole() {
-            final ByteBuffer fillBytes = ByteBuffer.allocate(Channels.WRITE_CHUNK_SIZE);
-            long written = 0;
-            while (written < regionSize) {
-                final int toWrite = Math.toIntExact(Math.min(regionSize - written, Channels.WRITE_CHUNK_SIZE));
-                fillBytes.position(0).limit(toWrite);
-                try {
-                    write(fillBytes, pageStart + written);
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                }
-                written += toWrite;
-            }
-            Preallocate.punchHole(path, pageStart, regionSize);
+//            final ByteBuffer fillBytes = ByteBuffer.allocate(Channels.WRITE_CHUNK_SIZE);
+//            long written = 0;
+//            while (written < regionSize) {
+//                final int toWrite = Math.toIntExact(Math.min(regionSize - written, Channels.WRITE_CHUNK_SIZE));
+//                fillBytes.position(0).limit(toWrite);
+//                try {
+//                    write(fillBytes, pageStart + written);
+//                } catch (IOException e) {
+//                    throw new UncheckedIOException(e);
+//                }
+//                written += toWrite;
+//            }
+            Preallocate.punchHole(fileChannel, pageStart, regionSize);
         }
 
         @Override

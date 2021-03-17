@@ -13,9 +13,11 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.lucene.util.Constants;
 import org.elasticsearch.common.SuppressForbidden;
 
+import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.AccessController;
@@ -35,9 +37,11 @@ public class Preallocate {
         }
     }
 
-    public static void punchHole(final Path cacheFile, final long offset, final long length) {
+    public static void punchHole(final FileChannel fileChannel, final long offset, final long length) {
         if (Constants.LINUX) {
-            punchHole(cacheFile, offset, length, new LinuxPreallocator());
+            punchHole(fileChannel, offset, length, new LinuxPreallocator());
+        } else if (Constants.MAC_OS_X) {
+            punchHole(fileChannel, offset, length, new MacOsPreallocator());
         }
     }
 
@@ -50,8 +54,8 @@ public class Preallocate {
         try (FileOutputStream fileChannel = new FileOutputStream(cacheFile.toFile())) {
             long currentSize = fileChannel.getChannel().size();
             if (currentSize < fileSize) {
-                final Field field = AccessController.doPrivileged(new FileDescriptorFieldAction(fileChannel));
-                final int errno = prealloactor.preallocate((int) field.get(fileChannel.getFD()), currentSize, fileSize - currentSize);
+                final int fd = AccessController.doPrivileged(new FileDescriptorFieldAction(fileChannel));
+                final int errno = prealloactor.preallocate(fd, currentSize, fileSize - currentSize);
                 if (errno == 0) {
                     success = true;
                     logger.debug("pre-allocated cache file [{}] using native methods", cacheFile);
@@ -75,45 +79,73 @@ public class Preallocate {
     }
 
     @SuppressForbidden(reason = "need access to fd on FileOutputStream")
-    private static void punchHole(final Path cacheFile, long offset, long length, final Preallocator prealloactor) {
+    private static void punchHole(final FileChannel fileChannel, long offset, long length, final Preallocator prealloactor) {
         if (prealloactor.available() == false) {
-            logger.warn("failed to punch hole in cache file [{}] as native methods are not available", cacheFile);
+            logger.warn("failed to punch hole in cache file [{}] as native methods are not available", fileChannel);
         }
 
-        try (FileOutputStream fileChannel = new FileOutputStream(cacheFile.toFile())) {
-            final Field field = AccessController.doPrivileged(new FileDescriptorFieldAction(fileChannel));
-            final int errno = prealloactor.punch_hole((int) field.get(fileChannel.getFD()), offset, length);
+        try {
+            final int fd = AccessController.doPrivileged(new FileDescriptorFieldAction(fileChannel));
+            final int errno = prealloactor.punch_hole(fd, offset, length);
             if (errno == 0) {
-                logger.debug("punched hole in cache file [{}] using native methods", cacheFile);
+                logger.debug("punched hole in cache file [{}] using native methods", fileChannel);
             } else {
                 logger.warn(
                     "failed to punch hole in cache file [{}] using native methods, errno: [{}], error: [{}]",
-                    cacheFile,
+                    fileChannel,
                     errno,
                     prealloactor.error(errno)
                 );
+                throw new IOException("failed to punch hole in cache file using native methods, errno: [" + errno +
+                    "], error: [" + prealloactor.error(errno) + "])");
             }
         } catch (final Exception e) {
-            logger.warn(new ParameterizedMessage("failed to punch hole in cache file [{}] using native methods", cacheFile), e);
+            logger.warn(new ParameterizedMessage("failed to punch hole in cache file [{}] using native methods", fileChannel), e);
+            throw new RuntimeException(e);
         }
     }
 
     @SuppressForbidden(reason = "need access to fd on FileOutputStream")
-    private static class FileDescriptorFieldAction implements PrivilegedExceptionAction<Field> {
+    private static class FileDescriptorFieldAction implements PrivilegedExceptionAction<Integer> {
 
-        private final FileOutputStream fileOutputStream;
+        private final Object object;
 
-        private FileDescriptorFieldAction(FileOutputStream fileOutputStream) {
-            this.fileOutputStream = fileOutputStream;
+        private FileDescriptorFieldAction(Object object) {
+            this.object = object;
         }
 
         @Override
-        public Field run() throws IOException, NoSuchFieldException {
+        public Integer run() throws IOException, NoSuchFieldException, IllegalAccessException {
             // accessDeclaredMembers
-            final Field f = fileOutputStream.getFD().getClass().getDeclaredField("fd");
+            final Object objectToUse = unwrapFilterChannel(object);
+            final Field f;
+            try {
+                f = objectToUse.getClass().getDeclaredField("fd");
+            } catch (NoSuchFieldException e) {
+                throw new IOException("fd field not found on " + objectToUse.getClass());
+            }
             // suppressAccessChecks
             f.setAccessible(true);
-            return f;
+            final FileDescriptor fileDescriptor = (FileDescriptor) f.get(objectToUse);
+            // accessDeclaredMembers
+            final Field fn = fileDescriptor.getClass().getDeclaredField("fd");
+            // suppressAccessChecks
+            fn.setAccessible(true);
+            return (Integer) fn.get(fileDescriptor);
+        }
+
+        private static Object unwrapFilterChannel(Object o) throws NoSuchFieldException, IllegalAccessException {
+            try {
+                Class<?> filterFileChannel = Class.forName("org.apache.lucene.mockfile.FilterFileChannel");
+                final Field delegate = filterFileChannel.getDeclaredField("delegate");
+                delegate.setAccessible(true);
+                while (filterFileChannel.isInstance(o)) {
+                    o = delegate.get(o);
+                }
+            } catch (ClassNotFoundException e) {
+                // ignore
+            }
+            return o;
         }
     }
 
