@@ -119,7 +119,6 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.oneOf;
 import static org.hamcrest.Matchers.sameInstance;
 
-@LuceneTestCase.AwaitsFix(bugUrl = "https://github.com/elastic/elasticsearch/issues/69336")
 public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegTestCase {
 
     public void testCreateAndRestoreSearchableSnapshot() throws Exception {
