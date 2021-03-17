@@ -20,6 +20,7 @@ import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.xpack.searchablesnapshots.preallocate.Preallocate;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -183,7 +184,20 @@ public class SharedBytes extends AbstractRefCounted {
             }
         }
 
+        @SuppressForbidden(reason = "Use positional writes on purpose")
         public void punchHole() {
+            final ByteBuffer fillBytes = ByteBuffer.allocate(Channels.WRITE_CHUNK_SIZE);
+            long written = 0;
+            while (written < regionSize) {
+                final int toWrite = Math.toIntExact(Math.min(regionSize - written, Channels.WRITE_CHUNK_SIZE));
+                fillBytes.position(0).limit(toWrite);
+                try {
+                    write(fillBytes, pageStart + written);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+                written += toWrite;
+            }
             Preallocate.punchHole(path, pageStart, regionSize);
         }
 

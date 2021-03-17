@@ -616,7 +616,11 @@ public class FrozenCacheService implements Releasable {
         protected void closeInternal() {
             // now actually free the region associated with this chunk
             final SharedBytes.IO fileChannel = sharedBytes.getFileChannel(sharedBytesPos);
-            fileChannel.punchHole();
+            try {
+                fileChannel.punchHole();
+            } finally {
+                fileChannel.decRef();
+            }
             onClose(this);
             logger.trace("closed {} with channel offset {}", regionKey, physicalStartOffset());
         }
