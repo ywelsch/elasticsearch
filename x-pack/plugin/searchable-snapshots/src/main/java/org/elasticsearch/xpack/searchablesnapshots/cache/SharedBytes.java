@@ -183,6 +183,10 @@ public class SharedBytes extends AbstractRefCounted {
             }
         }
 
+        public void punchHole() {
+            Preallocate.punchHole(path, pageStart, regionSize);
+        }
+
         @Override
         protected void closeInternal() {
             ios.remove(sharedBytesPos, this);

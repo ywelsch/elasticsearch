@@ -20,6 +20,11 @@ final class UnsupportedPreallocator implements Preallocator {
     }
 
     @Override
+    public int punch_hole(int fd, long offset, long length) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public String error(final int errno) {
         throw new UnsupportedOperationException();
     }

@@ -35,6 +35,12 @@ public class Preallocate {
         }
     }
 
+    public static void punchHole(final Path cacheFile, final long offset, final long length) {
+        if (Constants.LINUX) {
+            punchHole(cacheFile, offset, length, new LinuxPreallocator());
+        }
+    }
+
     @SuppressForbidden(reason = "need access to fd on FileOutputStream")
     private static void preallocate(final Path cacheFile, final long fileSize, final Preallocator prealloactor) throws IOException {
         if (prealloactor.available() == false) {
@@ -65,6 +71,30 @@ public class Preallocate {
                 // if anything goes wrong, delete the potentially created file to not waste disk space
                 Files.deleteIfExists(cacheFile);
             }
+        }
+    }
+
+    @SuppressForbidden(reason = "need access to fd on FileOutputStream")
+    private static void punchHole(final Path cacheFile, long offset, long length, final Preallocator prealloactor) {
+        if (prealloactor.available() == false) {
+            logger.warn("failed to punch hole in cache file [{}] as native methods are not available", cacheFile);
+        }
+
+        try (FileOutputStream fileChannel = new FileOutputStream(cacheFile.toFile())) {
+            final Field field = AccessController.doPrivileged(new FileDescriptorFieldAction(fileChannel));
+            final int errno = prealloactor.punch_hole((int) field.get(fileChannel.getFD()), offset, length);
+            if (errno == 0) {
+                logger.debug("punched hole in cache file [{}] using native methods", cacheFile);
+            } else {
+                logger.warn(
+                    "failed to punch hole in cache file [{}] using native methods, errno: [{}], error: [{}]",
+                    cacheFile,
+                    errno,
+                    prealloactor.error(errno)
+                );
+            }
+        } catch (final Exception e) {
+            logger.warn(new ParameterizedMessage("failed to punch hole in cache file [{}] using native methods", cacheFile), e);
         }
     }
 

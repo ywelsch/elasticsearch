@@ -48,6 +48,11 @@ final class MacOsPreallocator implements Preallocator {
     }
 
     @Override
+    public int punch_hole(int fd, long offset, long length) {
+        return 0;
+    }
+
+    @Override
     public String error(final int errno) {
         return Natives.strerror(errno);
     }

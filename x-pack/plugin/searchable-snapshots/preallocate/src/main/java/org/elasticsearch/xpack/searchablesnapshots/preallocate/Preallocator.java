@@ -29,6 +29,8 @@ interface Preallocator {
      */
     int preallocate(int fd, long currentSize, long fileSize);
 
+    int punch_hole(final int fd, final long offset, final long length);
+
     /**
      * Provide a string representation of the given error number.
      *

@@ -15,6 +15,9 @@ import java.security.PrivilegedAction;
 
 final class LinuxPreallocator implements Preallocator {
 
+    private static final int FALLOC_FL_KEEP_SIZE = 0x1;
+    private static final int FALLOC_FL_PUNCH_HOLE = 0x2;
+
     @Override
     public boolean available() {
         return Natives.NATIVES_AVAILABLE;
@@ -23,6 +26,12 @@ final class LinuxPreallocator implements Preallocator {
     @Override
     public int preallocate(final int fd, final long currentSize, final long fileSize) {
         final int rc = Natives.fallocate(fd, 0, currentSize, fileSize - currentSize);
+        return rc == 0 ? 0 : Native.getLastError();
+    }
+
+    @Override
+    public int punch_hole(final int fd, final long offset, final long length) {
+        final int rc = Natives.fallocate(fd, FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE, offset, length);
         return rc == 0 ? 0 : Native.getLastError();
     }
 
