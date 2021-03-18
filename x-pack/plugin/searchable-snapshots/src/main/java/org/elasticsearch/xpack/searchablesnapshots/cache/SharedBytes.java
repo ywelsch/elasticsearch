@@ -172,6 +172,9 @@ public class SharedBytes extends AbstractRefCounted {
         @SuppressForbidden(reason = "Use positional writes on purpose")
         public int write(ByteBuffer src, long position) throws IOException {
             checkOffsets(position, src.remaining());
+            // check that writes are aligned to 4KB block boundaries
+            assert position % 4096 == 0;
+            assert src.remaining() % 4096 == 0;
             return fileChannel.write(src, position);
         }
 

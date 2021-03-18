@@ -22,6 +22,8 @@ import org.elasticsearch.action.StepListener;
 import org.elasticsearch.blobstore.cache.BlobStoreCacheService;
 import org.elasticsearch.blobstore.cache.CachedBlob;
 import org.elasticsearch.common.bytes.BytesReference;
+import org.elasticsearch.common.io.Streams;
+import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.index.snapshots.blobstore.BlobStoreIndexShardSnapshot.FileInfo;
@@ -36,6 +38,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -125,6 +128,7 @@ public class FrozenIndexInput extends BaseSearchableSnapshotIndexInput {
         this.footerBlobCacheByteRange = Objects.requireNonNull(footerBlobCacheByteRange);
         this.compoundFileOffset = compoundFileOffset;
         assert offset >= compoundFileOffset;
+        //setBufferSize(4096);
     }
 
     @Override
@@ -222,32 +226,47 @@ public class FrozenIndexInput extends BaseSearchableSnapshotIndexInput {
                         assert copiedBytes == length : "copied " + copiedBytes + " but expected " + length;
 
                         final ByteRange cachedRange = ByteRange.of(cachedBlob.from(), cachedBlob.to());
+                        AtomicBoolean calledOnce = new AtomicBoolean();
                         frozenCacheFile.populateAndRead(
                             cachedRange,
                             cachedRange,
                             (channel, channelPos, relativePos, len) -> Math.toIntExact(len),
                             (channel, channelPos, relativePos, len, progressUpdater) -> {
+                                // in practice this should be a single call unlike things are very oddly aligned
                                 assert len <= cachedBlob.to() - cachedBlob.from();
-                                final long startTimeNanos = stats.currentTimeNanos();
-                                final BytesRefIterator iterator = cachedBlob.bytes()
-                                    .slice(toIntBytes(relativePos), toIntBytes(len))
-                                    .iterator();
-                                long writePosition = channelPos;
-                                long bytesCopied = 0L;
-                                BytesRef current;
-                                while ((current = iterator.next()) != null) {
-                                    final ByteBuffer byteBuffer = ByteBuffer.wrap(current.bytes, current.offset, current.length);
-                                    while (byteBuffer.remaining() > 0) {
-                                        final long bytesWritten = positionalWrite(channel, writePosition, byteBuffer);
-                                        bytesCopied += bytesWritten;
-                                        writePosition += bytesWritten;
-                                        progressUpdater.accept(bytesCopied);
-                                    }
-                                }
-                                long channelTo = channelPos + len;
-                                assert writePosition == channelTo : writePosition + " vs " + channelTo;
-                                final long endTimeNanos = stats.currentTimeNanos();
-                                stats.addCachedBytesWritten(len, endTimeNanos - startTimeNanos);
+                                assert relativePos % 4096 == 0;
+                                assert channelPos % 4096 == 0;
+                                assert len % 4096 == 0 || len < 4096;
+//                                final long startTimeNanos = stats.currentTimeNanos();
+
+//                                final BytesRefIterator iterator = cachedBlob.bytes()
+//                                    .slice(toIntBytes(relativePos), toIntBytes(len))
+//                                    .iterator();
+
+                                write(channel, channelPos, relativePos, len, progressUpdater, cachedBlob.bytes().streamInput());
+//
+//
+//
+//                                long writePosition = channelPos;
+//                                long bytesCopied = 0L;
+//                                BytesRef current;
+//                                final byte[] copyBuffer = new byte[COPY_BUFFER_SIZE];
+//                                int writeLength = remaining < copyBuffer.length ?
+//                                    ((((int) remaining - 1) / 4096) + 1) * 4096:
+//                                    copyBuffer.length;
+//                                while ((current = iterator.next()) != null) {
+//                                    final ByteBuffer byteBuffer = ByteBuffer.wrap(current.bytes, current.offset, current.length);
+//                                    while (byteBuffer.remaining() > 0) {
+//                                        final long bytesWritten = positionalWrite(channel, writePosition, byteBuffer);
+//                                        bytesCopied += bytesWritten;
+//                                        writePosition += bytesWritten;
+//                                        progressUpdater.accept(bytesCopied);
+//                                    }
+//                                }
+//                                long channelTo = channelPos + len;
+//                                assert writePosition == channelTo : writePosition + " vs " + channelTo;
+//                                final long endTimeNanos = stats.currentTimeNanos();
+//                                stats.addCachedBytesWritten(len, endTimeNanos - startTimeNanos);
                                 logger.trace(
                                     "copied bytes [{}-{}] of file [{}] from cache index to disk",
                                     relativePos,
@@ -500,8 +519,7 @@ public class FrozenIndexInput extends BaseSearchableSnapshotIndexInput {
         long remaining,
         FrozenCacheFile frozenCacheFile
     ) throws IOException {
-        final int len = (remaining < copyBuffer.length) ? toIntBytes(remaining) : copyBuffer.length;
-        final int bytesRead = inputStream.read(copyBuffer, 0, len);
+        final int bytesRead = Streams.readFully(inputStream, copyBuffer);
         if (bytesRead == -1) {
             throw new EOFException(
                 String.format(
@@ -605,25 +623,46 @@ public class FrozenIndexInput extends BaseSearchableSnapshotIndexInput {
             length,
             frozenCacheFile
         );
-        final long end = relativePos + length;
-        final byte[] copyBuffer = new byte[toIntBytes(Math.min(COPY_BUFFER_SIZE, length))];
-        logger.trace(() -> new ParameterizedMessage("writing range [{}-{}] to cache file [{}]", relativePos, end, frozenCacheFile));
 
+        try (InputStream input = openInputStreamFromBlobStore(logicalPos + relativePos + compoundFileOffset, length)) {
+            write(fc, fileChannelPos, relativePos, length, progressUpdater, input);
+        }
+    }
+
+    private void write(SharedBytes.IO fc, long fileChannelPos, long relativePos, long length, Consumer<Long> progressUpdater, InputStream input) throws IOException {
+        final long end = relativePos + length;
+        logger.trace(() -> new ParameterizedMessage("writing range [{}-{}] to cache file [{}]", relativePos, end, frozenCacheFile));
+        final long startTimeNanos = stats.currentTimeNanos();
+        final byte[] copyBuffer = new byte[COPY_BUFFER_SIZE];
         long bytesCopied = 0L;
         long remaining = length;
-        final long startTimeNanos = stats.currentTimeNanos();
-        try (InputStream input = openInputStreamFromBlobStore(logicalPos + relativePos + compoundFileOffset, length)) {
-            while (remaining > 0L) {
-                final int bytesRead = readSafe(input, copyBuffer, relativePos, end, remaining, frozenCacheFile);
-                positionalWrite(fc, fileChannelPos + bytesCopied, ByteBuffer.wrap(copyBuffer, 0, bytesRead));
-                bytesCopied += bytesRead;
-                remaining -= bytesRead;
-                progressUpdater.accept(bytesCopied);
+        while (remaining > 0L) {
+            final int bytesRead = readSafe(input, copyBuffer, relativePos, end, remaining, frozenCacheFile);
+            assert bytesRead == copyBuffer.length || remaining < copyBuffer.length :
+                "bytesRead: " + bytesRead + " remaining: " + remaining;
+            // ensure that writes are aligned on 4k boundaries (= page size)
+            // this is already ensured by computeRange, with the exception of writing the last page of the file
+            // fill it up with zeros in that case (not strictly needed, any bytes would do)
+//                if (remaining < copyBuffer.length) {
+//                    Arrays.fill(copyBuffer, (int) remaining, copyBuffer.length, (byte) 0);
+//                }
+            int writeLength = remaining < copyBuffer.length ?
+                ((((int) remaining - 1) / 4096) + 1) * 4096:
+                copyBuffer.length;
+            // TODO: should this be called in a loop in order to ensure that truly all bytes have been written?
+            final ByteBuffer byteBuffer = ByteBuffer.wrap(copyBuffer, 0, writeLength);
+            int writePosition = 0;
+            while (byteBuffer.remaining() > 0) {
+                final long bytesWritten = positionalWrite(fc, fileChannelPos + bytesCopied + writePosition, byteBuffer);
+                writePosition += bytesWritten;
             }
-            final long endTimeNanos = stats.currentTimeNanos();
-            assert bytesCopied == length;
-            stats.addCachedBytesWritten(bytesCopied, endTimeNanos - startTimeNanos);
+            bytesCopied += bytesRead;
+            remaining -= bytesRead;
+            progressUpdater.accept(bytesCopied);
         }
+        final long endTimeNanos = stats.currentTimeNanos();
+        assert bytesCopied == length;
+        stats.addCachedBytesWritten(bytesCopied, endTimeNanos - startTimeNanos);
     }
 
     @Override
@@ -676,7 +715,9 @@ public class FrozenIndexInput extends BaseSearchableSnapshotIndexInput {
             sliceFrozenCacheFile = directory.getFrozenCacheFile(sliceName, sliceLength);
             sliceHeaderByteRange = directory.getBlobCacheByteRange(sliceName, sliceLength);
             if (sliceHeaderByteRange.length() < sliceLength) {
-                sliceFooterByteRange = ByteRange.of(sliceLength - CodecUtil.footerLength(), sliceLength);
+                long footerBegin = sliceLength - CodecUtil.footerLength();
+                long alignedFooterBegin = (footerBegin / 4096) * 4096; // align footer begin to 4k block
+                sliceFooterByteRange = ByteRange.of(alignedFooterBegin, sliceLength);
             } else {
                 sliceFooterByteRange = ByteRange.EMPTY;
             }
