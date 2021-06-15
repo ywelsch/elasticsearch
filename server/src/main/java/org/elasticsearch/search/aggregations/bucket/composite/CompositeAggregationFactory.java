@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.aggregations.bucket.composite;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.AggregatorFactories;
@@ -48,4 +49,8 @@ class CompositeAggregationFactory extends AggregatorFactory {
             .collect(Collectors.toSet());
     }
 
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of();
+    }
 }

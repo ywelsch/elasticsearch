@@ -14,6 +14,7 @@ import org.apache.lucene.analysis.miscellaneous.DeDuplicatingTokenFilter;
 import org.apache.lucene.analysis.miscellaneous.DuplicateByteSequenceSpotter;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
 import org.elasticsearch.core.Releasables;
@@ -57,7 +58,7 @@ public class SignificantTextAggregatorFactory extends AggregatorFactory {
     private final IncludeExclude includeExclude;
     private final MappedFieldType fieldType;
     private final String[] sourceFieldNames;
-    private final QueryBuilder backgroundFilter;
+    private final Query backgroundFilter;
     private final TermsAggregator.BucketCountThresholds bucketCountThresholds;
     private final SignificanceHeuristic significanceHeuristic;
     private final boolean filterDuplicateText;
@@ -89,7 +90,7 @@ public class SignificantTextAggregatorFactory extends AggregatorFactory {
         }
 
         this.includeExclude = includeExclude;
-        this.backgroundFilter = backgroundFilter;
+        this.backgroundFilter = backgroundFilter == null ? null : context.buildQuery(backgroundFilter);
         this.filterDuplicateText = filterDuplicateText;
         this.bucketCountThresholds = bucketCountThresholds;
         this.significanceHeuristic = significanceHeuristic;
@@ -162,6 +163,14 @@ public class SignificantTextAggregatorFactory extends AggregatorFactory {
     public Set<String> fieldsUsed() {
         if (fieldType != null) {
             return Set.of(fieldType.name());
+        }
+        return Set.of();
+    }
+
+    @Override
+    public Set<Query> queriesUsed() {
+        if (backgroundFilter != null) {
+            return Set.of(backgroundFilter);
         }
         return Set.of();
     }

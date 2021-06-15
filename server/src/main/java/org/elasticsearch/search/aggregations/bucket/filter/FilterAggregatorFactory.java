@@ -67,4 +67,9 @@ public class FilterAggregatorFactory extends AggregatorFactory {
         return Set.of();
     }
 
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of(filter);
+    }
+
 }

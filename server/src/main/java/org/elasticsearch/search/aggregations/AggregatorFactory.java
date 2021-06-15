@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.aggregations;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 
 import java.io.IOException;
@@ -86,4 +87,8 @@ public abstract class AggregatorFactory {
      */
     public abstract Set<String> fieldsUsed();
 
+    /**
+     * Returns which queries that this aggregation will potentially run.
+     */
+    public abstract Set<Query> queriesUsed();
 }

@@ -7,6 +7,7 @@
  */
 package org.elasticsearch.search.aggregations.bucket.range;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.AggregatorFactories.Builder;
 import org.elasticsearch.search.aggregations.AggregatorFactory;
@@ -20,6 +21,7 @@ import org.elasticsearch.search.aggregations.support.ValuesSourceRegistry;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class BinaryRangeAggregatorFactory extends ValuesSourceAggregatorFactory {
 
@@ -59,5 +61,10 @@ public class BinaryRangeAggregatorFactory extends ValuesSourceAggregatorFactory 
         return aggregatorSupplier
             .build(name, factories, config.getValuesSource(), config.format(),
                    ranges, keyed, context, parent, cardinality, metadata);
+    }
+
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of();
     }
 }

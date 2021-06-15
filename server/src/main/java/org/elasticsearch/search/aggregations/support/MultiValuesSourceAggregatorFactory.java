@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.aggregations.support;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.Aggregator;
@@ -67,4 +68,8 @@ public abstract class MultiValuesSourceAggregatorFactory extends AggregatorFacto
             .map(MappedFieldType::name).collect(Collectors.toSet());
     }
 
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of();
+    }
 }

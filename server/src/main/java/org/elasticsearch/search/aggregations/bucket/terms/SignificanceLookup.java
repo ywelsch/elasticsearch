@@ -18,15 +18,14 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.core.Releasable;
-import org.elasticsearch.core.Releasables;
 import org.elasticsearch.common.lucene.index.FilterableTermsEnum;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.BytesRefHash;
 import org.elasticsearch.common.util.LongArray;
 import org.elasticsearch.common.util.LongHash;
+import org.elasticsearch.core.Releasable;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.index.mapper.MappedFieldType;
-import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.TermQueryBuilder;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.CardinalityUpperBound;
@@ -60,19 +59,19 @@ class SignificanceLookup {
     private final int supersetNumDocs;
     private TermsEnum termsEnum;
 
-    SignificanceLookup(AggregationContext context, MappedFieldType fieldType, DocValueFormat format, QueryBuilder backgroundFilter)
+    SignificanceLookup(AggregationContext context, MappedFieldType fieldType, DocValueFormat format, Query backgroundFilter)
         throws IOException {
         this.context = context;
         this.fieldType = fieldType;
         this.format = format;
-        this.backgroundFilter = backgroundFilter == null ? null : context.buildQuery(backgroundFilter);
+        this.backgroundFilter = backgroundFilter;
         /*
          * We need to use a superset size that includes deleted docs or we
          * could end up blowing up with bad statistics that cause us to blow
          * up later on.
          */
         IndexSearcher searcher = context.searcher();
-        supersetNumDocs = backgroundFilter == null ? searcher.getIndexReader().maxDoc() : searcher.count(this.backgroundFilter);
+        supersetNumDocs = backgroundFilter == null ? searcher.getIndexReader().maxDoc() : searcher.count(backgroundFilter);
     }
 
     /**

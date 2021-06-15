@@ -307,6 +307,8 @@ public class SignificantTermsAggregatorTests extends AggregatorTestCase {
         indexWriterConfig.setMaxBufferedDocs(100);
         indexWriterConfig.setRAMBufferSizeMB(100); // flush on open to have a single segment
 
+        boolean useBackgroundFilter = randomBoolean();
+
         try (Directory dir = newDirectory(); IndexWriter w = new IndexWriter(dir, indexWriterConfig)) {
             addMixedTextDocs(w);
 
@@ -317,7 +319,7 @@ public class SignificantTermsAggregatorTests extends AggregatorTestCase {
             agg.executionHint(executionHint);
             aliasAgg.executionHint(executionHint);
 
-            if (randomBoolean()) {
+            if (useBackgroundFilter) {
                 // Use a background filter which just happens to be same scope as whole-index.
                 QueryBuilder backgroundFilter = QueryBuilders.termsQuery("text", "common");
                 agg.backgroundFilter(backgroundFilter);
@@ -348,6 +350,11 @@ public class SignificantTermsAggregatorTests extends AggregatorTestCase {
 
         assertEquals(Set.of("text"), fieldUsageStats.getPerFieldStats().keySet());
         assertThat(fieldUsageStats.getPerFieldStats().get("text").getAggregationCount(), greaterThan(0L));
+        if (useBackgroundFilter) {
+            assertThat(fieldUsageStats.getPerFieldStats().get("text").getQueryCount(), greaterThan(0L));
+        } else {
+            assertThat(fieldUsageStats.getPerFieldStats().get("text").getQueryCount(), equalTo(0L));
+        }
     }
 
     public void testAllDocsWithoutStringFieldviaGlobalOrds() throws IOException {

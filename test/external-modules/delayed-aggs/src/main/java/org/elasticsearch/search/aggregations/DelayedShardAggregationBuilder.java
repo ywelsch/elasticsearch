@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.aggregations;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.ConstructingObjectParser;
@@ -115,6 +116,10 @@ public class DelayedShardAggregationBuilder extends AbstractAggregationBuilder<D
                 return factory.fieldsUsed();
             }
 
+            @Override
+            public Set<Query> queriesUsed() {
+                return factory.queriesUsed();
+            }
         };
     }
 

@@ -8,6 +8,9 @@
 
 package org.elasticsearch.index.search.stats;
 
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.QueryVisitor;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -20,6 +23,24 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ShardFieldUsageStats {
 
     private final Map<String, InternalFieldStats> perFieldStats = new ConcurrentHashMap<>();
+
+    /**
+     * Called whenever a query is used
+     */
+    public void onQuery(Query query) {
+        query.visit(new QueryVisitor() {
+            @Override
+            public boolean acceptField(String field) {
+                perFieldStats.computeIfAbsent(field, f -> new InternalFieldStats()).queryCount.incrementAndGet();
+                return true;
+            }
+
+            @Override
+            public void visitLeaf(Query query) {
+
+            }
+        });
+    }
 
     /**
      * Called whenever a field is used in an aggregation context
@@ -36,13 +57,24 @@ public class ShardFieldUsageStats {
     }
 
     static class InternalFieldStats {
+        final AtomicLong queryCount = new AtomicLong();
         final AtomicLong aggregationCount = new AtomicLong();
     }
 
     public static class FieldStats {
-        public FieldStats(long aggregationCount) {
+        public FieldStats(long queryCount, long aggregationCount) {
+            this.queryCount = queryCount;
             this.aggregationCount = aggregationCount;
         }
+
+        /**
+         * Returns the number of times the given field was used in a query context
+         */
+        public long getQueryCount() {
+            return queryCount;
+        }
+
+        private final long queryCount;
 
         /**
          * Returns the number of times the given field was used in an aggregation context
@@ -60,7 +92,7 @@ public class ShardFieldUsageStats {
     public Map<String, FieldStats> getPerFieldStats() {
         final Map<String, FieldStats> stats = new HashMap<>(perFieldStats.size());
         for (Map.Entry<String, InternalFieldStats> entry : perFieldStats.entrySet()) {
-            stats.put(entry.getKey(), new FieldStats(entry.getValue().aggregationCount.get()));
+            stats.put(entry.getKey(), new FieldStats(entry.getValue().queryCount.get(), entry.getValue().aggregationCount.get()));
         }
         return Collections.unmodifiableMap(stats);
     }

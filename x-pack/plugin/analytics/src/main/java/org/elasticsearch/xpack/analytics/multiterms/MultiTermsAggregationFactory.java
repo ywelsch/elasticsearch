@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.analytics.multiterms;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.Aggregator;
@@ -77,4 +78,8 @@ public class MultiTermsAggregationFactory extends AggregatorFactory {
         return configs.stream().map(vsc -> vsc.fieldType()).filter(Objects::nonNull).map(MappedFieldType::name).collect(Collectors.toSet());
     }
 
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of();
+    }
 }

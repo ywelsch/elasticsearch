@@ -63,7 +63,11 @@ public class FieldUsageStatsIT extends ESSingleNodeTestCase {
         assertHitCount(searchResponse, docsTest1);
         assertAllSuccessful(searchResponse);
 
-        assertFalse(stats.getPerFieldStats().containsKey("field"));
+        assertTrue(stats.getPerFieldStats().containsKey("field"));
+        assertEquals(1L, stats.getPerFieldStats().get("field").getQueryCount());
+        assertTrue(stats.getPerFieldStats().containsKey("field2"));
+        assertEquals(1L, stats.getPerFieldStats().get("field2").getQueryCount());
+
         assertTrue(stats.getPerFieldStats().containsKey("field.keyword"));
         assertEquals(1L, stats.getPerFieldStats().get("field.keyword").getAggregationCount());
 
@@ -72,6 +76,8 @@ public class FieldUsageStatsIT extends ESSingleNodeTestCase {
             .addAggregation(AggregationBuilders.terms("agg1").field("field.keyword"))
             .setSize(100)
             .get();
+
+        assertEquals(2L, stats.getPerFieldStats().get("field").getQueryCount());
 
         assertEquals(2L, stats.getPerFieldStats().get("field.keyword").getAggregationCount());
     }

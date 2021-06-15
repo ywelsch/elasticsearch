@@ -30,6 +30,8 @@ import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MockFieldMapper;
 import org.elasticsearch.index.mapper.TextFieldMapper;
 import org.elasticsearch.index.mapper.TextFieldMapper.TextFieldType;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.aggregations.AggregationBuilder;
 import org.elasticsearch.search.aggregations.AggregatorTestCase;
 import org.elasticsearch.search.aggregations.bucket.sampler.InternalSampler;
@@ -46,6 +48,7 @@ import java.util.Set;
 
 import static org.elasticsearch.search.aggregations.AggregationBuilders.sampler;
 import static org.elasticsearch.search.aggregations.AggregationBuilders.significantText;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 
 public class SignificantTextAggregatorTests extends AggregatorTestCase {
@@ -214,6 +217,9 @@ public class SignificantTextAggregatorTests extends AggregatorTestCase {
         IndexWriterConfig indexWriterConfig = newIndexWriterConfig(new StandardAnalyzer());
         indexWriterConfig.setMaxBufferedDocs(100);
         indexWriterConfig.setRAMBufferSizeMB(100); // flush on open to have a single segment
+
+        boolean useBackgroundFilter = randomBoolean();
+
         try (Directory dir = newDirectory(); IndexWriter w = new IndexWriter(dir, indexWriterConfig)) {
             indexDocuments(w);
 
@@ -226,6 +232,13 @@ public class SignificantTextAggregatorTests extends AggregatorTestCase {
                 List<String> sourceFieldNames = Arrays.asList(new String [] {"json_only_field"});
                 agg.sourceFieldNames(sourceFieldNames);
                 aliasAgg.sourceFieldNames(sourceFieldNames);
+            }
+
+            if (useBackgroundFilter) {
+                // Use a background filter which just happens to be same scope as whole-index.
+                QueryBuilder backgroundFilter = QueryBuilders.termsQuery("text", "common");
+                agg.backgroundFilter(backgroundFilter);
+                aliasAgg.backgroundFilter(backgroundFilter);
             }
 
             try (IndexReader reader = DirectoryReader.open(w)) {
@@ -255,6 +268,14 @@ public class SignificantTextAggregatorTests extends AggregatorTestCase {
                 assertTrue(AggregationInspectionHelper.hasValue(sampler));
                 assertTrue(AggregationInspectionHelper.hasValue(aliasSampler));
             }
+        }
+
+        assertEquals(Set.of("text"), fieldUsageStats.getPerFieldStats().keySet());
+        assertThat(fieldUsageStats.getPerFieldStats().get("text").getAggregationCount(), greaterThan(0L));
+        if (useBackgroundFilter) {
+            assertThat(fieldUsageStats.getPerFieldStats().get("text").getQueryCount(), greaterThan(0L));
+        } else {
+            assertThat(fieldUsageStats.getPerFieldStats().get("text").getQueryCount(), equalTo(0L));
         }
     }
 

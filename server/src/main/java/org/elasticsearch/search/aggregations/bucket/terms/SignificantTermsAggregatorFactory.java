@@ -9,6 +9,7 @@
 package org.elasticsearch.search.aggregations.bucket.terms;
 
 import org.apache.lucene.index.SortedSetDocValues;
+import org.apache.lucene.search.Query;
 import org.elasticsearch.common.logging.DeprecationCategory;
 import org.elasticsearch.common.logging.DeprecationLogger;
 import org.elasticsearch.common.xcontent.ParseField;
@@ -34,6 +35,7 @@ import org.elasticsearch.search.aggregations.support.ValuesSourceRegistry;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class SignificantTermsAggregatorFactory extends ValuesSourceAggregatorFactory {
     private static final DeprecationLogger deprecationLogger = DeprecationLogger.getLogger(SignificantTermsAggregatorFactory.class);
@@ -140,7 +142,7 @@ public class SignificantTermsAggregatorFactory extends ValuesSourceAggregatorFac
     private final SignificantTermsAggregatorSupplier aggregatorSupplier;
     private final IncludeExclude includeExclude;
     private final String executionHint;
-    private final QueryBuilder backgroundFilter;
+    private final Query backgroundFilter;
     private final TermsAggregator.BucketCountThresholds bucketCountThresholds;
     private final SignificanceHeuristic significanceHeuristic;
 
@@ -168,7 +170,7 @@ public class SignificantTermsAggregatorFactory extends ValuesSourceAggregatorFac
         this.aggregatorSupplier = aggregatorSupplier;
         this.includeExclude = includeExclude;
         this.executionHint = executionHint;
-        this.backgroundFilter = backgroundFilter;
+        this.backgroundFilter = backgroundFilter == null ? null : context.buildQuery(backgroundFilter);
         this.bucketCountThresholds = bucketCountThresholds;
         this.significanceHeuristic = significanceHeuristic;
     }
@@ -358,5 +360,13 @@ public class SignificantTermsAggregatorFactory extends ValuesSourceAggregatorFac
         public String toString() {
             return parseField.getPreferredName();
         }
+    }
+
+    @Override
+    public Set<Query> queriesUsed() {
+        if (backgroundFilter != null) {
+            return Set.of(backgroundFilter);
+        }
+        return Set.of();
     }
 }

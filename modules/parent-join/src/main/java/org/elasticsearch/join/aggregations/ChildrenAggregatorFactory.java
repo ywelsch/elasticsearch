@@ -24,6 +24,7 @@ import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 
 import static org.elasticsearch.search.aggregations.support.AggregationUsageService.OTHER_SUBTYPE;
 
@@ -74,5 +75,10 @@ public class ChildrenAggregatorFactory extends ValuesSourceAggregatorFactory {
     public String getStatsSubtype() {
         // Child Aggregation is registered in non-standard way, so it might return child's values type
         return OTHER_SUBTYPE;
+    }
+
+    @Override
+    public Set<Query> queriesUsed() {
+        return Set.of(childFilter, parentFilter);
     }
 }

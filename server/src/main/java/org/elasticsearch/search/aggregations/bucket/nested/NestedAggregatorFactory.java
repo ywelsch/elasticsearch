@@ -8,6 +8,7 @@
 
 package org.elasticsearch.search.aggregations.bucket.nested;
 
+import org.apache.lucene.search.Query;
 import org.elasticsearch.index.mapper.NestedObjectMapper;
 import org.elasticsearch.search.aggregations.Aggregator;
 import org.elasticsearch.search.aggregations.AggregatorFactories;
@@ -45,6 +46,12 @@ public class NestedAggregatorFactory extends AggregatorFactory {
 
     @Override
     public Set<String> fieldsUsed() {
+        return Set.of();
+    }
+
+    @Override
+    public Set<Query> queriesUsed() {
+        // TODO: parent / nested filter?
         return Set.of();
     }
 
