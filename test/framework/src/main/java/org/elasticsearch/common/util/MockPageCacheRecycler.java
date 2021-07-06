@@ -8,11 +8,17 @@
 
 package org.elasticsearch.common.util;
 
+import org.elasticsearch.common.recycler.Recycler;
 import org.elasticsearch.common.recycler.Recycler.V;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.transport.LeakTracker;
 
 import java.lang.reflect.Array;
+import java.nio.ByteBuffer;
+import java.nio.DoubleBuffer;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
+import java.nio.LongBuffer;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -40,16 +46,18 @@ public class MockPageCacheRecycler extends PageCacheRecycler {
                 final T ref = v();
                 if (ref instanceof Object[]) {
                     Arrays.fill((Object[])ref, 0, Array.getLength(ref), null);
+                } else if (ref instanceof ByteBuffer) {
+                    BigByteArray.fill((ByteBuffer) ref, 0, ((ByteBuffer) ref).capacity(), (byte) random.nextInt(256));
                 } else if (ref instanceof byte[]) {
                     Arrays.fill((byte[])ref, 0, Array.getLength(ref), (byte) random.nextInt(256));
-                } else if (ref instanceof long[]) {
-                    Arrays.fill((long[])ref, 0, Array.getLength(ref), random.nextLong());
-                } else if (ref instanceof int[]) {
-                    Arrays.fill((int[])ref, 0, Array.getLength(ref), random.nextInt());
-                } else if (ref instanceof double[]) {
-                    Arrays.fill((double[])ref, 0, Array.getLength(ref), random.nextDouble() - 0.5);
-                } else if (ref instanceof float[]) {
-                    Arrays.fill((float[])ref, 0, Array.getLength(ref), random.nextFloat() - 0.5f);
+                } else if (ref instanceof IntBuffer) {
+                    BigIntArray.fill((IntBuffer) ref, 0, ((IntBuffer) ref).capacity(), random.nextInt());
+                } else if (ref instanceof LongBuffer) {
+                    BigLongArray.fill((LongBuffer) ref, 0, ((LongBuffer) ref).capacity(), random.nextLong());
+                } else if (ref instanceof DoubleBuffer) {
+                    BigDoubleArray.fill((DoubleBuffer) ref, 0, ((DoubleBuffer) ref).capacity(), random.nextDouble() - 0.5);
+                } else if (ref instanceof FloatBuffer) {
+                    BigFloatArray.fill((FloatBuffer) ref, 0, ((FloatBuffer) ref).capacity(), random.nextFloat() - 0.5f);
                 } else {
                     for (int i = 0; i < Array.getLength(ref); ++i) {
                             Array.set(ref, i, (byte) random.nextInt(256));
@@ -72,6 +80,15 @@ public class MockPageCacheRecycler extends PageCacheRecycler {
     }
 
     @Override
+    public Recycler.V<ByteBuffer> byteBufferPage(boolean clear) {
+        final V<ByteBuffer> page = super.byteBufferPage(clear);
+        if (clear == false) {
+            BigByteArray.fill(page.v(), 0, page.v().capacity(), (byte)random.nextInt(1<<8));
+        }
+        return wrap(page);
+    }
+
+    @Override
     public V<byte[]> bytePage(boolean clear) {
         final V<byte[]> page = super.bytePage(clear);
         if (clear == false) {
@@ -81,19 +98,37 @@ public class MockPageCacheRecycler extends PageCacheRecycler {
     }
 
     @Override
-    public V<int[]> intPage(boolean clear) {
-        final V<int[]> page = super.intPage(clear);
+    public Recycler.V<IntBuffer> intBufferPage(boolean clear) {
+        final V<IntBuffer> page = super.intBufferPage(clear);
         if (clear == false) {
-            Arrays.fill(page.v(), 0, page.v().length, random.nextInt());
+            BigIntArray.fill(page.v(), 0, page.v().capacity(), random.nextInt());
         }
         return wrap(page);
     }
 
     @Override
-    public V<long[]> longPage(boolean clear) {
-        final V<long[]> page = super.longPage(clear);
+    public Recycler.V<LongBuffer> longBufferPage(boolean clear) {
+        final V<LongBuffer> page = super.longBufferPage(clear);
         if (clear == false) {
-            Arrays.fill(page.v(), 0, page.v().length, random.nextLong());
+            BigLongArray.fill(page.v(), 0, page.v().capacity(), random.nextLong());
+        }
+        return wrap(page);
+    }
+
+    @Override
+    public Recycler.V<FloatBuffer> floatBufferPage(boolean clear) {
+        final V<FloatBuffer> page = super.floatBufferPage(clear);
+        if (clear == false) {
+            BigFloatArray.fill(page.v(), 0, page.v().capacity(), random.nextFloat());
+        }
+        return wrap(page);
+    }
+
+    @Override
+    public Recycler.V<DoubleBuffer> doubleBufferPage(boolean clear) {
+        final V<DoubleBuffer> page = super.doubleBufferPage(clear);
+        if (clear == false) {
+            BigDoubleArray.fill(page.v(), 0, page.v().capacity(), random.nextDouble());
         }
         return wrap(page);
     }

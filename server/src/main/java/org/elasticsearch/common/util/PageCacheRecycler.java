@@ -17,8 +17,14 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 
+import java.nio.ByteBuffer;
+import java.nio.DoubleBuffer;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
+import java.nio.LongBuffer;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.function.Function;
 
 import static org.elasticsearch.common.recycler.Recyclers.concurrent;
 import static org.elasticsearch.common.recycler.Recyclers.concurrentDeque;
@@ -35,9 +41,9 @@ public class PageCacheRecycler {
     public static final Setting<Double> WEIGHT_BYTES_SETTING  =
         Setting.doubleSetting("cache.recycler.page.weight.bytes", 1d, 0d, Property.NodeScope);
     public static final Setting<Double> WEIGHT_LONG_SETTING  =
-        Setting.doubleSetting("cache.recycler.page.weight.longs", 1d, 0d, Property.NodeScope);
+        Setting.doubleSetting("cache.recycler.page.weight.longs", 1d, 0d, Property.NodeScope, Property.Deprecated);
     public static final Setting<Double> WEIGHT_INT_SETTING  =
-        Setting.doubleSetting("cache.recycler.page.weight.ints", 1d, 0d, Property.NodeScope);
+        Setting.doubleSetting("cache.recycler.page.weight.ints", 1d, 0d, Property.NodeScope, Property.Deprecated);
     // object pages are less useful to us so we give them a lower weight by default
     public static final Setting<Double> WEIGHT_OBJECTS_SETTING  =
         Setting.doubleSetting("cache.recycler.page.weight.objects", 0.1d, 0d, Property.NodeScope);
@@ -47,11 +53,11 @@ public class PageCacheRecycler {
     public static final int OBJECT_PAGE_SIZE = PAGE_SIZE_IN_BYTES / RamUsageEstimator.NUM_BYTES_OBJECT_REF;
     public static final int LONG_PAGE_SIZE = PAGE_SIZE_IN_BYTES / Long.BYTES;
     public static final int INT_PAGE_SIZE = PAGE_SIZE_IN_BYTES / Integer.BYTES;
+    public static final int FLOAT_PAGE_SIZE = PAGE_SIZE_IN_BYTES / Float.BYTES;
+    public static final int DOUBLE_PAGE_SIZE = PAGE_SIZE_IN_BYTES / Double.BYTES;
     public static final int BYTE_PAGE_SIZE = PAGE_SIZE_IN_BYTES;
 
-    private final Recycler<byte[]> bytePage;
-    private final Recycler<int[]> intPage;
-    private final Recycler<long[]> longPage;
+    private final Recycler<ByteBuffer> byteBufferPage;
     private final Recycler<Object[]> objectPage;
 
     public static final PageCacheRecycler NON_RECYCLING_INSTANCE;
@@ -67,57 +73,20 @@ public class PageCacheRecycler {
 
         // We have a global amount of memory that we need to divide across data types.
         // Since some types are more useful than other ones we give them different weights.
-        // Trying to store all of them in a single stack would be problematic because eg.
-        // a work load could fill the recycler with only byte[] pages and then another
-        // workload that would work with double[] pages couldn't recycle them because there
-        // is no space left in the stack/queue. LRU/LFU policies are not an option either
-        // because they would make obtain/release too costly: we really need constant-time
-        // operations.
-        // Ultimately a better solution would be to only store one kind of data and have the
-        // ability to interpret it either as a source of bytes, doubles, longs, etc. eg. thanks
-        // to direct ByteBuffers or sun.misc.Unsafe on a byte[] but this would have other issues
-        // that would need to be addressed such as garbage collection of native memory or safety
-        // of Unsafe writes.
         final double bytesWeight = WEIGHT_BYTES_SETTING .get(settings);
-        final double intsWeight = WEIGHT_INT_SETTING .get(settings);
-        final double longsWeight = WEIGHT_LONG_SETTING .get(settings);
         final double objectsWeight = WEIGHT_OBJECTS_SETTING .get(settings);
 
-        final double totalWeight = bytesWeight + intsWeight + longsWeight + objectsWeight;
+        final double totalWeight = bytesWeight + objectsWeight;
         final int maxPageCount = (int) Math.min(Integer.MAX_VALUE, limit / PAGE_SIZE_IN_BYTES);
 
         final int maxBytePageCount = (int) (bytesWeight * maxPageCount / totalWeight);
-        bytePage = build(type, maxBytePageCount, allocatedProcessors, new AbstractRecyclerC<byte[]>() {
+        byteBufferPage = build(type, maxBytePageCount, allocatedProcessors, new AbstractRecyclerC<ByteBuffer>() {
             @Override
-            public byte[] newInstance() {
-                return new byte[BYTE_PAGE_SIZE];
+            public ByteBuffer newInstance() {
+                return ByteBuffer.allocate(BYTE_PAGE_SIZE);
             }
             @Override
-            public void recycle(byte[] value) {
-                // nothing to do
-            }
-        });
-
-        final int maxIntPageCount = (int) (intsWeight * maxPageCount / totalWeight);
-        intPage = build(type, maxIntPageCount, allocatedProcessors, new AbstractRecyclerC<int[]>() {
-            @Override
-            public int[] newInstance() {
-                return new int[INT_PAGE_SIZE];
-            }
-            @Override
-            public void recycle(int[] value) {
-                // nothing to do
-            }
-        });
-
-        final int maxLongPageCount = (int) (longsWeight * maxPageCount / totalWeight);
-        longPage = build(type, maxLongPageCount, allocatedProcessors, new AbstractRecyclerC<long[]>() {
-            @Override
-            public long[] newInstance() {
-                return new long[LONG_PAGE_SIZE];
-            }
-            @Override
-            public void recycle(long[] value) {
+            public void recycle(ByteBuffer value) {
                 // nothing to do
             }
         });
@@ -134,31 +103,55 @@ public class PageCacheRecycler {
             }
         });
 
-        assert PAGE_SIZE_IN_BYTES * (maxBytePageCount + maxIntPageCount + maxLongPageCount + maxObjectPageCount) <= limit;
+        assert PAGE_SIZE_IN_BYTES * (maxBytePageCount + maxObjectPageCount) <= limit;
+    }
+
+    public Recycler.V<ByteBuffer> byteBufferPage(boolean clear) {
+        final Recycler.V<ByteBuffer> v = byteBufferPage.obtain();
+        if (v.isRecycled() && clear) {
+            assert v.v().hasArray();
+            Arrays.fill(v.v().array(), (byte) 0);
+        }
+        return v;
     }
 
     public Recycler.V<byte[]> bytePage(boolean clear) {
-        final Recycler.V<byte[]> v = bytePage.obtain();
-        if (v.isRecycled() && clear) {
-            Arrays.fill(v.v(), (byte) 0);
-        }
-        return v;
+        return mapRecycler(byteBufferPage(clear), ByteBuffer::array);
     }
 
-    public Recycler.V<int[]> intPage(boolean clear) {
-        final Recycler.V<int[]> v = intPage.obtain();
-        if (v.isRecycled() && clear) {
-            Arrays.fill(v.v(), 0);
-        }
-        return v;
+    public Recycler.V<IntBuffer> intBufferPage(boolean clear) {
+        return mapRecycler(byteBufferPage(clear), ByteBuffer::asIntBuffer);
     }
 
-    public Recycler.V<long[]> longPage(boolean clear) {
-        final Recycler.V<long[]> v = longPage.obtain();
-        if (v.isRecycled() && clear) {
-            Arrays.fill(v.v(), 0L);
-        }
-        return v;
+    public Recycler.V<LongBuffer> longBufferPage(boolean clear) {
+        return mapRecycler(byteBufferPage(clear), ByteBuffer::asLongBuffer);
+    }
+
+    public Recycler.V<FloatBuffer> floatBufferPage(boolean clear) {
+        return mapRecycler(byteBufferPage(clear), ByteBuffer::asFloatBuffer);
+    }
+
+    public Recycler.V<DoubleBuffer> doubleBufferPage(boolean clear) {
+        return mapRecycler(byteBufferPage(clear), ByteBuffer::asDoubleBuffer);
+    }
+
+    private static <T, U> Recycler.V<T> mapRecycler(Recycler.V<U> recycler, Function<U, T> mapper) {
+        return new Recycler.V<T>() {
+            @Override
+            public T v() {
+                return mapper.apply(recycler.v());
+            }
+
+            @Override
+            public boolean isRecycled() {
+                return recycler.isRecycled();
+            }
+
+            @Override
+            public void close() {
+                recycler.close();
+            }
+        };
     }
 
     public Recycler.V<Object[]> objectPage() {

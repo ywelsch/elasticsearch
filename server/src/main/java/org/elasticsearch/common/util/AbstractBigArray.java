@@ -10,10 +10,15 @@ package org.elasticsearch.common.util;
 
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.RamUsageEstimator;
-import org.elasticsearch.core.Releasables;
 import org.elasticsearch.common.recycler.Recycler;
+import org.elasticsearch.core.Releasables;
 
 import java.lang.reflect.Array;
+import java.nio.ByteBuffer;
+import java.nio.DoubleBuffer;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
+import java.nio.LongBuffer;
 import java.util.Arrays;
 
 /** Common implementation for array lists that slice data into fixed-size blocks. */
@@ -93,45 +98,68 @@ abstract class AbstractBigArray extends AbstractArray {
         return array;
     }
 
-    private <T> T registerNewPage(Recycler.V<T> v, int page, int expectedSize) {
+    private <T> T registerNewPage(Recycler.V<T> v, int page) {
         cache = grow(cache, page + 1);
         assert cache[page] == null;
         cache[page] = v;
-        assert Array.getLength(v.v()) == expectedSize;
         return v.v();
     }
 
-    protected final byte[] newBytePage(int page) {
+    protected final ByteBuffer newByteBufferPage(int page) {
         if (recycler != null) {
-            final Recycler.V<byte[]> v = recycler.bytePage(clearOnResize);
-            return registerNewPage(v, page, PageCacheRecycler.BYTE_PAGE_SIZE);
+            final Recycler.V<ByteBuffer> v = recycler.byteBufferPage(clearOnResize);
+            assert v.v().capacity() == PageCacheRecycler.BYTE_PAGE_SIZE;
+            return registerNewPage(v, page);
         } else {
-            return new byte[PageCacheRecycler.BYTE_PAGE_SIZE];
+            return ByteBuffer.allocate(PageCacheRecycler.BYTE_PAGE_SIZE);
         }
     }
 
-    protected final int[] newIntPage(int page) {
+    protected final IntBuffer newIntBufferPage(int page) {
         if (recycler != null) {
-            final Recycler.V<int[]> v = recycler.intPage(clearOnResize);
-            return registerNewPage(v, page, PageCacheRecycler.INT_PAGE_SIZE);
+            final Recycler.V<IntBuffer> v = recycler.intBufferPage(clearOnResize);
+            assert v.v().capacity() == PageCacheRecycler.INT_PAGE_SIZE;
+            return registerNewPage(v, page);
         } else {
-            return new int[PageCacheRecycler.INT_PAGE_SIZE];
+            return IntBuffer.allocate(PageCacheRecycler.INT_PAGE_SIZE);
         }
     }
 
-    protected final long[] newLongPage(int page) {
+    protected final LongBuffer newLongBufferPage(int page) {
         if (recycler != null) {
-            final Recycler.V<long[]> v = recycler.longPage(clearOnResize);
-            return registerNewPage(v, page, PageCacheRecycler.LONG_PAGE_SIZE);
+            final Recycler.V<LongBuffer> v = recycler.longBufferPage(clearOnResize);
+            assert v.v().capacity() == PageCacheRecycler.LONG_PAGE_SIZE;
+            return registerNewPage(v, page);
         } else {
-            return new long[PageCacheRecycler.LONG_PAGE_SIZE];
+            return LongBuffer.allocate(PageCacheRecycler.LONG_PAGE_SIZE);
+        }
+    }
+
+    protected final FloatBuffer newFloatBufferPage(int page) {
+        if (recycler != null) {
+            final Recycler.V<FloatBuffer> v = recycler.floatBufferPage(clearOnResize);
+            assert v.v().capacity() == PageCacheRecycler.FLOAT_PAGE_SIZE;
+            return registerNewPage(v, page);
+        } else {
+            return FloatBuffer.allocate(PageCacheRecycler.FLOAT_PAGE_SIZE);
+        }
+    }
+
+    protected final DoubleBuffer newDoubleBufferPage(int page) {
+        if (recycler != null) {
+            final Recycler.V<DoubleBuffer> v = recycler.doubleBufferPage(clearOnResize);
+            assert v.v().capacity() == PageCacheRecycler.DOUBLE_PAGE_SIZE;
+            return registerNewPage(v, page);
+        } else {
+            return DoubleBuffer.allocate(PageCacheRecycler.DOUBLE_PAGE_SIZE);
         }
     }
 
     protected final Object[] newObjectPage(int page) {
         if (recycler != null) {
             final Recycler.V<Object[]> v = recycler.objectPage();
-            return registerNewPage(v, page, PageCacheRecycler.OBJECT_PAGE_SIZE);
+            assert Array.getLength(v.v()) == PageCacheRecycler.OBJECT_PAGE_SIZE;
+            return registerNewPage(v, page);
         } else {
             return new Object[PageCacheRecycler.OBJECT_PAGE_SIZE];
         }

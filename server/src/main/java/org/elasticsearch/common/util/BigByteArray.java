@@ -12,6 +12,7 @@ import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 import static org.elasticsearch.common.util.PageCacheRecycler.BYTE_PAGE_SIZE;
@@ -24,15 +25,15 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
 
     private static final BigByteArray ESTIMATOR = new BigByteArray(0, BigArrays.NON_RECYCLING_INSTANCE, false);
 
-    private byte[][] pages;
+    private ByteBuffer[] pages;
 
     /** Constructor. */
     BigByteArray(long size, BigArrays bigArrays, boolean clearOnResize) {
         super(BYTE_PAGE_SIZE, bigArrays, clearOnResize);
         this.size = size;
-        pages = new byte[numPages(size)][];
+        pages = new ByteBuffer[numPages(size)];
         for (int i = 0; i < pages.length; ++i) {
-            pages[i] = newBytePage(i);
+            pages[i] = newByteBufferPage(i);
         }
     }
 
@@ -40,16 +41,16 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
     public byte get(long index) {
         final int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
-        return pages[pageIndex][indexInPage];
+        return pages[pageIndex].get(indexInPage);
     }
 
     @Override
     public byte set(long index, byte value) {
         final int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
-        final byte[] page = pages[pageIndex];
-        final byte ret = page[indexInPage];
-        page[indexInPage] = value;
+        final ByteBuffer buf = pages[pageIndex];
+        final byte ret = buf.get(indexInPage);
+        buf.put(indexInPage, value);
         return ret;
     }
 
@@ -59,7 +60,7 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
         int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
         if (indexInPage + len <= pageSize()) {
-            ref.bytes = pages[pageIndex];
+            ref.bytes = pages[pageIndex].array();
             ref.offset = indexInPage;
             ref.length = len;
             return false;
@@ -67,11 +68,11 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
             ref.bytes = new byte[len];
             ref.offset = 0;
             ref.length = pageSize() - indexInPage;
-            System.arraycopy(pages[pageIndex], indexInPage, ref.bytes, 0, ref.length);
+            pages[pageIndex].slice().position(indexInPage).get(ref.bytes,ref.offset, ref.length);
             do {
                 ++pageIndex;
                 final int copyLength = Math.min(pageSize(), len - ref.length);
-                System.arraycopy(pages[pageIndex], 0, ref.bytes, ref.length, copyLength);
+                pages[pageIndex].slice().get(ref.bytes, ref.length, copyLength);
                 ref.length += copyLength;
             } while (ref.length < len);
             return true;
@@ -84,16 +85,16 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
         int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
         if (indexInPage + len <= pageSize()) {
-            System.arraycopy(buf, offset, pages[pageIndex], indexInPage, len);
+            pages[pageIndex].slice().position(indexInPage).put(buf, offset, len);
         } else {
             int copyLen = pageSize() - indexInPage;
-            System.arraycopy(buf, offset, pages[pageIndex], indexInPage, copyLen);
+            pages[pageIndex].slice().position(indexInPage).put(buf, offset, copyLen);
             do {
                 ++pageIndex;
                 offset += copyLen;
                 len -= copyLen;
                 copyLen = Math.min(len, pageSize());
-                System.arraycopy(buf, offset, pages[pageIndex], 0, copyLen);
+                pages[pageIndex].slice().put(buf, offset, copyLen);
             } while (len > copyLen);
         }
     }
@@ -106,14 +107,21 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
         final int fromPage = pageIndex(fromIndex);
         final int toPage = pageIndex(toIndex - 1);
         if (fromPage == toPage) {
-            Arrays.fill(pages[fromPage], indexInPage(fromIndex), indexInPage(toIndex - 1) + 1, value);
+            fill(pages[fromPage], indexInPage(fromIndex), indexInPage(toIndex - 1) + 1, value);
         } else {
-            Arrays.fill(pages[fromPage], indexInPage(fromIndex), pages[fromPage].length, value);
+            fill(pages[fromPage], indexInPage(fromIndex), pageSize(), value);
             for (int i = fromPage + 1; i < toPage; ++i) {
-                Arrays.fill(pages[i], value);
+                fill(pages[i], 0, pageSize(), value);
             }
-            Arrays.fill(pages[toPage], 0, indexInPage(toIndex - 1) + 1, value);
+            fill(pages[toPage], 0, indexInPage(toIndex - 1) + 1, value);
         }
+    }
+
+    public static void fill(ByteBuffer page, int from, int to, byte value) {
+        for (int i = from; i < to; i++) {
+            page.put(i, value);
+        }
+        assert page.position() == 0;
     }
 
     @Override
@@ -140,7 +148,7 @@ final class BigByteArray extends AbstractBigArray implements ByteArray {
             pages = Arrays.copyOf(pages, ArrayUtil.oversize(numPages, RamUsageEstimator.NUM_BYTES_OBJECT_REF));
         }
         for (int i = numPages - 1; i >= 0 && pages[i] == null; --i) {
-            pages[i] = newBytePage(i);
+            pages[i] = newByteBufferPage(i);
         }
         for (int i = numPages; i < pages.length && pages[i] != null; ++i) {
             pages[i] = null;
