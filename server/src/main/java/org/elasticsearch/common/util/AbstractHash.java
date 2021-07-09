@@ -31,8 +31,8 @@ abstract class AbstractHash extends AbstractPagedHashMap {
         return ids.get(index) - 1;
     }
 
-    protected final long id(long index, long id) {
-        return ids.set(index, id + 1) - 1;
+    protected final void id(long index, long id) {
+        ids.set(index, id + 1);
     }
 
     @Override

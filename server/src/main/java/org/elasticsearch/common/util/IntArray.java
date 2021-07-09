@@ -19,9 +19,9 @@ public interface IntArray extends BigArray {
     int get(long index);
 
     /**
-     * Set a value at the given index and return the previous value.
+     * Set a value at the given index.
      */
-    int set(long index, int value);
+    void set(long index, int value);
 
     /**
      * Increment value at the given index by <code>inc</code> and return the value.

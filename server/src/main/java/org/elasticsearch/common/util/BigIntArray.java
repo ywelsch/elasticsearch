@@ -44,13 +44,11 @@ final class BigIntArray extends AbstractBigArray implements IntArray {
     }
 
     @Override
-    public int set(long index, int value) {
+    public void set(long index, int value) {
         final int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
         final IntBuffer page = pages[pageIndex];
-        final int ret = page.get(indexInPage);
         page.put(indexInPage, value);
-        return ret;
     }
 
     @Override

@@ -19,9 +19,9 @@ public interface FloatArray extends BigArray {
     float get(long index);
 
     /**
-     * Set a value at the given index and return the previous value.
+     * Set a value at the given index.
      */
-    float set(long index, float value);
+    void set(long index, float value);
 
     /**
      * Increment value at the given index by <code>inc</code> and return the value.

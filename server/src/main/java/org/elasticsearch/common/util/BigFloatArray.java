@@ -37,13 +37,11 @@ final class BigFloatArray extends AbstractBigArray implements FloatArray {
     }
 
     @Override
-    public float set(long index, float value) {
+    public void set(long index, float value) {
         final int pageIndex = pageIndex(index);
         final int indexInPage = indexInPage(index);
         final FloatBuffer page = pages[pageIndex];
-        final float ret = page.get(indexInPage);
         page.put(indexInPage, value);
-        return ret;
     }
 
     @Override

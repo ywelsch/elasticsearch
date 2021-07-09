@@ -152,7 +152,8 @@ public final class BytesRefHash extends AbstractHash {
 
     @Override
     protected void removeAndAdd(long index) {
-        final long id = id(index, -1);
+        final long id = id(index);
+        id(index, -1);
         assert id >= 0;
         final int code = hashes.get(id);
         reset(code, id);

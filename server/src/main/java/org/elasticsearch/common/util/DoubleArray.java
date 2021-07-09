@@ -19,9 +19,9 @@ public interface DoubleArray extends BigArray {
     double get(long index);
 
     /**
-     * Set a value at the given index and return the previous value.
+     * Set a value at the given index.
      */
-    double set(long index, double value);
+    void set(long index, double value);
 
     /**
      * Increment value at the given index by <code>inc</code> and return the value.

@@ -182,11 +182,9 @@ public class BigArrays {
         }
 
         @Override
-        public int set(long index, int value) {
+        public void set(long index, int value) {
             assert indexIsInt(index);
-            final int ret = intBuffer.get((int) index);
             intBuffer.put((int) index, value);
-            return ret;
         }
 
         @Override
@@ -230,11 +228,9 @@ public class BigArrays {
         }
 
         @Override
-        public long set(long index, long value) {
+        public void set(long index, long value) {
             assert indexIsInt(index);
-            final long ret = longBuffer.get((int) index);
             longBuffer.put((int) index, value);
-            return ret;
         }
 
         @Override
@@ -277,11 +273,9 @@ public class BigArrays {
         }
 
         @Override
-        public double set(long index, double value) {
+        public void set(long index, double value) {
             assert indexIsInt(index);
-            final double ret = doubleBuffer.get((int) index);
             doubleBuffer.put((int) index, value);
-            return ret;
         }
 
         @Override
@@ -325,11 +319,9 @@ public class BigArrays {
         }
 
         @Override
-        public float set(long index, float value) {
+        public void set(long index, float value) {
             assert indexIsInt(index);
-            final float ret = floatBuffer.get((int) index);
             floatBuffer.put((int) index, value);
-            return ret;
         }
 
         @Override

@@ -131,11 +131,14 @@ public final class LongLongHash extends AbstractHash {
 
     @Override
     protected void removeAndAdd(long index) {
-        final long id = id(index, -1);
+        final long id = id(index);
+        id(index, -1);
         assert id >= 0;
         long keyOffset = id * 2;
-        final long key1 = keys.set(keyOffset, 0);
-        final long key2 = keys.set(keyOffset + 1, 0);
+        final long key1 = keys.get(keyOffset);
+        keys.set(keyOffset, 0);
+        final long key2 = keys.get(keyOffset + 1);
+        keys.set(keyOffset + 1, 0);
         reset(key1, key2, id);
     }
 
