@@ -56,7 +56,7 @@ public class LongBufferBenchmark {
             longArray[i] = i;
         }
         byteArray = new byte[bufSize];
-        for (int i = 0; i < byteArray.length; i+=8) {
+        for (int i = 0; i < byteArray.length; i += 8) {
             setLong(byteArray, i, i);
         }
         simpleLongBuffer = LongBuffer.allocate(bufSize / 8);
@@ -134,14 +134,9 @@ public class LongBufferBenchmark {
     }
 
     static long getLong(byte[] memory, int index) {
-        return  (long) (memory[index]     & 0xff) << 56 |
-            (long) (memory[index + 1] & 0xff) << 48 |
-            (long) (memory[index + 2] & 0xff) << 40 |
-            (long) (memory[index + 3] & 0xff) << 32 |
-            (long) (memory[index + 4] & 0xff) << 24 |
-            (memory[index + 5] & 0xff) << 16 |
-            (memory[index + 6] & 0xff) <<  8 |
-            memory[index + 7] & 0xff;
+        return (long) (memory[index] & 0xff) << 56 | (long) (memory[index + 1] & 0xff) << 48 | (long) (memory[index + 2] & 0xff) << 40
+            | (long) (memory[index + 3] & 0xff) << 32 | (long) (memory[index + 4] & 0xff) << 24 | (memory[index + 5] & 0xff) << 16
+            | (memory[index + 6] & 0xff) << 8 | memory[index + 7] & 0xff;
     }
 
 }
