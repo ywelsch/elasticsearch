@@ -18,6 +18,7 @@ import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.DoubleBuffer;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -83,11 +84,14 @@ public class PageCacheRecycler {
         byteBufferPage = build(type, maxBytePageCount, allocatedProcessors, new AbstractRecyclerC<ByteBuffer>() {
             @Override
             public ByteBuffer newInstance() {
-                return ByteBuffer.allocate(BYTE_PAGE_SIZE);
+                // native order has shown in benchmarks to provide better performance on ByteBuffer views (asIntBuffer/asLongBuffer/...)
+                return ByteBuffer.allocate(BYTE_PAGE_SIZE).order(ByteOrder.nativeOrder());
             }
             @Override
             public void recycle(ByteBuffer value) {
-                // nothing to do
+                // reset order in case someone messed with it
+                assert value.order() == ByteOrder.nativeOrder();
+                value.order(ByteOrder.nativeOrder());
             }
         });
 
